@@ -1,0 +1,773 @@
+"""Optional local MCP server: read-only access to one Agent Context folder.
+
+    charter mcp --context <agent-context-folder> [--check]
+
+MCP Context Access Specification. A local agent host launches this as a child
+process and speaks newline-delimited JSON-RPC 2.0 over standard input and
+output. There is no port, web server, credential or network connection, and
+nothing keeps running after the host stops it.
+
+The host names only the Agent Context folder, and the server serves that
+folder directly: there is no published copy, binding or registration, and the
+host never names Charter's private state.
+
+Exactly four read-only tools:
+
+  get_context               AGENT-CONTEXT.md, unchanged
+  list_governing_documents  id, title, scope and path of each governing document
+  get_document              one governing document, in full
+  get_document_section      one heading's section of one governing document
+
+Before every retrieval the whole folder is validated again (`agent_context`):
+the allow-list, the generated map, the metadata, the hashes and the governing
+documents. A context that is invalid, not clean, or in the middle of an
+Charter write that was interrupted is refused, even when its
+files look valid. The bytes returned are read once, in that call, without
+following links, and returned only when their hash is the one the validated
+context records. Nothing is cached between calls.
+
+Refusals carry one of eight reason codes and a fixed message. No response,
+instruction or anything written to standard error discloses a private-state
+location, a candidate, an archived document, an Agent Proposal, a report, a
+Git branch or commit, or any path other than the Agent Context folder the
+host configured. Bounded activity metadata is kept privately
+(`mcp_activity`), never returned to an agent.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import stat
+import sys
+import uuid
+from typing import Any, BinaryIO, Dict, List, Optional, Tuple
+
+from . import __version__
+from . import agent_context as ac
+from . import host_state as hs
+from . import mcp_activity as activity
+from . import private_store as ps
+from . import transaction as tx
+from .docs import Document, is_front_matter_fence, parse_document
+
+# Newest first. A client asking for one of these gets it back; anything else is
+# answered with the newest, as the protocol's version negotiation prescribes.
+PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
+STRUCTURED_SINCE = "2025-06-18"  # structuredContent and outputSchema
+
+SERVER_NAME = "charter"
+SERVER_TITLE = "Charter"
+MAP = ac.CONTEXT_MAP
+
+# §8, exactly.
+INSTRUCTIONS = ("This server gives read-only access to this Agent Context. Call `get_context` "
+                "before work, then use the listed document tools as needed. Authority "
+                "candidates, archives, and Agent Proposals are not governing context.")
+
+MAX_REF = 1024
+MAX_HEADING = 500
+OUTLINE_LIMIT = 50
+
+PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
+INTERNAL_ERROR = -32603
+
+# One request line is small — a tool name and a document path — so anything
+# much larger is refused unread past the cap, rather than parsed or buffered.
+MAX_MESSAGE = 8 * 1024 * 1024
+
+# §5: the only reason codes, each with a fixed message for agents. None names
+# a location, an identifier, or anything that is not governing context.
+_PERSON = " A person must correct it in Charter."
+MESSAGES = {
+    "context-invalid": "This Agent Context is not valid now, so nothing is served." + _PERSON,
+    "context-unclean": "This Agent Context's folder holds files that are not part of it, so "
+                       "nothing is served." + _PERSON,
+    "changed-during-read": "A file changed while it was being read, so nothing was returned. "
+                           "Call the tool again.",
+    "not-governing": "That is not a current governing document. Name a document by the `path` "
+                     "or `id` that list_governing_documents returns.",
+    "unsafe-path": "That is not a name Charter listed. Name a document by the "
+                   "`path` or `id` that list_governing_documents returns.",
+    "heading-missing": "No heading in this document matches.",
+    "heading-ambiguous": "More than one heading in this document matches.",
+    "bad-arguments": "An argument is missing, unknown, too long or not a string.",
+}
+
+
+class Refusal(Exception):
+    """A tool call that will not be answered, with one fixed code."""
+
+    def __init__(self, reason: str, message: str = "", doc: Optional[Document] = None):
+        super().__init__(reason)
+        assert reason in MESSAGES
+        self.reason = reason
+        self.message = message or MESSAGES[reason]
+        self.doc = doc
+
+
+# --- names -------------------------------------------------------------------------
+
+def unsafe_name(ref: str) -> bool:
+    """Absolute, traversing, or otherwise not shaped like a name Charter lists.
+    Lexical only: nothing is ever joined onto a path or opened from it. One shared
+    definition with the Git-base and transaction path checks (`host_state`)."""
+    return hs.escapes_relative(ref)
+
+
+def resolve(governing: List[Document], ref: str) -> Document:
+    """The governing document named exactly by `ref` — its path, or its id."""
+    if unsafe_name(ref):
+        raise Refusal("unsafe-path")
+    for doc in governing:
+        if ref == doc.path:
+            return doc
+    for doc in governing:
+        if ref == doc.id:
+            return doc
+    raise Refusal("not-governing")
+
+
+# --- headings ----------------------------------------------------------------------
+
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_ATX = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
+_CLOSING = re.compile(r"(?:^|[ \t]+)#+[ \t]*$")
+_ASKED = re.compile(r"^\s*(#{1,6})[ \t]+(.*)$")
+_LINE = re.compile(r"[^\n]*\n|[^\n]+$")
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def _body_lines(text: str) -> List[str]:
+    """The document's body, as lines that keep their own endings: exactly the
+    document's text after its front matter. The fence rule is shared with
+    validation (`docs.is_front_matter_fence`), so MCP and validation agree on
+    where front matter ends — a close fence with a trailing space included."""
+    lines = _LINE.findall(text)
+    if lines and is_front_matter_fence(lines[0]):
+        for i in range(1, len(lines)):
+            if is_front_matter_fence(lines[i]):
+                return lines[i + 1:]
+    return lines
+
+
+def headings(lines: List[str]) -> List[Tuple[int, str, int]]:
+    """(level, text, line index) for each ATX heading outside fenced code."""
+    out: List[Tuple[int, str, int]] = []
+    fence: Optional[str] = None
+    for i, raw in enumerate(lines):
+        line = raw.rstrip("\r\n")
+        m = _FENCE.match(line)
+        if fence is None:
+            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                fence = m.group(1)
+                continue
+        else:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) \
+                    and not m.group(2).strip():
+                fence = None
+            continue
+        h = _ATX.match(line)
+        if h:
+            out.append((len(h.group(1)), _CLOSING.sub("", h.group(2) or "").strip(), i))
+    return out
+
+
+def find_section(text: str, asked: str) -> Tuple[int, str, str]:
+    """(level, heading text, section) for the one heading `asked` names (§6).
+
+    The section is an exact slice of the document's text: from its heading to
+    the next heading of the same or a higher level, subsections included."""
+    m = _ASKED.match(asked)
+    level = len(m.group(1)) if m else None
+    wanted = _norm(m.group(2) if m else asked)
+    if not wanted:
+        raise Refusal("bad-arguments")
+    lines = _body_lines(text)
+    found = headings(lines)
+    matches = [h for h in found if _norm(h[1]) == wanted and (level is None or h[0] == level)]
+    if not matches:
+        outline = "\n".join(f"{'#' * lv} {t}" for lv, t, _ in found[:OUTLINE_LIMIT])
+        raise Refusal("heading-missing",
+                      "No heading in this document matches. Its headings are:\n"
+                      + (outline or "(none)") + "\nUse the heading text exactly as listed, or "
+                      "call get_document for the whole document.")
+    if len(matches) > 1:
+        listed = "\n".join(f"{'#' * lv} {t} (line {i + 1} of the body)" for lv, t, i in matches)
+        raise Refusal("heading-ambiguous",
+                      f"{len(matches)} headings match:\n{listed}\nAdd leading #s to name the "
+                      "level (for example \"## Boundaries\"), or call get_document.")
+    lv, heading, start = matches[0]
+    end = len(lines)
+    for other, _, i in found:
+        if i > start and other <= lv:
+            end = i
+            break
+    return lv, heading, "".join(lines[start:end])
+
+
+# --- tools ---------------------------------------------------------------------------
+
+_TASK = {"type": "string", "description": "Optional short label for the task this call is part "
+                                          "of. Kept privately by Charter for the "
+                                          "person; it proves nothing."}
+_DOCUMENT = {"type": "string", "description": "The exact `path` or `id` of a governing "
+                                              "document, as list_governing_documents returns it."}
+_READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True,
+              "openWorldHint": False}
+
+TOOLS: List[Dict[str, Any]] = [
+    {
+        "name": "get_context",
+        "title": "Get the Agent Context map",
+        "description": "Return AGENT-CONTEXT.md, unchanged: the map of the documents that govern "
+                       "this project. Call this first, before work.",
+        "inputSchema": {"type": "object", "properties": {"task": _TASK},
+                        "additionalProperties": False},
+        "outputSchema": {"type": "object", "required": ["path", "text"], "properties": {
+            "path": {"type": "string"}, "text": {"type": "string"}}},
+    },
+    {
+        "name": "list_governing_documents",
+        "title": "List governing documents",
+        "description": "List the documents that currently govern this project: id, title, "
+                       "scope and path, ordered by path.",
+        "inputSchema": {"type": "object", "properties": {"task": _TASK},
+                        "additionalProperties": False},
+        "outputSchema": {"type": "object", "required": ["documents"], "properties": {
+            "documents": {"type": "array", "items": {
+                "type": "object", "required": ["id", "title", "scope", "path"], "properties": {
+                    "id": {"type": "string"}, "title": {"type": "string"},
+                    "scope": {"type": "string"}, "path": {"type": "string"}}}}}},
+    },
+    {
+        "name": "get_document",
+        "title": "Get a governing document",
+        "description": "Return the full text of one currently governing document, named by the "
+                       "path or id list_governing_documents gives. Anything else is refused.",
+        "inputSchema": {"type": "object", "required": ["document"], "properties": {
+            "document": _DOCUMENT, "task": _TASK}, "additionalProperties": False},
+        "outputSchema": {"type": "object", "required": ["id", "title", "scope", "path", "text"],
+                         "properties": {k: {"type": "string"} for k in
+                                        ("id", "title", "scope", "path", "text")}},
+    },
+    {
+        "name": "get_document_section",
+        "title": "Get a section of a governing document",
+        "description": "Return one Markdown section of a currently governing document: the "
+                       "heading named (case and spacing ignored; leading #s pin the level) and "
+                       "everything under it up to the next heading of the same or a higher "
+                       "level. A missing or ambiguous heading is refused, listing the "
+                       "document's headings.",
+        "inputSchema": {"type": "object", "required": ["document", "heading"], "properties": {
+            "document": _DOCUMENT,
+            "heading": {"type": "string", "description": "The heading's text, e.g. "
+                                                         "\"Boundaries\" or \"## Boundaries\"."},
+            "task": _TASK}, "additionalProperties": False},
+        "outputSchema": {"type": "object",
+                         "required": ["id", "title", "path", "heading", "level", "text"],
+                         "properties": {"id": {"type": "string"}, "title": {"type": "string"},
+                                        "path": {"type": "string"},
+                                        "heading": {"type": "string"},
+                                        "level": {"type": "integer"},
+                                        "text": {"type": "string"}}},
+    },
+]
+TOOL_NAMES = tuple(t["name"] for t in TOOLS)
+_ALLOWED_ARGS = {t["name"]: set(t["inputSchema"]["properties"]) for t in TOOLS}
+_REQUIRED_ARGS = {t["name"]: set(t["inputSchema"].get("required", [])) for t in TOOLS}
+
+
+def _check_arguments(name: str, args: Any) -> Dict[str, str]:
+    if args is None:
+        args = {}
+    if not isinstance(args, dict) or set(args) - _ALLOWED_ARGS[name] \
+            or _REQUIRED_ARGS[name] - set(args) \
+            or not all(isinstance(v, str) for v in args.values()):
+        raise Refusal("bad-arguments")
+    if len(args.get("document", "")) > MAX_REF or len(args.get("heading", "")) > MAX_HEADING:
+        raise Refusal("bad-arguments")
+    return args
+
+
+# --- one call's view of the folder -------------------------------------------------------
+
+def interrupted(folder: str) -> bool:
+    """Whether a Charter write to this folder was interrupted and
+    not yet rolled back — or whether that cannot be established, because the
+    folder's private state is there but unreadable, belongs to another
+    folder, or its staging cannot be examined. Absent private state is not
+    interrupted. Reads private state; creates and recovers nothing."""
+    try:
+        cs = ps.PrivateState.default().find_context(folder, strict=True)
+        return bool(cs is not None and tx.interrupted(cs))
+    except Exception:  # noqa: BLE001 — unknown is not served: see `examine`
+        return True
+
+
+def examine(folder: str) -> ac.Examination:
+    """The folder now, validated whole, or a Refusal. Never cached."""
+    exam = ac.examine(folder)
+    if exam.state == ac.UNCLEAN:
+        raise Refusal("context-unclean")
+    if exam.state != ac.VALID or interrupted(folder):
+        raise Refusal("context-invalid")
+    return exam
+
+
+def fingerprint(exam: ac.Examination) -> Tuple[Any, ...]:
+    """Everything a response is answered from: the state, the hash of the map
+    and of every governing document by path, and the settings the metadata
+    records. With the allow-list clean and no interrupted write, which
+    `examine` requires, two equal fingerprints are the same served context."""
+    settings = exam.settings
+    return (exam.state, tuple(sorted(exam.hashes.items())),
+            None if settings is None else
+            (settings.project_name, tuple(sorted(settings.guidance_map.items()))))
+
+
+def settled(folder: str, start: Tuple[Any, ...]) -> None:
+    """Immediately before a response: the whole context is still exactly the
+    one validated at the start of the call, clean, with no interrupted write.
+    Anything else — a document changed, a stray added, a write begun — means
+    what was read may not be what governs now: `changed-during-read`."""
+    try:
+        now = examine(folder)
+    except Refusal:
+        raise Refusal("changed-during-read")
+    if fingerprint(now) != start:
+        raise Refusal("changed-during-read")
+
+
+def _read_once(folder: str, rel: str) -> bytes:
+    """A file's bytes, read once, refusing links and anything that changed
+    while it was opened."""
+    path = os.path.join(folder, *rel.split("/"))
+    try:
+        before = os.lstat(path)
+        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if not stat.S_ISREG(before.st_mode) or getattr(before, "st_file_attributes", 0) & reparse:
+            raise Refusal("changed-during-read")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            opened = os.fstat(fd)
+            if (opened.st_ino, opened.st_dev, opened.st_size) != \
+                    (before.st_ino, before.st_dev, before.st_size):
+                raise Refusal("changed-during-read")
+            chunks = []
+            while True:
+                chunk = os.read(fd, 1 << 16)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        finally:
+            os.close(fd)
+    except OSError:
+        raise Refusal("changed-during-read")
+    return b"".join(chunks)
+
+
+def verified(exam: ac.Examination, rel: str) -> str:
+    """`rel`'s text, read now and returned only when its hash is the one the
+    validated context records for it."""
+    data = _read_once(exam.root, rel)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise Refusal("changed-during-read")
+    if ac.sha256_text(text) != exam.hashes.get(rel):
+        raise Refusal("changed-during-read")
+    return text
+
+
+# --- the server ------------------------------------------------------------------------
+
+class Server:
+    """One MCP session over one Agent Context folder.
+
+    `handle` takes one decoded JSON-RPC message and returns the response, or
+    None for a notification. `serve` runs it over a pair of byte streams."""
+
+    def __init__(self, folder: str, record: bool = True):
+        self.folder = os.path.abspath(os.path.expanduser(folder)) if folder else ""
+        self.session = uuid.uuid4().hex[:12]
+        self.protocol = PROTOCOL_VERSIONS[-1]
+        self.host = ""
+        self.record = record and bool(self.folder)
+
+    # -- activity (private; never returned to an agent) ---------------------------------
+    def _activity(self, **fields: Any) -> None:
+        if not self.record:
+            return
+        try:
+            activity.record(self.folder, activity.event(session=self.session, host=self.host,
+                                                         **fields))
+        except Exception:  # noqa: BLE001 — activity never fails a request
+            pass
+
+    # -- protocol ----------------------------------------------------------------------
+    @property
+    def structured(self) -> bool:
+        return self.protocol >= STRUCTURED_SINCE
+
+    def handle(self, message: Any) -> Any:
+        if isinstance(message, list):  # a batch, as 2025-03-26 allowed
+            if not message:
+                return _error(None, INVALID_REQUEST, "A batch must not be empty.")
+            replies = [r for r in (self._single(m) for m in message) if r is not None]
+            return replies or None
+        return self._single(message)
+
+    def _single(self, message: Any) -> Any:
+        if isinstance(message, list):
+            # A batch element is one message, never another batch: the handler
+            # never recurses into a nested array, so a deeply nested message
+            # cannot exhaust the stack and end the session.
+            return _error(None, INVALID_REQUEST, "A batch element must be one JSON-RPC message.")
+        if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+            return _error(_echo_id(message), INVALID_REQUEST, "Not a JSON-RPC 2.0 message.")
+        if "method" not in message or "id" not in message:
+            return None  # a response, or a notification: nothing to answer
+        ident = _echo_id(message)
+        if ident is None and message.get("id") is not None:
+            return _error(None, INVALID_REQUEST, "A request id must be a string or an integer.")
+        method = message.get("method")
+        params = message.get("params") or {}
+        try:
+            if method == "initialize":
+                return _result(ident, self._initialize(params))
+            if method == "ping":
+                return _result(ident, {})
+            if method == "tools/list":
+                return _result(ident, {"tools": self._tool_list()})
+            if method == "tools/call":
+                name = params.get("name") if isinstance(params, dict) else None
+                if name not in TOOL_NAMES:
+                    self._activity(event="tool", tool="unknown", status="refused",
+                                   reason="bad-arguments", task=_task_of(params))
+                    return _error(ident, INVALID_PARAMS, "Unknown tool.")
+                return _result(ident, self._call(name, params.get("arguments")))
+            return _error(ident, METHOD_NOT_FOUND, "Method not found.")
+        except Exception:  # noqa: BLE001 — one bad request must not end the session
+            return _error(ident, INTERNAL_ERROR, "Internal error.")
+
+    def _initialize(self, params: Any) -> Dict[str, Any]:
+        asked = params.get("protocolVersion") if isinstance(params, dict) else None
+        self.protocol = asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
+        info = params.get("clientInfo") if isinstance(params, dict) else None
+        if isinstance(info, dict):
+            self.host = activity.clean_label(
+                " ".join(str(info.get(k) or "") for k in ("name", "version")),
+                activity.HOST_LIMIT)
+        try:
+            examine(self.folder)
+            self._activity(event="connect", status="ok")
+        except Refusal as refusal:
+            self._activity(event="connect", status="refused", reason=refusal.reason)
+        except Exception:  # noqa: BLE001
+            self._activity(event="connect", status="refused", reason="context-invalid")
+        return {
+            "protocolVersion": self.protocol,
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": SERVER_NAME, "title": SERVER_TITLE, "version": __version__},
+            "instructions": INSTRUCTIONS,
+        }
+
+    def _tool_list(self) -> List[Dict[str, Any]]:
+        out = []
+        for tool in TOOLS:
+            entry = {k: v for k, v in tool.items() if k != "outputSchema" or self.structured}
+            entry["annotations"] = dict(_READ_ONLY, title=tool["title"])
+            out.append(entry)
+        return out
+
+    def _call(self, name: str, raw_args: Any) -> Dict[str, Any]:
+        """One tool call, always answered with a tool result and always recorded.
+
+        The whole context is validated at the start of the call and again
+        immediately before the response (`settled`): a response is returned
+        only when nothing in the context changed while it was prepared."""
+        task = _task_of({"arguments": raw_args})
+        doc: Optional[Document] = None
+        try:
+            args = _check_arguments(name, raw_args)
+            exam = examine(self.folder)
+            start = fingerprint(exam)
+            text, payload, seen = self._answer(name, args, exam)
+            doc = seen.get("doc")
+            settled(self.folder, start)
+            self._activity(event="tool", tool=name, status="ok", task=task,
+                           path=doc.path if doc else "", title=doc.title if doc else "",
+                           heading=seen.get("heading", ""))
+            return self._ok(text, payload)
+        except Refusal as refusal:
+            known = refusal.doc or doc
+            self._activity(event="tool", tool=name, status="refused", reason=refusal.reason,
+                           task=task, path=known.path if known else "",
+                           title=known.title if known else "")
+            return _refused(refusal.reason, refusal.message)
+        except Exception:  # noqa: BLE001 — fail closed; nothing private reaches the agent
+            self._activity(event="tool", tool=name, status="refused", reason="context-invalid",
+                           task=task)
+            return _refused("context-invalid", MESSAGES["context-invalid"])
+
+    def _answer(self, name: str, args: Dict[str, str],
+                exam: ac.Examination) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+        """The text and structured payload answering one call from the validated
+        `exam`, and what it resolved: the document and heading, for activity."""
+        if name == "get_context":
+            text = verified(exam, MAP)
+            return text, {"path": MAP, "text": text}, {}
+        governing = sorted(exam.documents, key=lambda d: d.path)
+        if name == "list_governing_documents":
+            documents = [{"id": d.id, "title": d.title,
+                          "scope": str(d.meta.get("scope") or ""), "path": d.path}
+                         for d in governing]
+            payload = {"documents": documents}
+            return json.dumps(payload, ensure_ascii=False, indent=2), payload, {}
+        doc = resolve(governing, args["document"])
+        text = verified(exam, doc.path)
+        fresh = parse_document(doc.path, text)
+        if fresh is None or fresh.id != doc.id:
+            raise Refusal("changed-during-read", doc=doc)
+        if name == "get_document":
+            payload = {"id": doc.id, "title": doc.title,
+                       "scope": str(doc.meta.get("scope") or ""), "path": doc.path,
+                       "text": text}
+            return text, payload, {"doc": doc}
+        try:
+            level, heading, section = find_section(text, args["heading"])
+        except Refusal as refusal:
+            refusal.doc = refusal.doc or doc
+            raise
+        payload = {"id": doc.id, "title": doc.title, "path": doc.path,
+                   "heading": heading, "level": level, "text": section}
+        return section, payload, {"doc": doc, "heading": heading}
+
+    def _ok(self, text: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"content": [{"type": "text", "text": text}], "isError": False}
+        if self.structured:
+            result["structuredContent"] = payload
+        return result
+
+    # -- transport ---------------------------------------------------------------------
+    def serve(self, stdin: BinaryIO, stdout: BinaryIO) -> None:
+        """Newline-delimited JSON-RPC over bytes: UTF-8 in, UTF-8 out, one message per line.
+        One bad line never ends the session: it is answered with an error and reading continues."""
+        while True:
+            raw = stdin.readline(MAX_MESSAGE + 1)
+            if not raw:
+                break
+            if len(raw) > MAX_MESSAGE and not raw.endswith(b"\n"):
+                # Too long: drop the rest of the line without parsing or
+                # buffering it, then refuse. Reading then resumes at the next line.
+                while True:
+                    more = stdin.readline(MAX_MESSAGE + 1)
+                    if not more or more.endswith(b"\n"):
+                        break
+                reply: Any = _error(None, PARSE_ERROR, "Parse error: the message is too large.")
+            else:
+                # Some Windows shells start what they pipe with a byte-order mark.
+                line = raw.strip().lstrip(b"\xef\xbb\xbf").strip()
+                if not line:
+                    continue
+                try:
+                    message = hs.loads_strict(line.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError, RecursionError):
+                    reply = _error(None, PARSE_ERROR, "Parse error: not UTF-8 JSON.")
+                else:
+                    reply = self.handle(message)
+            if reply is not None:
+                stdout.write(_encode(reply) + b"\n")
+                stdout.flush()
+
+
+def _refused(code: str, message: str) -> Dict[str, Any]:
+    return {"content": [{"type": "text", "text": f"{code}: {message}"}], "isError": True}
+
+
+def _task_of(params: Any) -> str:
+    args = params.get("arguments") if isinstance(params, dict) else None
+    task = args.get("task") if isinstance(args, dict) else None
+    return activity.clean_label(task, activity.TASK_LIMIT) if isinstance(task, str) else ""
+
+
+def _result(ident: Any, result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": ident, "result": result}
+
+
+def _error(ident: Any, code: int, message: str) -> Dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": ident, "error": {"code": code, "message": message}}
+
+
+def _echo_id(message: Any) -> Any:
+    """The request id to echo back, if it is one JSON-RPC allows: a string or an
+    integer (never a boolean). Anything else — a float, object, array or the
+    literal `true`/`false` — is not echoed, so a reply cannot carry an id that
+    is unusable or, for a lone surrogate in a string, even unencodable."""
+    ident = message.get("id") if isinstance(message, dict) else None
+    if isinstance(ident, bool) or not isinstance(ident, (str, int)):
+        return None
+    return ident
+
+
+def _encode(reply: Any) -> bytes:
+    """A reply as one line of UTF-8 bytes. A value that cannot be UTF-8 encoded
+    — a lone surrogate echoed from a crafted id, say — falls back to ASCII-escaped
+    JSON, so serializing a reply can never raise and end the session."""
+    try:
+        return json.dumps(reply, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (UnicodeEncodeError, ValueError):
+        return json.dumps(reply, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+
+
+class _Null(object):
+    def write(self, text: Any) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+def run(folder: str) -> int:
+    """`charter mcp --context <folder>`: serve until the host closes stdin.
+
+    A folder that cannot be served does not stop the server: the handshake
+    completes and every tool refuses with its reason code. Nothing is ever
+    written to standard error: only protocol messages reach standard output,
+    and anything printed by accident goes nowhere."""
+    out = sys.stdout.buffer
+    sys.stdout = _Null()  # type: ignore[assignment]
+    sys.stderr = _Null()  # type: ignore[assignment]
+    server = Server(folder)
+    try:
+        server.serve(sys.stdin.buffer, out)
+    except (KeyboardInterrupt, OSError, ValueError):
+        _silence_stdout()  # the host closed our stdout; say nothing on the way out
+    return 0
+
+
+def _silence_stdout() -> None:
+    try:
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.close(null)
+    except (OSError, ValueError):
+        pass
+
+
+LAUNCHER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "charter.py")
+
+
+def check(folder: str) -> int:
+    """`charter mcp --context <folder> --check`: for the person, in words, whether
+    this command can serve an agent now, and why not.
+
+    It validates the folder as every call does, completes an MCP handshake in
+    this process, and has the exact server command answer `ping` and
+    `tools/list` over stdio. It writes nothing anywhere: no file in the
+    folder, no private state, no activity, and no recovery of an interrupted
+    write. It names no private-state location."""
+    import subprocess
+    import time
+    where = os.path.abspath(os.path.expanduser(folder))
+    print(f"Charter {__version__}: MCP check")
+    print(f"  python         {sys.executable}")
+    print(f"  launcher       {LAUNCHER}")
+    print(f"  Agent Context  {where}")
+    lines: List[str] = []
+    ok = True
+
+    def say(good: bool, text: str) -> None:
+        nonlocal ok
+        ok = ok and good
+        lines.append(("  ok    " if good else "  FAIL  ") + text)
+
+    exam = ac.examine(where)
+    if exam.valid and not interrupted(where):
+        n = len(exam.documents)
+        say(True, f"the Agent Context is valid and clean: {n} governing "
+                  f"document{'s' if n != 1 else ''}")
+    elif exam.valid:
+        say(False, "a Charter write to this folder was interrupted, or Charter's private "
+                   "state for it cannot be used (agents see `context-invalid`). Open the "
+                   "Agent Context in Charter to roll it back or see what to do.")
+    else:
+        code = "context-unclean" if exam.state == ac.UNCLEAN else "context-invalid"
+        say(False, f"the Agent Context is not {'clean' if code == 'context-unclean' else 'valid'}"
+                   f" (agents see `{code}`):")
+        for i in exam.errors[:20]:
+            lines.append(f"          {i['path'] or 'the folder'}: {i['message']}")
+    hello = {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+        "protocolVersion": PROTOCOL_VERSIONS[0], "capabilities": {},
+        "clientInfo": {"name": "charter-check", "version": __version__}}}
+    try:
+        reply = Server(where, record=False).handle(hello) or {}
+        result = reply.get("result") or {}
+        say(result.get("instructions") == INSTRUCTIONS,
+            "an MCP handshake completes here (a check is not a connection: nothing is recorded)")
+    except Exception as exc:  # noqa: BLE001 — the person sees why
+        say(False, f"the MCP handshake failed: {type(exc).__name__}")
+    # The exact server command, over stdio. `ping` and `tools/list` only: neither
+    # is a connection or a tool call, so it records nothing either.
+    argv = [sys.executable, LAUNCHER, "mcp", "--context", where]
+    ping = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "ping"})
+    listing = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(argv, input=(ping + "\n" + listing + "\n").encode("utf-8"),
+                              capture_output=True, timeout=60)
+        took = time.monotonic() - started
+        replies = []
+        for raw in proc.stdout.decode("utf-8", "replace").splitlines():
+            try:
+                replies.append(json.loads(raw))
+            except ValueError:
+                replies.append({"not_json": raw})
+        stray = [r["not_json"] for r in replies if "not_json" in r]
+        tools = [t["name"] for r in replies if r.get("id") == 1
+                 for t in r.get("result", {}).get("tools", [])]
+        good = proc.returncode == 0 and not stray and len(replies) == 2 and len(tools) == 4
+        say(good, f"the server command answered over stdio in {took:.1f}s and listed "
+                  f"{len(tools)} tools" if good else
+                  f"the server command did not answer MCP requests (exit {proc.returncode}"
+                  + (", with non-JSON on standard output" if stray else "") + ")")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        say(False, f"the server command could not be run: {type(exc).__name__}")
+    lines.append("  note  " + launcher_note())
+    print("\n".join(lines))
+    print("\n".join(["", NOT_CHECKED_BY_CHECK]))
+    return 0 if ok else 1
+
+
+# What `--check` cannot see: it runs the server with this Python, not through
+# the host's own command line, environment or PATH.
+NOT_CHECKED_BY_CHECK = (
+    "This check ran the server with the Python shown above. It did not check your agent host: "
+    "its MCP configuration, the command and environment it starts the server with, or whether an "
+    "agent calls the tools. To confirm those, start a new agent session and ask it to retrieve "
+    "this Agent Context.")
+
+
+def launcher_note() -> str:
+    """How a newly started program, such as an agent host, would run `charter` by
+    name, which is how a host starts this server. Reads PATH; changes nothing."""
+    from . import on_path
+    try:
+        path = on_path.fresh_path(on_path.Registry()) if os.name == "nt" \
+            else os.environ.get("PATH", "")
+        found = on_path.resolve(on_path.NAME, path)
+    except OSError:
+        found = None
+    if on_path.is_launcher(found, on_path.LAUNCHERS):
+        return "a newly started program runs this copy as `charter`, as an agent host does"
+    if found:
+        return (f"a newly started program runs another copy as `charter`, from {os.path.dirname(found)};"
+                " an agent host would start that one")
+    bootstrap = "py charter.py add-to-path" if os.name == "nt" else "python3 charter.py add-to-path"
+    return ("a newly started program cannot run `charter` by name, so an agent host cannot start this "
+            f"server yet: run `{bootstrap}` in {on_path.LAUNCHERS}, then restart the host")

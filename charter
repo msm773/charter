@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Charter launcher. Paths are read from where you run it.
+#
+# It runs the first real Python 3.9 or later it finds: `python3`, then
+# `python`, then the Windows launcher `py -3`. Each is proved by running it, so
+# a stand-in that is not Python at all, such as the Microsoft Store's
+# `python3` alias on Windows, is passed over rather than run. Standard input,
+# output and the exit status pass straight through to Charter.
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+probe='import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'
+for candidate in "python3" "python" "py -3"; do
+  # shellcheck disable=SC2086  # "py -3" is a command and its argument
+  if $candidate -c "$probe" </dev/null >/dev/null 2>&1; then
+    exec $candidate "$here/charter.py" "$@"
+  fi
+done
+echo "charter: Python 3.9 or later was not found. Install Python 3.9 or later." >&2
+exit 127

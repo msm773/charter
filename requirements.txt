@@ -1,0 +1,3 @@
+# Nothing here is required. Charter runs on the Python 3.9+ standard library.
+# Install this only if you want to bring PDFs in with Create candidate.
+pypdf>=4.0

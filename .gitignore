@@ -1,0 +1,10 @@
+# Generated Python bytecode. Never source; never tracked.
+__pycache__/
+*.py[cod]
+
+# Release ZIPs, built and verified by `python -m tests.package`. A verified ZIP
+# is attached to its release, not committed.
+dist/
+
+# Local task scheduler state. Never source; never tracked.
+.claude/scheduled_tasks.lock
