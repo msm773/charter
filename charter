@@ -6,8 +6,20 @@
 # a stand-in that is not Python at all, such as the Microsoft Store's
 # `python3` alias on Windows, is passed over rather than run. Standard input,
 # output and the exit status pass straight through to Charter.
+#
+# It may be reached through a symlink, such as ~/.local/bin/charter: each link
+# is followed to this file, so charter.py is found beside it. Plain `readlink`,
+# without -f, is used because macOS's bash and readlink lack the GNU options.
 set -euo pipefail
-here="$(cd "$(dirname "$0")" && pwd)"
+self="$0"
+while [ -L "$self" ]; do
+  link="$(readlink "$self")"
+  case "$link" in
+    /*) self="$link" ;;
+    *) self="$(dirname "$self")/$link" ;;
+  esac
+done
+here="$(CDPATH='' cd -P "$(dirname "$self")" && pwd)"
 probe='import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'
 for candidate in "python3" "python" "py -3"; do
   # shellcheck disable=SC2086  # "py -3" is a command and its argument

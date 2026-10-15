@@ -70,6 +70,19 @@ class FakeRegistry:
 
 
 @contextlib.contextmanager
+def found_on(*folders: str):
+    """`charter` looked up in exactly `folders`, never this computer's PATH: they are
+    this process's PATH, which macOS and Linux read, and the made-up registry's
+    user PATH, which Windows reads. Yields that registry."""
+    saved = os.environ.get("PATH", "")
+    os.environ["PATH"] = os.pathsep.join(folders)
+    try:
+        yield FakeRegistry(user=";".join(folders))
+    finally:
+        os.environ["PATH"] = saved
+
+
+@contextlib.contextmanager
 def no_writes():
     """Refuse every way this process could write, delete or run something."""
     attempts = []
@@ -207,8 +220,11 @@ def case_payload() -> None:
         folder = os.path.join(base, "My Ctx $x 'q' (é)")
         mg.create(folder, "Demo Project")
         folder = mg.check(folder)["path"]
-        on = FakeRegistry(user=on_path.LAUNCHERS)
-        win = connect.connection(folder, windows=True, registry=on)
+        check(os.name == "nt" or os.access(os.path.join(on_path.LAUNCHERS, "charter"), os.X_OK),
+              "this copy's `charter` launcher is executable, as Git and the release record it")
+        with found_on(on_path.LAUNCHERS) as on:
+            win = connect.connection(folder, windows=True, registry=on)
+            posix = connect.connection(folder, windows=False, registry=on)
         check(win["ready"] and win["server_name"] == "charter-demo-project",
               "a ready Agent Context gets a server named for its project")
         server = win["config"]["mcpServers"]["charter-demo-project"]
@@ -239,7 +255,7 @@ def case_payload() -> None:
         except ImportError:
             tomllib = None
         if tomllib:
-            for payload in (win, connect.connection(folder, windows=False, registry=on)):
+            for payload in (win, posix):
                 parsed = tomllib.loads(payload["codex_toml"])["mcp_servers"][payload["server_name"]]
                 check(parsed == payload["config"]["mcpServers"][payload["server_name"]],
                       "Codex: the TOML parses to exactly the MCP configuration, the folder included")
@@ -265,7 +281,6 @@ def case_payload() -> None:
         check(shells["powershell"]["check"] == "charter mcp --context " + connect.powershell_arg(folder)
               + " --check" and shells["cmd"]["check"] == f'charter mcp --context "{folder}" --check',
               "and a check command for each")
-        posix = connect.connection(folder, windows=False, registry=on)
         check(posix["config"]["mcpServers"]["charter-demo-project"]
               == {"command": "charter", "args": ["mcp", "--context", folder]}
               and [s["shell"] for s in posix["shells"]] == ["posix"]
@@ -288,7 +303,9 @@ def case_payload() -> None:
               "with `charter` on PATH for new programs: ready to connect")
 
         print("\nMCP needs `charter` on PATH")
-        off = connect.connection(folder, windows=True, registry=FakeRegistry())
+        with found_on() as nowhere:
+            off = connect.connection(folder, windows=True, registry=nowhere)
+            off_posix = connect.connection(folder, windows=False, registry=nowhere)
         check(off["ready"] and off["connect"] == "needs-path" and not off["launcher"]["on_path"]
               and off["status_text"] == "Agent Context ready. Add Charter to your PATH before a new agent "
                                         "host can connect."
@@ -303,17 +320,15 @@ def case_payload() -> None:
               and "python charter.py add-to-path" in off["launcher"]["note"]
               and "quit and reopen the agent host" in off["launcher"]["restart"],
               "with `charter add-to-path` to copy, and the host to be restarted afterwards")
+        check(off_posix["connect"] == "needs-path"
+              and "python3 charter.py add-to-path" in off_posix["launcher"]["note"],
+              "elsewhere the fallback names `python3`, which macOS and Linux provide, not `python`")
         other_dir = tempfile.mkdtemp(prefix="charter-other-")
         open(os.path.join(other_dir, "charter.cmd" if os.name == "nt" else "charter"), "w").close()
         if os.name != "nt":
             os.chmod(os.path.join(other_dir, "charter"), 0o755)
-        saved_path = os.environ.get("PATH", "")
-        os.environ["PATH"] = other_dir + os.pathsep + on_path.LAUNCHERS
-        try:
-            other = connect.connection(folder, windows=os.name == "nt",
-                                       registry=FakeRegistry(user=other_dir + ";" + on_path.LAUNCHERS))
-        finally:
-            os.environ["PATH"] = saved_path
+        with found_on(other_dir, on_path.LAUNCHERS) as first:
+            other = connect.connection(folder, windows=os.name == "nt", registry=first)
         check(other["connect"] == "needs-path" and "Another copy of Charter" in other["status_text"]
               and other_dir in other["launcher"]["note"],
               "another copy first on PATH: also not ready to connect, naming where it is")

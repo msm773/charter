@@ -104,7 +104,7 @@ You need the Charter folder and **Python 3.9 or later**.
    python3 charter.py add-to-path
    ```
 
-   On Windows, expect `Added to your user PATH:` (or `Already on your user PATH:`). On macOS/Linux, Charter prints a line to add to your shell profile; it does not edit the profile. Desktop-launched hosts may not inherit shell-profile PATH changes.
+   On Windows, expect `Added to your user PATH:` (or `Already on your user PATH:`). On macOS/Linux, Charter changes neither PATH nor any file: it prints an `export PATH=…` line and the file to add it to, `~/.bashrc` for bash or `~/.zshrc` for zsh (`~/.bash_profile` for bash on macOS). Add the line with a text editor. Agent hosts started from the desktop rather than a terminal may not read that file; on many Linux desktops they get PATH from `~/.profile`, which takes effect only after you log out and back in.
 
 4. **Restart and verify.** Reopen your terminal and any agent hosts (including VS Code, Claude Code, or Codex), then run from any folder:
 
@@ -114,6 +114,8 @@ You need the Charter folder and **Python 3.9 or later**.
 
    ✅ **Expected result (Windows):** `New programs run:` followed by your launcher path, such as `C:\Tools\Charter\charter.cmd`. If `nothing:` appears after `New programs run:`, see [Troubleshooting](#troubleshooting).
 
+   ✅ **Expected result (macOS/Linux):** `This shell runs:` followed by your launcher path, such as `/home/you/tools/charter/charter`. Otherwise, the output says what to do next, such as a `chmod +x` command if the launcher isn't executable.
+
 **Optional PDF import:** From the Charter folder on Windows, run:
 
 ```powershell
@@ -121,6 +123,16 @@ py -m pip install -r requirements.txt
 ```
 
 On macOS/Linux, use `python3 -m pip install -r requirements.txt`.
+
+Some Linux distributions install Python without pip (`No module named pip`), or refuse installs outside a virtual environment (`externally-managed-environment`, under PEP 668). Then, from the Charter folder, create a virtual environment outside it and start the console with that environment's Python whenever you want PDF import:
+
+```bash
+python3 -m venv ~/.venvs/charter
+~/.venvs/charter/bin/python -m pip install -r requirements.txt
+~/.venvs/charter/bin/python charter.py serve
+```
+
+On Debian and Ubuntu, `python3 -m venv` itself needs the `python3-venv` package. Installing it changes the system and needs administrator rights, for example `sudo apt install python3-venv`; other distributions package it differently.
 
 ### Create your first Agent Context
 
@@ -469,7 +481,8 @@ The comparison uses **read-only Git commands** limited to the Agent Context and 
 
 ### Troubleshooting
 
-- **`charter` not found:** Open a new terminal and restart your agent host after PATH changes. From the Charter folder, run `py charter.py add-to-path --check` on Windows. You can run local commands there without PATH as `py charter.py serve`, but hosts launching `charter` still need PATH configured.
+- **`charter` not found:** Open a new terminal and restart your agent host after PATH changes. From the Charter folder, run `py charter.py add-to-path --check` on Windows or `python3 charter.py add-to-path --check` on macOS/Linux. You can run local commands there without PATH as `py charter.py serve` or `python3 charter.py serve`, but hosts launching `charter` still need PATH configured.
+- **`Permission denied` running `charter` (macOS/Linux):** The launcher has lost its executable mode, for example after unpacking the release with a tool that drops file permissions. From the Charter folder, `python3 charter.py add-to-path --check` prints the `chmod +x` command that fixes it.
 - **Port 8765 occupied:** Run `charter serve --port 8766` and open `http://127.0.0.1:8766`.
 - **MCP refuses the context:** Run `charter check --context <folder>`. After intentional direct edits, review and use **Rebuild Agent Context…**. If an unexpected file or folder (such as `CLAUDE.md`, notes, or an empty subfolder under `authoritative/`) is inside the Agent Context, move it out; Charter won't move or delete it.
 - **Agent can't connect:** Run `charter mcp --context <folder> --check`. This diagnoses the folder and launcher, **not** the host configuration. Restart the host after PATH changes and start a new session after MCP configuration changes.
@@ -575,7 +588,7 @@ charter add-to-path [--check]
 - **`charter mcp`** — Runs the read-only stdio MCP server; `--check` provides diagnostics.
 - **`charter compare`** — Compares the Agent Context with its folder at a Git base you name and prepares advisory review material. Reads Git only; exits **0** when a comparison was made, **1** when it couldn't be made or the requested material couldn't be produced, **2** for an unusable command line.
 - **`charter propose`** — Submits one Agent Proposal as JSON on standard input.
-- **`charter add-to-path`** — On Windows, adds `charter` to your user PATH; `--check` reports what a new program would run. On macOS/Linux, prints a shell-profile `export` line instead of changing PATH; `--check` reports `This shell runs:` using the current shell's PATH.
+- **`charter add-to-path`** — On Windows, adds `charter` to your user PATH; `--check` reports what a new program would run. On macOS/Linux, changes nothing: it prints the `export` line to add and the shell startup file to add it to; `--check` reports `This shell runs:` using the current shell's PATH, and says what to do if that isn't this copy. On macOS/Linux, both exit **0** only when this shell already runs this copy as `charter`, and **1** otherwise.
 
 You can also run these commands **from the Charter folder without PATH** using `py charter.py …` on Windows or `python3 charter.py …` on macOS/Linux.
 

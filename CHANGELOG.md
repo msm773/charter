@@ -96,6 +96,15 @@ Git.
   environment or agent.
 - **`charter.cmd`** runs the first Python 3.9 or later it finds, `py -3` then
   `python`, proving each first, and says so when there is none, as `charter` does.
+- **`charter` and `charter.py`** are executable in Git as in the release, and
+  `charter` follows symlinks, so a link such as `~/.local/bin/charter` runs this
+  copy. On macOS and Linux, `charter add-to-path` changes nothing: it prints the
+  `export` line and the startup file for the user's shell (`~/.bashrc`,
+  `~/.zshrc`, or `~/.bash_profile` for bash on macOS), and on Linux points
+  desktop-started hosts to `~/.profile` and a new login. `--check` names a
+  launcher that is not executable, with the `chmod +x` that fixes it, and reads
+  PATH entries literally, as shells do. Both exit 0 only when the shell already
+  runs this copy as `charter`.
 - **`charter compare`:** an optional, read-only comparison against a Git
   revision the person names, limited to the Agent Context's folder, with
   advisory review material that names no commit or branch. It runs in the

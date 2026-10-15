@@ -22,6 +22,7 @@ Run: python -m tests.launchers
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -274,6 +275,145 @@ def case_found_through_path() -> None:
               "`charter check --context .` by name, exit 0 for a valid Agent Context")
 
 
+def case_launchers_are_executable() -> None:
+    print("\nthe launchers are executable, and run by name directly")
+    git = shutil.which("git")
+    if git and os.path.isdir(os.path.join(ROOT, ".git")):
+        listed = subprocess.run([git, "-C", ROOT, "ls-files", "-s", "--", "charter", "charter.py"],
+                                capture_output=True, text=True).stdout.split("\n")
+        modes = {line.split("\t")[-1]: line.split()[0] for line in listed if line.strip()}
+        check(modes == {"charter": "100755", "charter.py": "100755"},
+              f"Git records `charter` and `charter.py` as executable, 100755 (got {modes})")
+    else:
+        print("  (not a Git checkout: the release check covers the archived modes)")
+    if os.name == "nt":
+        print("  (on Windows, `charter.cmd` needs no executable mode)")
+        return
+    check(all(os.access(os.path.join(ROOT, n), os.X_OK) for n in ("charter", "charter.py")),
+          "`charter` and `charter.py` are executable here")
+    with tempfile.TemporaryDirectory(prefix="charter-launch-") as tmp:
+        good = valid_context(tmp)
+        env = dict(os.environ, PATH=ROOT + os.pathsep + os.environ.get("PATH", ""))
+        out = subprocess.run(["charter", "check", "--context", "."], cwd=good, stdin=subprocess.DEVNULL,
+                             capture_output=True, env=env, timeout=60)
+        check(out.returncode == 0 and b"Agents:        served" in out.stdout,
+              "with this folder on PATH, `charter` itself runs by name, with no shell named: exit 0")
+
+
+def case_symlinked_launcher() -> None:
+    print("\n`charter` reached through a symlink, such as ~/.local/bin/charter")
+    if os.name == "nt":
+        print("  skip: Windows")
+        return
+    from app import on_path
+    with tempfile.TemporaryDirectory(prefix="charter-launch-") as tmp:
+        good = valid_context(tmp)
+        absolute = os.path.join(tmp, "local bin")
+        chained = os.path.join(tmp, "a b", "bin")
+        middle = os.path.join(tmp, "c d")
+        for d in (absolute, chained, middle):
+            os.makedirs(d)
+        os.symlink(os.path.join(ROOT, "charter"), os.path.join(absolute, "charter"))
+        os.symlink(os.path.join(ROOT, "charter"), os.path.join(middle, "link"))
+        os.symlink(os.path.join("..", "..", "c d", "link"), os.path.join(chained, "charter"))
+        for label, folder in (("an absolute symlink", absolute), ("a chain with a relative link", chained)):
+            env = dict(os.environ, PATH=folder + os.pathsep + os.environ.get("PATH", ""))
+            out = subprocess.run(["charter", "check", "--context", "."], cwd=good,
+                                 stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=60)
+            check(out.returncode == 0 and b"Agents:        served" in out.stdout,
+                  f"{label}, in a folder whose name has a space: charter.py is found, exit 0")
+            out = subprocess.run(["charter", "add-to-path", "--check"], cwd=tmp, stdin=subprocess.DEVNULL,
+                                 capture_output=True, env=env, timeout=60)
+            check(out.returncode == 0 and b"a link to this copy" in out.stdout,
+                  "and `add-to-path --check` counts it as this copy, exit 0")
+        stray = os.path.join(absolute, "elsewhere")
+        open(stray, "w").close()
+        check(not on_path.is_launcher(stray, ROOT),
+              "a file beside the link that is not a link to this copy is not this copy")
+
+
+def case_posix_path_guidance() -> None:
+    print("\nmacOS and Linux: `add-to-path` and `--check` say what to do, and change nothing")
+    if os.name == "nt":
+        print("  skip: Windows")
+        return
+    import contextlib
+    import io
+    from app import on_path
+    check(on_path.startup_file("/bin/bash", "linux") == "~/.bashrc"
+          and on_path.startup_file("/usr/bin/zsh", "linux") == "~/.zshrc"
+          and on_path.startup_file("/bin/zsh", "darwin") == "~/.zshrc"
+          and on_path.startup_file("/bin/bash", "darwin") == "~/.bash_profile"
+          and on_path.startup_file("/usr/bin/fish", "linux") == "",
+          "the startup file a new terminal reads: ~/.bashrc, ~/.zshrc, or ~/.bash_profile for "
+          "bash on macOS; none named for another shell")
+    check("~/.profile" in on_path.desktop_note("~/.bashrc", "linux")
+          and "log out and back in" in on_path.desktop_note("~/.bashrc", "linux")
+          and "~/.profile" not in on_path.desktop_note("~/.zshrc", "darwin"),
+          "on Linux, desktop-started hosts are pointed to ~/.profile and a new login session")
+
+    def run(folder: str, path: str, check_only: bool, shell: str = "/bin/bash") -> tuple:
+        saved = {k: os.environ.get(k) for k in ("PATH", "SHELL")}
+        os.environ.update(PATH=path, SHELL=shell)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as said:
+                code = on_path.main(check_only, folder=folder)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        return code, said.getvalue()
+
+    with tempfile.TemporaryDirectory(prefix="charter-path-") as tmp:
+        odd = os.path.join(tmp, 'Tools $HOME "q" `x` \\ é')
+        os.makedirs(odd)
+        launcher = os.path.join(odd, "charter")
+        shutil.copyfile(os.path.join(ROOT, "charter"), launcher)
+        os.chmod(launcher, 0o644)
+        before = sorted(os.listdir(odd)), os.environ.get("PATH")
+
+        code, said = run(odd, "/usr/bin:/bin", False)
+        line = on_path.export_line(odd)
+        check(code == 1 and "does not change PATH or edit shell startup files" in said
+              and "add this line to ~/.bashrc" in said and line in said and "~/.profile" in said
+              and "chmod +x " + shlex.quote(launcher) in said,
+              "`add-to-path`, off PATH: exit 1, the export line for ~/.bashrc, the ~/.profile note, "
+              "and the chmod its non-executable launcher needs")
+        code, said = run(odd, "/usr/bin:/bin", False, shell="/usr/bin/zsh")
+        check("add this line to ~/.zshrc" in said and "~/.bashrc" not in said,
+              "for zsh, the line goes in ~/.zshrc")
+        code, said = run(odd, odd + ":/usr/bin:/bin", True)
+        check(code == 1 and "This shell's PATH:    includes it" in said
+              and f"nothing: {launcher} is not executable" in said and "chmod +x" in said
+              and "is not found" not in said,
+              "`--check`, on PATH but not executable: exit 1, naming the file and the chmod, "
+              "not `not found`")
+        os.chmod(launcher, 0o755)
+        code, said = run(odd, "/usr/bin:/bin", True)
+        check(code == 1 and "does not include it" in said and "python3 charter.py add-to-path" in said,
+              "`--check`, off PATH: exit 1, and how to get the line to add")
+        code, said = run(odd, odd + ":/usr/bin:/bin", True)
+        check(code == 0 and f"This shell runs:      {launcher}" in said,
+              "`--check`, on PATH and executable: exit 0")
+        code, said = run(odd, odd + ":/usr/bin:/bin", False)
+        check(code == 0 and "already runs this copy" in said,
+              "`add-to-path` when this shell already runs it: exit 0, nothing to add")
+        check((sorted(os.listdir(odd)), os.environ.get("PATH")) == before,
+              "nothing was written, and this process's PATH is as it was")
+
+        shells = [s for s in ("bash", "zsh", "sh") if shutil.which(s)]
+        for name in shells:
+            out = subprocess.run([shutil.which(name) or name, "-c", line + '; printf %s "${PATH%%:*}"'],
+                                 env=dict(os.environ, PATH="/usr/bin:/bin"), capture_output=True)
+            check(out.returncode == 0 and out.stdout.decode("utf-8") == odd,
+                  f"{name}: the export line puts the folder first on PATH exactly, "
+                  "with its space, $, quotes, backquote and backslash")
+        if "zsh" not in shells:
+            print("  (zsh is not installed here: the line uses only syntax bash, zsh and sh share)")
+
+
 def case_check_is_read_only() -> None:
     print("\n`charter check` changes nothing")
     sys.path.insert(0, ROOT)
@@ -432,6 +572,9 @@ def run() -> None:
     case_cmd_launcher()
     case_no_earlier_launcher()
     case_found_through_path()
+    case_launchers_are_executable()
+    case_symlinked_launcher()
+    case_posix_path_guidance()
     case_check_is_read_only()
     case_add_to_path_edits_the_user_path()
     case_fresh_discovery_of_the_release()

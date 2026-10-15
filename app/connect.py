@@ -121,16 +121,18 @@ def _launcher(windows: bool, registry: Any = None) -> Dict[str, Any]:
     except OSError:
         found = None
     ok = on_path.is_launcher(found, on_path.LAUNCHERS)
+    # macOS and many Linux systems have no `python` command, only `python3`.
+    python = "python" if windows else "python3"
     if ok:
         note = "New programs run this copy of Charter as `charter`."
     elif found:
         note = (f"A newly started program runs another copy of Charter as `charter`, from "
-                f"{os.path.dirname(found)}. Remove that folder from PATH, or run `python charter.py "
+                f"{os.path.dirname(found)}. Remove that folder from PATH, or run `{python} charter.py "
                 f"add-to-path` in {on_path.LAUNCHERS}.")
     else:
         note = ("A newly started program cannot run `charter` yet, and an agent host starts the MCP "
                 "server by that name. Run `charter add-to-path` in a terminal. If the terminal does not "
-                f"find `charter` either, run `python charter.py add-to-path` in {on_path.LAUNCHERS}.")
+                f"find `charter` either, run `{python} charter.py add-to-path` in {on_path.LAUNCHERS}.")
     return {"on_path": ok, "found": found or "", "note": note, "fix": "charter add-to-path",
             "restart": RESTART_NOTE}
 

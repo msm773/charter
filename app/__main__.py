@@ -111,8 +111,10 @@ def parser() -> argparse.ArgumentParser:
                    help="submit an Agent Proposal for a person's review: `charter propose --context .`"
                         " with one JSON object on stdin")
 
-    a = sub.add_parser("add-to-path", help="put this copy's launchers on your user PATH, so new "
-                                           "terminals and agent sessions can run `charter`")
+    a = sub.add_parser("add-to-path", help="let new terminals and agent sessions run `charter`: on "
+                                           "Windows, put this copy's launchers on your user PATH; on "
+                                           "macOS and Linux, print the line to add to your shell "
+                                           "startup file, changing nothing")
     a.add_argument("--check", action="store_true",
                    help="change nothing: say what a newly started program runs as `charter`")
     a.set_defaults(func=cmd_add_to_path)

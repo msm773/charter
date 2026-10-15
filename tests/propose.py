@@ -431,12 +431,27 @@ def case_retryable() -> None:
     from app import host_state as hs
     good = {"agent": "a", "operation": "create", "target_path": "authority-candidates/r.md",
             "reason": "r", "proposed_body": "x\n"}
+
+    def windows_error(code: int, message: str, winerror: int) -> OSError:
+        """The error Windows raises, with its `winerror`. Only Windows' OSError takes
+        one as an argument; elsewhere it is set, so every platform checks the
+        Windows classification."""
+        if os.name == "nt":
+            return OSError(code, message, None, winerror)
+        error = OSError(code, message)
+        error.winerror = winerror  # type: ignore[attr-defined]
+        return error
+
     failures = (
-        ("a path too long for this computer", OSError(errno.ENOENT, "path", None, 206), False),
+        ("a path too long for this computer", windows_error(errno.ENOENT, "path", 206), False),
         ("a name too long", OSError(errno.ENAMETOOLONG, "name too long"), False),
         ("a permission denied", PermissionError(errno.EACCES, "denied"), False),
+        ("an EACCES with no Windows error code, as macOS and Linux raise it",
+         OSError(errno.EACCES, "denied"), False),
         ("a missing folder", FileNotFoundError(errno.ENOENT, "missing"), False),
-        ("another program holding the file", OSError(errno.EACCES, "in use", None, 32), True),
+        ("another program holding the file (Windows sharing violation, 32)",
+         windows_error(errno.EACCES, "in use", 32), True),
+        ("a lock violation (Windows, 33)", windows_error(errno.EACCES, "locked", 33), True),
         ("a busy file", OSError(errno.EBUSY, "busy"), True),
     )
     with isolated_private_state():
