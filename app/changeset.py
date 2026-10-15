@@ -100,9 +100,11 @@ class Ctx:
         self.folder = self.cs.folder
 
     def secrets(self) -> List[str]:
-        """What review material must never hold: local locations."""
+        """What review material must never hold: local locations, in every
+        spelling of each (`hs.spellings`), since the folder kept here is canonical."""
         root = os.path.dirname(os.path.dirname(self.cs.base))
-        return [self.folder, os.path.realpath(self.folder), self.cs.base, root]
+        return list(dict.fromkeys(s for loc in (self.folder, self.cs.base, root)
+                                  for s in hs.spellings(loc)))
 
 
 # --- the private store ----------------------------------------------------------------

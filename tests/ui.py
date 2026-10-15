@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import agent_context as ac  # noqa: E402
 from app import console  # noqa: E402
+from app import host_state as hs  # noqa: E402
 from tests.agent_context import context, doc_text, generate, write  # noqa: E402
 from tests.harness import isolated_private_state  # noqa: E402
 
@@ -74,7 +75,9 @@ def build_fixture() -> dict:
     write(folder, "authoritative/suppliers.md",
           doc_text("suppliers", "Suppliers", scope="Supplier choice.", body=RICH_BODY))
     generate(folder)
-    out["folder"] = folder
+    # As private state records it, so as the recent list shows it: canonical,
+    # which on macOS is /private/var/… for a temporary folder made as /var/….
+    out["folder"] = hs.canonical(folder)
     session = console.Session()
     # Whether this computer has a folder dialog is the page's input, not the
     # test machine's: the start screen is captured without one, and with one.

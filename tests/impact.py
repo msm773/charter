@@ -16,6 +16,7 @@ Coordinated Context Changes and Advisory Review:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -46,6 +47,17 @@ def check(condition: bool, label: str) -> None:
         print(f"  FAILED: {label}")
         raise SystemExit(1)
     print(f"  {OK} {label}")
+
+
+@contextlib.contextmanager
+def patched_root_links(pairs):
+    """`hs.spellings` sees exactly these top-level links, not this computer's."""
+    saved = hs._root_links
+    hs._root_links = lambda: list(pairs)
+    try:
+        yield
+    finally:
+        hs._root_links = saved
 
 
 def raises(exc, fn, *args, **kwargs) -> bool:
@@ -111,6 +123,19 @@ def case_material() -> None:
             check(secret not in text, f"it holds no {secret if len(secret) < 12 else 'local path'!r}")
         check(impact.private_leaks("see " + folder + "/x", ctx.secrets()),
               "a local path quoted in the material would be caught")
+        canon = hs.canonical(folder)
+        check(impact.private_leaks("see " + canon + "/x", ctx.secrets()),
+              "and in its canonical spelling")
+        # A root link, as macOS's /var is for /private/var: made up, so every
+        # platform checks that the folder kept canonical is refused as linked.
+        fake = os.path.join(os.path.dirname(os.path.dirname(canon)), "charter-alias-root")
+        with patched_root_links([(fake, os.path.dirname(canon))]):
+            spelled = os.path.join(fake, os.path.basename(canon))
+            check(impact.private_leaks(f"see {spelled}/x", ctx.secrets()),
+                  "and through a root link to it")
+        if sys.platform == "darwin" and canon.startswith("/private/var/"):
+            check(impact.private_leaks("see " + canon[len("/private"):] + "/x", ctx.secrets()),
+                  "macOS: and as /var/…, though it is kept as /private/var/…")
 
         big = "Long line of governing text. " * 2500
         write(folder, "authoritative/c.md", read(folder, "authoritative/c.md").decode() + big)

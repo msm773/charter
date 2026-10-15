@@ -185,16 +185,26 @@ def add(folder: str = LAUNCHERS, registry: Any = None) -> Tuple[bool, str]:
 
 # --- macOS and Linux: what to add, and where -------------------------------------
 
-def startup_file(shell: str = "", platform: str = "") -> str:
+def startup_file(shell: str = "", platform: str = "", home: Optional[str] = None) -> str:
     """The file a new terminal of this user's shell reads: `~/.zshrc` for zsh;
-    for bash `~/.bashrc`, or `~/.bash_profile` on macOS, whose terminals start
-    login shells that do not read `~/.bashrc`. "" for any other shell."""
+    for bash `~/.bashrc`, or on macOS, whose terminals start login shells that
+    do not read `~/.bashrc`, the login file bash reads: the first of
+    `~/.bash_profile`, `~/.bash_login` and `~/.profile` that exists, since it
+    reads no other, or `~/.bash_profile` when there is none. Naming
+    `~/.bash_profile` to someone who has only `~/.profile` would have them
+    create a file that stops bash reading theirs. "" for any other shell."""
     name = os.path.basename(shell or os.environ.get("SHELL", ""))
     if name == "zsh":
         return "~/.zshrc"
-    if name == "bash":
-        return "~/.bash_profile" if (platform or sys.platform) == "darwin" else "~/.bashrc"
-    return ""
+    if name != "bash":
+        return ""
+    if (platform or sys.platform) != "darwin":
+        return "~/.bashrc"
+    home = os.path.expanduser("~") if home is None else home
+    for rc in (".bash_profile", ".bash_login", ".profile"):
+        if home and os.path.isfile(os.path.join(home, rc)):
+            return "~/" + rc
+    return "~/.bash_profile"
 
 
 def export_line(folder: str) -> str:

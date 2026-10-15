@@ -104,7 +104,7 @@ You need the Charter folder and **Python 3.9 or later**.
    python3 charter.py add-to-path
    ```
 
-   On Windows, expect `Added to your user PATH:` (or `Already on your user PATH:`). On macOS/Linux, Charter changes neither PATH nor any file: it prints an `export PATH=…` line and the file to add it to, `~/.bashrc` for bash or `~/.zshrc` for zsh (`~/.bash_profile` for bash on macOS). Add the line with a text editor. Agent hosts started from the desktop rather than a terminal may not read that file; on many Linux desktops they get PATH from `~/.profile`, which takes effect only after you log out and back in.
+   On Windows, expect `Added to your user PATH:` (or `Already on your user PATH:`). On macOS/Linux, Charter changes neither PATH nor any file: it prints an `export PATH=…` line and the file to add it to, `~/.bashrc` for bash or `~/.zshrc` for zsh. For bash on macOS, it names the login file bash reads: `~/.bash_profile`, or your existing `~/.bash_login` or `~/.profile` if you have one and no `~/.bash_profile`. Add the line with a text editor. Agent hosts started from the desktop rather than a terminal may not read that file; on many Linux desktops they get PATH from `~/.profile`, which takes effect only after you log out and back in.
 
 4. **Restart and verify.** Reopen your terminal and any agent hosts (including VS Code, Claude Code, or Codex), then run from any folder:
 

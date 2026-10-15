@@ -184,8 +184,52 @@ def case_json() -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
+def case_spellings() -> None:
+    print("\none location, every spelling: root links both ways, and the letter case stored")
+    base = tempfile.mkdtemp(prefix="charter-spell-")
+    real = os.path.join(base, "real data")
+    os.mkdir(real)
+    ctx = os.path.join(real, "My Ctx")
+    os.mkdir(ctx)
+    alias = os.path.join(base, "alias")
+    resolved = os.path.realpath(ctx)
+    try:
+        # A made-up root link, `alias` for `real data`, as macOS's /var is for
+        # /private/var: the same on every platform, whatever its own root holds.
+        saved = host_state._root_links
+        host_state._root_links = lambda: [(alias, os.path.realpath(real))]
+        try:
+            forms = host_state.spellings(ctx)
+            back = host_state.spellings(os.path.join(alias, "My Ctx"))
+        finally:
+            host_state._root_links = saved
+        check(ctx in forms and resolved in forms and os.path.join(alias, "My Ctx") in forms,
+              "the folder as given, as resolved, and through the link to it")
+        check(resolved in back, "and given through the link, its target spelling too")
+        check(host_state.spellings("") == [], "nothing for no location")
+        if sys.platform == "darwin" and os.path.islink("/var"):
+            tmp = os.path.realpath(tempfile.gettempdir())
+            if tmp.startswith("/private/var/"):
+                check(tmp[len("/private"):] in host_state.spellings(tmp),
+                      "macOS: /private/var/… is also spelled /var/…")
+                check(tmp in host_state.spellings(tmp[len("/private"):]),
+                      "and /var/… is also spelled /private/var/…")
+        if os.path.isdir(ctx.swapcase()):
+            # A case-insensitive volume, as macOS's is by default.
+            check(host_state.canonical(ctx.swapcase()) == host_state.canonical(ctx) == resolved,
+                  "a case-insensitive volume: any letter case is the stored one")
+            check(host_state.location_key(ctx.swapcase()) == host_state.location_key(ctx),
+                  "so one folder has one key, however its case is typed")
+            check(host_state.canonical(os.path.join(ctx.upper(), "not yet"))
+                  == os.path.join(resolved, "not yet"),
+                  "and a missing part below it is kept as given")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def run() -> None:
     case_paths()
+    case_spellings()
     case_escapes_relative()
     case_extended_prefix()
     case_private_folders()

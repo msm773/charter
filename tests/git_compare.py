@@ -726,6 +726,49 @@ def case_disclosure() -> None:
             shutil.rmtree(repo, ignore_errors=True)
 
 
+def case_location_aliases() -> None:
+    print("\na location is refused in the spelling the person used, not only the resolved one")
+    from app import compare as cmp
+    from app import host_state as hs
+    with isolated_private_state():
+        repo, folder, _fp = repository()
+        original = open(os.path.join(folder, "authoritative", "a.md"), encoding="utf-8").read()
+        before_repo = repo_snapshot(repo)
+        link = repo + "-link"
+
+        def refused(text: str, label: str, through: str = folder) -> None:
+            write(folder, "authoritative/a.md", doc_text("a", "Alpha", body=f"Alpha rules. {text}\n"))
+            generate(folder, "Demo project")
+            r = gc.compare(through, "base", cmp.secrets(through))
+            material = r.get("review_prompt") or {}
+            code, out, err = cli("--context", through, "--base", "base", "--prompt")
+            check(r["available"] and not material.get("ready") and gc.LOCATION in material.get("reason", "")
+                  and text not in material.get("reason", "") and code == 1
+                  and "UNTRUSTED DATA" not in out + err,
+                  f"{label}: refused, naming the kind, never the value")
+
+        try:
+            # A root link, as macOS's /var is for /private/var: made up here, so
+            # every platform checks it, the checkout found resolved.
+            fake = os.path.join(os.path.dirname(os.path.realpath(repo)), "charter-alias-root")
+            with patched(hs, "_root_links", lambda: [(fake, os.path.dirname(os.path.realpath(repo)))]):
+                refused(f"Stored at {fake}/{os.path.basename(repo)}/notes today.",
+                        "the checkout through a root link to where it resolves")
+            if sys.platform == "darwin" and os.path.realpath(repo).startswith("/private/var/"):
+                refused(f"Stored at {os.path.realpath(repo)[len('/private'):]} today.",
+                        "macOS: the checkout as /var/…, though it resolves to /private/var/…")
+            if _link_folder(link, repo):
+                through = os.path.join(link, "context")
+                refused(f"Stored at {link} today.", "the checkout as reached through a link", through)
+                refused(f"Stored at {os.path.realpath(repo)} today.", "and as that link resolves", through)
+            write(folder, "authoritative/a.md", original)
+            generate(folder, "Demo project")
+            check(repo_snapshot(repo) == before_repo, "and the repository, Git included, is as it was")
+        finally:
+            if os.path.lexists(link):
+                os.rmdir(link) if os.name == "nt" else os.remove(link)
+
+
 def case_current_problems() -> None:
     print("\na current context that is not valid and clean: its problems, listed")
     with isolated_private_state():
@@ -1003,6 +1046,7 @@ def run() -> int:
     case_command()
     case_packet_naming()
     case_disclosure()
+    case_location_aliases()
     case_current_problems()
     case_json_failures()
     case_destination_revalidated()

@@ -425,6 +425,39 @@ def case_busy_port() -> None:
         shutil.rmtree(folder)
 
 
+def case_banner_piped() -> None:
+    print("\nthe console's address is written at once, also when its output is not a terminal")
+    import subprocess
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="charter-banner-")
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    launch = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_launch.py")
+    proc = subprocess.Popen([sys.executable, launch, tmp, "serve", "--port", str(port)],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    seen = []
+
+    def read() -> None:
+        for line in proc.stdout:  # type: ignore[union-attr]
+            seen.append(line.decode("utf-8", "replace"))
+            if "open:" in seen[-1]:
+                return
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    try:
+        reader.join(30)
+        running = proc.poll() is None
+        check(running and any(f"open:          http://127.0.0.1:{port}" in s for s in seen),
+              "piped, as by an agent host or `> log`: the address arrives while the console runs")
+    finally:
+        proc.kill()
+        proc.wait(30)
+        proc.stdout.close()  # type: ignore[union-attr]
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def case_candidate_lineage() -> None:
     print("\ncandidate lineage, source, competing revisions, and comparison (console-only)")
     from app import agent_context as ac
@@ -764,6 +797,7 @@ def run() -> int:
     case_server()
     case_request_boundary()
     case_busy_port()
+    case_banner_piped()
     print(f"\n{OK} All console API and server checks passed.")
     return 0
 

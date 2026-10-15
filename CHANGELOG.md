@@ -100,11 +100,24 @@ Git.
   `charter` follows symlinks, so a link such as `~/.local/bin/charter` runs this
   copy. On macOS and Linux, `charter add-to-path` changes nothing: it prints the
   `export` line and the startup file for the user's shell (`~/.bashrc`,
-  `~/.zshrc`, or `~/.bash_profile` for bash on macOS), and on Linux points
-  desktop-started hosts to `~/.profile` and a new login. `--check` names a
-  launcher that is not executable, with the `chmod +x` that fixes it, and reads
-  PATH entries literally, as shells do. Both exit 0 only when the shell already
-  runs this copy as `charter`.
+  `~/.zshrc`, or for bash on macOS the login file bash reads: `~/.bash_profile`,
+  else an existing `~/.bash_login` or `~/.profile`, so a new file never stops
+  bash reading one), and on Linux points desktop-started hosts to `~/.profile`
+  and a new login. `--check` names a launcher that is not executable, with the
+  `chmod +x` that fixes it, and reads PATH entries literally, as shells do. Both
+  exit 0 only when the shell already runs this copy as `charter`. `charter`
+  finds its folder with bash alone, so it needs no `dirname`, which macOS keeps
+  only in `/usr/bin`.
+- **macOS paths:** one folder is one location however it is spelled. Canonical
+  paths take the letter case a case-insensitive volume stores, so `/users/me/x`
+  and `/Users/me/x` share private state and containment checks, and a review
+  packet cannot be saved into an Agent Context or private state by typing it in
+  other letter case. Review material is refused when it quotes the Agent
+  Context, its Git checkout, private state or home in any spelling of the same
+  place: as given, as resolved, through a link to it, or through a top-level
+  link such as macOS's `/var` for `/private/var`.
+- **`charter serve`** writes its address at once, also when its output is piped
+  or redirected.
 - **`charter compare`:** an optional, read-only comparison against a Git
   revision the person names, limited to the Agent Context's folder, with
   advisory review material that names no commit or branch. It runs in the

@@ -251,7 +251,9 @@ def serve(folder: str = "", host: str = "127.0.0.1", port: int = 8765) -> int:
     print("Charter")
     print(f"  Agent Context: {session.folder or '(none open)'}")
     print(f"  open:          http://{host}:{httpd.server_address[1]}")
-    print("  stop:          Ctrl-C")
+    # Flushed: piped or redirected, output is held back until it fills, and
+    # the address must arrive while the console runs.
+    print("  stop:          Ctrl-C", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

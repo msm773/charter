@@ -340,21 +340,33 @@ def case_posix_path_guidance() -> None:
     import contextlib
     import io
     from app import on_path
-    check(on_path.startup_file("/bin/bash", "linux") == "~/.bashrc"
-          and on_path.startup_file("/usr/bin/zsh", "linux") == "~/.zshrc"
-          and on_path.startup_file("/bin/zsh", "darwin") == "~/.zshrc"
-          and on_path.startup_file("/bin/bash", "darwin") == "~/.bash_profile"
-          and on_path.startup_file("/usr/bin/fish", "linux") == "",
-          "the startup file a new terminal reads: ~/.bashrc, ~/.zshrc, or ~/.bash_profile for "
-          "bash on macOS; none named for another shell")
+    with tempfile.TemporaryDirectory(prefix="charter-home-") as home:
+        check(on_path.startup_file("/bin/bash", "linux", home) == "~/.bashrc"
+              and on_path.startup_file("/usr/bin/zsh", "linux", home) == "~/.zshrc"
+              and on_path.startup_file("/bin/zsh", "darwin", home) == "~/.zshrc"
+              and on_path.startup_file("/bin/bash", "darwin", home) == "~/.bash_profile"
+              and on_path.startup_file("/usr/bin/fish", "linux", home) == "",
+              "the startup file a new terminal reads: ~/.bashrc, ~/.zshrc, or ~/.bash_profile for "
+              "bash on macOS; none named for another shell")
+        # macOS bash login shells read only the first of these that exists.
+        said = []
+        for rc in (".profile", ".bash_login", ".bash_profile"):
+            open(os.path.join(home, rc), "w").close()
+            said.append(on_path.startup_file("/bin/bash", "darwin", home))
+        check(said == ["~/.profile", "~/.bash_login", "~/.bash_profile"]
+              and on_path.startup_file("/bin/bash", "linux", home) == "~/.bashrc",
+              "bash on macOS: the login file it reads, so an existing ~/.profile is never shadowed "
+              "by a new ~/.bash_profile")
     check("~/.profile" in on_path.desktop_note("~/.bashrc", "linux")
           and "log out and back in" in on_path.desktop_note("~/.bashrc", "linux")
           and "~/.profile" not in on_path.desktop_note("~/.zshrc", "darwin"),
           "on Linux, desktop-started hosts are pointed to ~/.profile and a new login session")
 
+    home = tempfile.mkdtemp(prefix="charter-home-")  # no startup files: each shell's default
+
     def run(folder: str, path: str, check_only: bool, shell: str = "/bin/bash") -> tuple:
-        saved = {k: os.environ.get(k) for k in ("PATH", "SHELL")}
-        os.environ.update(PATH=path, SHELL=shell)
+        saved = {k: os.environ.get(k) for k in ("PATH", "SHELL", "HOME")}
+        os.environ.update(PATH=path, SHELL=shell, HOME=home)
         try:
             with contextlib.redirect_stdout(io.StringIO()) as said:
                 code = on_path.main(check_only, folder=folder)
@@ -376,11 +388,14 @@ def case_posix_path_guidance() -> None:
 
         code, said = run(odd, "/usr/bin:/bin", False)
         line = on_path.export_line(odd)
+        macos = sys.platform == "darwin"
+        rc = "~/.bash_profile" if macos else "~/.bashrc"
+        note = "Dock or Finder" if macos else "~/.profile"
         check(code == 1 and "does not change PATH or edit shell startup files" in said
-              and "add this line to ~/.bashrc" in said and line in said and "~/.profile" in said
+              and f"add this line to {rc}" in said and line in said and note in said
               and "chmod +x " + shlex.quote(launcher) in said,
-              "`add-to-path`, off PATH: exit 1, the export line for ~/.bashrc, the ~/.profile note, "
-              "and the chmod its non-executable launcher needs")
+              f"`add-to-path`, off PATH: exit 1, the export line for {rc}, the desktop note naming "
+              f"{note}, and the chmod its non-executable launcher needs")
         code, said = run(odd, "/usr/bin:/bin", False, shell="/usr/bin/zsh")
         check("add this line to ~/.zshrc" in said and "~/.bashrc" not in said,
               "for zsh, the line goes in ~/.zshrc")
@@ -412,6 +427,7 @@ def case_posix_path_guidance() -> None:
                   "with its space, $, quotes, backquote and backslash")
         if "zsh" not in shells:
             print("  (zsh is not installed here: the line uses only syntax bash, zsh and sh share)")
+    shutil.rmtree(home, ignore_errors=True)
 
 
 def case_check_is_read_only() -> None:

@@ -22,6 +22,7 @@ import random
 import re
 import stat
 import subprocess
+import sys
 import time
 import uuid
 from typing import Any, Iterator, List, Optional
@@ -105,7 +106,84 @@ def canonical(path: str) -> str:
     Missing trailing parts are kept as given below the deepest existing
     ancestor."""
     resolved = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+    if sys.platform == "darwin":
+        resolved = _darwin_case(resolved)
     return _strip_extended_prefix(resolved)
+
+
+def _darwin_case(resolved: str) -> str:
+    """`resolved` in the letter case macOS stores, as far as it exists. A
+    case-insensitive volume, macOS's default, opens `/users/me/ctx` as
+    `/Users/me/ctx`, and `realpath` keeps the case it was given, so one folder
+    would otherwise have several canonical spellings, keys and containments.
+    The deepest existing folder is asked for its own path (`F_GETPATH`), and an
+    existing file below it is matched by name; anything missing stays as given.
+    Any failure leaves `resolved` as it was."""
+    head, rest = resolved, []
+    while not os.path.isdir(head):
+        parent, name = os.path.split(head)
+        if parent == head:
+            return resolved
+        rest.insert(0, name)
+        head = parent
+    try:
+        import fcntl
+        fd = os.open(head, os.O_RDONLY)
+        try:
+            raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+        finally:
+            os.close(fd)
+        stored = os.fsdecode(raw.split(b"\0", 1)[0])
+        if not stored or stored.casefold() != head.casefold():
+            return resolved
+        if rest and os.path.lexists(os.path.join(stored, rest[0])):
+            names = [n for n in os.listdir(stored) if n.casefold() == rest[0].casefold()]
+            if rest[0] not in names and len(names) == 1:
+                rest[0] = names[0]
+    except (ImportError, AttributeError, OSError, ValueError):
+        return resolved
+    return os.path.join(stored, *rest) if rest else stored
+
+
+def _root_links() -> List[tuple]:
+    """This computer's top-level links to folders, as (link, target) pairs:
+    on macOS `/var`, `/tmp` and `/etc` name `/private/var`, `/private/tmp` and
+    `/private/etc`. Read from the filesystem, never assumed; none on Windows."""
+    if os.name == "nt":
+        return []
+    pairs = []
+    try:
+        names = sorted(os.listdir("/"))
+    except OSError:
+        return []
+    for name in names:
+        link = "/" + name
+        try:
+            if os.path.islink(link):
+                target = os.path.realpath(link)
+                if target != link and os.path.isdir(target):
+                    pairs.append((link, target))
+        except OSError:
+            continue
+    return pairs
+
+
+def spellings(path: str) -> List[str]:
+    """Every spelling of `path` that names the same location: as given,
+    absolute, resolved and canonical, and each with a top-level link swapped
+    for its target or back, so `/var/x` and `/private/var/x` on macOS are one
+    location whichever was given. What must not be disclosed is checked for
+    all of them; a canonical path alone misses the spelling a person typed."""
+    if not path:
+        return []
+    absolute = os.path.abspath(os.path.expanduser(path))
+    found = [path, absolute, os.path.realpath(absolute), canonical(path)]
+    for form in list(found):
+        for link, target in _root_links():
+            for old, new in ((target, link), (link, target)):
+                if form == old or form.startswith(old + os.sep):
+                    found.append(new + form[len(old):])
+    return list(dict.fromkeys(found))
 
 
 def location_key(path: str) -> str:

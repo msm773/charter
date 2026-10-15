@@ -343,17 +343,21 @@ def location_forms(path: str, home: str = "") -> Set[str]:
     return {f for f in forms if specific(f)}
 
 
-def _repository_root(folder: str) -> str:
+def _repository_roots(folder: str) -> List[str]:
     """The Git checkout's top folder, found by looking for `.git` above the
-    Agent Context, so Git is never asked for a location."""
-    probe = os.path.realpath(folder)
-    while True:
-        if os.path.lexists(os.path.join(probe, ".git")):
-            return probe
-        parent = os.path.dirname(probe)
-        if parent == probe:
-            return ""
-        probe = parent
+    Agent Context, so Git is never asked for a location: as reached through
+    the folder given, and as resolved, which differ when a link leads there."""
+    roots = []
+    for probe in (os.path.abspath(folder), os.path.realpath(folder)):
+        while True:
+            if os.path.lexists(os.path.join(probe, ".git")):
+                roots.append(probe)
+                break
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+    return list(dict.fromkeys(roots))
 
 
 def _ref_names(listing: Optional[bytes], into: "Undisclosed") -> None:
@@ -395,9 +399,12 @@ def undisclosed(folder: str, rev: str, commit: str, secrets: Sequence[str] = ())
     _ref_names(_git(folder, ["symbolic-ref", "--quiet", "HEAD"]), out)
     home = os.path.expanduser("~")
     for loc in (*secrets, folder, os.path.realpath(folder), hs.canonical(folder),
-                _repository_root(folder), home):
+                *_repository_roots(folder), home):
         if isinstance(loc, str) and loc:
-            out.paths |= location_forms(loc, home)
+            # A secret may be canonical: each spelling of the same place, such
+            # as macOS's /var for /private/var, is refused too.
+            for spelling in hs.spellings(loc):
+                out.paths |= location_forms(spelling, home)
     return out
 
 
