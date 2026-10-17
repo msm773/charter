@@ -98,9 +98,9 @@ def case_api() -> None:
               and candidate["path"] in [d["path"] for d in console.state(session)["documents"]],
               "and nothing was written")
 
-        made = api.create(session, {"start": {"alongside": candidate["path"]}})
+        made = api.create(session, {"start": {"candidate": candidate["path"]}})
         draft = api.update(session, {"id": made["draft"]["id"], "revision": made["draft"]["revision"],
-                                     "retain_others": True})["draft"]
+                                     "decisions": {candidate["path"]: {"decision": "govern-alongside"}}})["draft"]
         request = {"draft_id": draft["id"], "draft_revision": draft["revision"]}
         plan = console.plan(session, {"kind": "changeset", "request": request})
         check(plan["confirm_phrase"] == PHRASE and plan["governing_change"]
@@ -232,6 +232,49 @@ def case_stage_front_matter() -> None:
         shutil.rmtree(folder)
 
 
+def case_recent_while_open() -> None:
+    print("\nRecent: the console's state offers Agent Contexts opened here, whether or not one is open")
+    with isolated_private_state():
+        folder = context()
+        session = console.Session()
+        console.open_context(session, {"path": folder})
+        opened = console.state(session)
+        check(opened["open"] and folder in opened.get("recent", []),
+              "with an Agent Context open, its state still lists Recent, so Open Agent Context… shows it")
+        closed = console.state(console.Session())
+        check(not closed["open"] and folder in closed.get("recent", []),
+              "with none open, Recent lists the same Agent Contexts")
+        shutil.rmtree(folder)
+
+
+def case_stage_leaves_nothing() -> None:
+    print("\nconverting an upload keeps nothing on this computer, so abandoning it leaves nothing to clean up")
+
+    def tree(root: str) -> dict:
+        out = {}
+        for base, _dirs, files in os.walk(root):
+            for name in files:
+                path = os.path.join(base, name)
+                with open(path, "rb") as fh:
+                    out[os.path.relpath(path, root)] = fh.read()
+        return out
+
+    with isolated_private_state() as state_root:
+        folder = context()
+        session = console.Session(folder)
+        console.state(session)  # the private state an open Agent Context ordinarily has
+        before_state, before_folder = tree(state_root), tree(folder)
+        answers = [stage_text(session, "site-notes.md", "# Site notes\n\nGround conditions.\n"),
+                   stage_text(session, "notes.txt", "Plain notes.\n"),
+                   stage_text(session, "fm.md", "---\ntitle: T\nscope: S.\n---\nBody.\n")]
+        check(tree(state_root) == before_state and tree(folder) == before_folder,
+              "staging three files writes nothing to the Agent Context or Charter's private state")
+        check(all(set(a) == {"filename", "kind", "bytes", "sha256", "markdown", "notes", "suggested_title",
+                             "suggested_scope", "front_matter"} for a in answers),
+              "the answer is the converted text itself, with no upload or session id that would need cleaning up")
+        shutil.rmtree(folder)
+
+
 def _http(port: int, method: str, path: str, body=None, header=True):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, method=method)
@@ -281,6 +324,41 @@ def case_server() -> None:
         shutil.rmtree(folder)
 
 
+def case_page_routes() -> None:
+    print("\nevery route the page calls is served, and Add a review works through the server")
+    page = open(os.path.join(server.STATIC_DIR, "app.js"), encoding="utf-8").read()
+    called = set(re.findall(r"""["'](/api/[a-z0-9/_-]+)["']""", page))
+    unserved = sorted(p for p in called if p not in server.POST_ROUTES and p not in console.GET_ROUTES)
+    check(len(called) > 20 and not unserved,
+          f"each of the page's {len(called)} API paths is a registered route"
+          + (f" — not served: {', '.join(unserved)}" if unserved else ""))
+    check("/api/changeset/review/add" in called and "/api/changeset/review/add" in server.POST_ROUTES,
+          "the page's Add a review route is registered with the server")
+    with isolated_private_state():
+        folder = context()
+        session = console.Session(folder)
+        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(session))
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, body = _http(port, "POST", "/api/changeset/create", {})
+            made = json.loads(body)
+            check(status == 200 and made["reports"] == [], "a new draft has no review")
+            status, body = _http(port, "POST", "/api/changeset/review/add", {"id": made["draft"]["id"]})
+            added = json.loads(body)
+            check(status == 200 and len(added.get("reports", [])) == 1
+                  and added["reports"][0]["label"] == "" and added["reports"][0]["text"] == "",
+                  "Add a review, through the server, adds one empty review")
+            status, body = _http(port, "POST", "/api/changeset/review/add", {})
+            check(status == 400 and b"Unknown endpoint" not in body,
+                  "a request without a draft is refused by the route, not as an unknown endpoint")
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        shutil.rmtree(folder)
+
+
 def case_change_set_count() -> None:
     print("\nthe navigation's change-set count: active drafts only")
     from app import authority as au
@@ -292,10 +370,10 @@ def case_change_set_count() -> None:
               and api.list_drafts(session, {})["drafts"] == [],
               "with no change set, the count is 0 and the index has nothing to group")
         waiting = api.create(session, {})
-        stale = api.create(session, {"start": {"alongside": spare}})
-        started = api.create(session, {"start": {"alongside": newcomer}})
+        stale = api.create(session, {"start": {"candidate": spare, "decision": "govern-alongside"}})
+        started = api.create(session, {"start": {"candidate": newcomer}})
         ready = api.update(session, {"id": started["draft"]["id"], "revision": started["draft"]["revision"],
-                                     "retain_others": True})
+                                     "decisions": {newcomer: {"decision": "govern-alongside"}}})
         plan = console.plan(session, {"kind": "changeset", "request": {
             "draft_id": ready["draft"]["id"], "draft_revision": ready["draft"]["revision"]}})
         api.apply(session, {"id": ready["draft"]["id"], "revision": ready["draft"]["revision"],
@@ -514,6 +592,46 @@ def case_candidate_lineage() -> None:
         shutil.rmtree(folder)
 
 
+def case_candidate_sources() -> None:
+    print("\neach candidate's source tag: what Charter knows, never an invented identity")
+    from app import agent_context as ac
+    from app import authority as au
+    from tests.changeset import setup
+    src = console.candidate_source
+    check(src({"source": "Agent Proposal p-1 (codex, self-reported)"}) == ("proposal", "codex")
+          and src({"source": "Agent Proposal p-1 (, self-reported)"}) == ("proposal", "")
+          and src({"source": "Agent Proposal p-1"}) == ("proposal", ""),
+          "an Agent Proposal names its self-reported agent only when one was supplied")
+    check(src({au.REVISES: "a"}) == ("revise", "") and src({}) == ("create", "")
+          and src({"source": "Created from notes.md"}) == ("create", ""),
+          "a Revise candidate is a revision; one a person created directly is created by a person")
+    check(src({"source": au.WITHDRAWN_SOURCE}) == ("withdrawn", "")
+          and src({"supersedes": [], "superseded_by": []}) == ("withdrawn", ""),
+          "a withdrawn governing document is recognised, including one withdrawn before this was recorded")
+    with isolated_private_state():
+        folder, ctx, _revision, _newcomer, _spare = setup()
+        session = console.Session(folder)
+        made = api.create(session, {"start": {"withdraw": "authoritative/c.md"}})
+        plan = console.plan(session, {"kind": "changeset", "request": {
+            "draft_id": made["draft"]["id"], "draft_revision": made["draft"]["revision"]}})
+        api.apply(session, {"id": made["draft"]["id"], "revision": made["draft"]["revision"],
+                            "plan_id": plan["plan_id"], "confirm": PHRASE})
+        gamma = next(d for d in console.state(session)["documents"]
+                     if d["kind"] == "candidate" and d["title"] == "Gamma")
+        check(gamma["source_kind"] == "withdrawn" and gamma["source_agent"] == "",
+              "a governing document withdrawn by a change set is tagged a withdrawn governing document")
+        created = au.plan(folder, "add", {"title": "Plain note", "scope": "", "body": "Text.\n"})
+        check(created.summary == "Create candidate: “Plain note” becomes a private authority candidate."
+              and "File “" not in created.summary,
+              "Create candidate's summary names the candidate by friendly title, never “File <name>”")
+        mp = read(folder, ac.CONTEXT_MAP).decode("utf-8")
+        row = next(ln for ln in mp.splitlines() if ln.startswith("| `expected_context_impact` |"))
+        check("advisory review material, retained privately with the proposal" in row
+              and "shown to the reviewer" not in row,
+              "the generated map describes expected context impact as retained advisory review material")
+        shutil.rmtree(folder)
+
+
 def case_competing_revisions() -> None:
     """End to end: two revisions of one document, one applied. The other still
     names the document it revises, can still be compared with it, and is never
@@ -570,7 +688,7 @@ def case_competing_revisions() -> None:
         ctx = chs.Ctx(folder)
         from app import api_changeset as api_cs
         detail = api_cs.detail(ctx, chs.load(ctx, request["draft_id"]))
-        chosen = detail["rows"][0]["candidate"]
+        chosen = detail["plan_candidates"][0]
         offered = {c["path"]: c for c in detail["available_candidates"]}
         check(chosen["revises_current"] is False and offered[third]["revises_current"] is True
               and chosen["revises_title"] == "Alpha",
@@ -788,13 +906,17 @@ def run() -> int:
     case_api()
     case_text_encodings()
     case_candidate_lineage()
+    case_candidate_sources()
     case_competing_revisions()
     case_peek()
     case_archived_listing()
     case_conversion_errors()
     case_stage_front_matter()
+    case_stage_leaves_nothing()
+    case_recent_while_open()
     case_change_set_count()
     case_server()
+    case_page_routes()
     case_request_boundary()
     case_busy_port()
     case_banner_piped()

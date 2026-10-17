@@ -137,6 +137,23 @@ def _launcher(windows: bool, registry: Any = None) -> Dict[str, Any]:
             "restart": RESTART_NOTE}
 
 
+def development_checkout(folder: str = on_path.LAUNCHERS) -> bool:
+    """Whether this copy of Charter runs from a source checkout or worktree — its
+    launchers' folder is a Git working tree — rather than an installed release,
+    which has no `.git`."""
+    return os.path.exists(os.path.join(folder, ".git"))
+
+
+def explicit_launcher(windows: bool, folder: str = on_path.LAUNCHERS) -> str:
+    """This copy's own launcher, by its full path: `charter.cmd` on Windows,
+    `charter` elsewhere."""
+    return os.path.join(folder, "charter.cmd" if windows else on_path.NAME)
+
+
+DEV_LAUNCHER_NOTE = ("This is a development checkout, so the setup names its own launcher by its full path: "
+                     "PATH never chooses another copy of Charter.")
+
+
 def _not_ready(status: Dict[str, Any]) -> List[str]:
     reasons = [status["headline"]]
     for issue in (status.get("issues") or [])[:5]:
@@ -197,8 +214,15 @@ def codex_toml(name: str, command: str, args: List[str]) -> str:
 
 
 def connection(folder: str, windows: Optional[bool] = None, registry: Any = None,
-               status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+               status: Optional[Dict[str, Any]] = None,
+               launchers: Optional[str] = None) -> Dict[str, Any]:
     """What Connect agents shows for `folder`. Writes nothing.
+
+    From a development checkout or worktree (`launchers`, this copy's own
+    launcher folder, is a Git working tree), the setup runs that checkout's
+    launcher by its full path, so PATH ordering can never route an agent to
+    another copy. An installed release names `charter`, which its
+    `add-to-path` puts on PATH.
 
     `ready` is whether the Agent Context itself is ready: when it is not, the
     reasons are given and there is nothing to copy. `connect` says what an
@@ -211,6 +235,8 @@ def connection(folder: str, windows: Optional[bool] = None, registry: Any = None
                      and the concrete MCP limitation instead of MCP text"""
     windows = (os.name == "nt") if windows is None else windows
     folder = _native(folder) if not windows or os.name == "nt" else folder
+    launchers = on_path.LAUNCHERS if launchers is None else launchers
+    explicit = explicit_launcher(windows, launchers) if development_checkout(launchers) else ""
     status = status or mg.check(folder, git=False)
     base = {"folder": folder, "map": os.path.join(folder, ac.CONTEXT_MAP),
             "state": status["state"],
@@ -220,6 +246,15 @@ def connection(folder: str, windows: Optional[bool] = None, registry: Any = None
     files = dict(base, ready=True, reasons=[], project_name=status["name"],
                  instruction=instruction(folder), files_note=FILES_NOTE,
                  verify_prompt=VERIFY_PROMPT)
+    # The launcher leads the `cmd /c` command line, where quotes cannot protect
+    # a space either: Command Prompt strips the first and last quote it sees.
+    if windows and explicit and (CMD_UNSAFE | {" "}) & set(explicit):
+        bad = " ".join(sorted((CMD_UNSAFE | {" "}) & set(explicit))).replace("  ", " a space ").strip() or "a space"
+        return dict(files, connect="files-only", status_text=FILES_ONLY, mcp_limitation=(
+            f"This development checkout's path contains {bad}. On Windows an agent host starts its "
+            "launcher through `cmd /c`, which cannot carry such a path reliably, so no MCP configuration "
+            "is offered from it. Agents can read the folder's files as below; for MCP access, run Charter "
+            "from a checkout whose path has no spaces and none of % & | < > ^ \"."))
     if windows and CMD_UNSAFE & set(folder):
         bad = " ".join(sorted(CMD_UNSAFE & set(folder)))
         return dict(files, connect="files-only", status_text=FILES_ONLY, mcp_limitation=(
@@ -231,11 +266,12 @@ def connection(folder: str, windows: Optional[bool] = None, registry: Any = None
 
     name = server_name(status["name"])
     args = ["mcp", "--context", folder]
-    command, launch = ("cmd", ["/c", "charter"] + args) if windows else ("charter", args)
+    program = explicit or on_path.NAME
+    command, launch = ("cmd", ["/c", program] + args) if windows else (program, args)
     config = {"mcpServers": {name: {"command": command, "args": launch}}}
     # Claude Code's default scope, local: this project only, for this person.
     register = ["claude", "mcp", "add", name, "--", command] + launch
-    check = ["charter"] + args + ["--check"]
+    check = [program] + args + ["--check"]
     if windows:
         shells = [
             {"shell": "powershell", "label": "PowerShell",
@@ -249,15 +285,21 @@ def connection(folder: str, windows: Optional[bool] = None, registry: Any = None
         shells = [{"shell": "posix", "label": "Terminal",
                    "claude_code": command_line(register, posix_arg),
                    "check": command_line(check, posix_arg)}]
-    launcher = _launcher(windows, registry)
+    if explicit:
+        # The full path is the program: whatever PATH holds cannot change which copy runs.
+        launcher = {"on_path": True, "found": explicit, "explicit": True, "note": DEV_LAUNCHER_NOTE,
+                    "fix": "", "restart": ""}
+    else:
+        launcher = dict(_launcher(windows, registry), explicit=False)
     state, text = (("ready", READY) if launcher["on_path"] else
                    ("needs-path", OTHER_COPY if launcher["found"] else NEEDS_PATH))
+    quote_plain = lambda a: a if _PS_PLAIN.fullmatch(a) else f'"{a}"'
     return dict(
         files, connect=state, status_text=text, server_name=name,
         codex_toml=codex_toml(name, command, launch), codex_note=CODEX_NOTE,
         pointer=mcp_pointer(name), pointer_note=POINTER_NOTE,
-        command=command, args=launch, launch_line=" ".join(["charter", "mcp", "--context",
-                                       folder if _PS_PLAIN.fullmatch(folder) else f'"{folder}"']),
+        command=command, args=launch, launch_line=" ".join([quote_plain(program), "mcp", "--context",
+                                                            quote_plain(folder)]),
         config=config, config_text=json.dumps(config, indent=2, ensure_ascii=False) + "\n",
         config_note=CONFIG_NOTE,
         shells=shells, launcher=launcher)

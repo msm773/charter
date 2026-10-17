@@ -36,15 +36,27 @@ def isolated_private_state(root: str = "") -> Iterator[str]:
             shutil.rmtree(base, ignore_errors=True)
 
 
-def seeded(folder: str, start: dict, retain_others: bool = True) -> dict:
-    """A new change set prefilled with the one outcome `start` names, every
-    other governing document retained as a person would tick it, as the
-    request that plans and applies it."""
+def start_of(start: dict) -> dict:
+    """A one-document start as the current change-set form takes it. Tests may
+    still say what they mean the old way — govern `alongside`, or a governing
+    `document` to replace, revise or withdraw — and a revise is a replace."""
+    if "alongside" in start:
+        return {"candidate": start["alongside"], "decision": "govern-alongside"}
+    if "document" in start:
+        if start.get("outcome") == "withdraw":
+            return {"withdraw": start["document"]}
+        return {"candidate": start.get("candidate"), "decision": "replace",
+                "target": start["document"]}
+    return start
+
+
+def seeded(folder: str, start: dict) -> dict:
+    """A new change set prefilled with the one candidate decision or
+    withdrawal `start` names — every other governing document retained, as it
+    always is — as the request that plans and applies it."""
     from app import changeset as chs
     ctx = chs.Ctx(folder)
-    draft = chs.create(ctx, "", start)
-    if retain_others:
-        draft = chs.update(ctx, draft["id"], draft["revision"], {"retain_others": True})
+    draft = chs.create(ctx, "", start_of(start))
     return {"draft_id": draft["id"], "draft_revision": draft["revision"]}
 
 

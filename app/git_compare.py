@@ -18,8 +18,9 @@ listing returned. Nothing outside the Agent Context is read or shown.
 
 A comparison is advisory-review input only. It does not establish authority,
 approve a merge, or make a change set current. Its review material identifies
-the base by its context fingerprint alone: no commit, branch, revision text,
-local location or private state.
+the base by its context fingerprint alone: Charter adds no commit, branch,
+revision text, local location or private state of its own, and embeds the
+reviewed documents exactly as they read.
 """
 from __future__ import annotations
 
@@ -49,8 +50,9 @@ READ_ONLY = ("Charter only reads Git here, and only this Agent Context's folder 
              "base you name. It does not fetch, switch, merge, rebase, commit or change anything.")
 DISCLOSURE = ("This review material includes the full text of the current governing documents and "
               "of the base versions of those changed or removed since the base. Sharing it shares "
-              "that text with the service you choose. It names no commit, branch, revision or local "
-              "location. Charter sends nothing.")
+              "that text with the service you choose. Charter adds no commit, branch, revision or "
+              "local location of its own; the documents are included as they read. Charter sends "
+              "nothing.")
 # What a comparison's packet carries, for the Git-repository warning.
 PACKET_CONTENTS = ("the current governing documents and the base versions the packet includes")
 
@@ -428,27 +430,31 @@ def disclosed(text: str, und: Undisclosed, names: bool = True,
     return ""
 
 
-def disclosure_refusal(units: Sequence[Tuple[str, str]], whole: str, und: Undisclosed) -> str:
-    """The person-facing refusal when review material would contain an
-    undisclosable value, or "". `units` are what the documents and the person
-    bring into the material, each `(where, text)`; `whole` is the material,
-    checked again for commits and locations. The refusal names the kind of
-    value and where it is, never the value itself."""
+def disclosure_refusal(units: Sequence[Tuple[str, str]], framing: str, und: Undisclosed) -> str:
+    """The person-facing refusal when Charter itself would add an
+    undisclosable value to review material, or "". `units` are what Charter
+    sends with the material beyond its own wording, each `(where, text)`, such
+    as a packet's file name, checked for every kind of value; `framing` is
+    Charter's own wording and metadata around the reviewed content
+    (`impact.comparison_framing`), checked for commits and locations. The
+    reviewed documents, their logical paths and the project name are content
+    under review and are never checked: their own text may quote any value.
+    The refusal names the kind of value and where it is, never the value."""
     compiled = und.patterns()
     found, where = "", ""
     for label, text in units:
         found = disclosed(text, und, compiled=compiled)
         if found:
-            # Where it is must not itself disclose it, as a document's path might.
-            where = label if not disclosed(label, und, compiled=compiled) else "a governing document"
+            # Where it is must not itself disclose it.
+            where = label if not disclosed(label, und, compiled=compiled) else "what is sent with it"
             break
     if not found:
-        found, where = disclosed(whole, und, names=False, compiled=compiled), "the review material"
+        found, where = disclosed(framing, und, names=False, compiled=compiled), "Charter's own wording"
     if not found:
         return ""
     return (f"The review material would contain {found}, in {where}, so Charter did not prepare "
-            "it: review material never names a commit, branch, revision or local location. "
-            "Nothing was printed or saved.")
+            "it: Charter never adds a commit, branch, revision or local location of its own to "
+            "review material. Nothing was printed or saved.")
 
 
 # --- the comparison -------------------------------------------------------------------
@@ -572,9 +578,9 @@ def prepare_material(current: ac.Examination, before: Dict[str, Dict[str, Any]],
                      settings_changed: bool, und: Undisclosed,
                      extra: Sequence[Tuple[str, str]] = ()) -> Dict[str, Any]:
     """The review material for a comparison: a copyable prompt within the
-    practical limit, and past it one portable packet. It names no commit,
-    branch, revision text or local location: when a document quotes one, no
-    material is prepared."""
+    practical limit, and past it one portable packet. Charter adds no commit,
+    branch, revision text or local location of its own; the documents are
+    embedded exactly as they read, whatever they quote."""
     identity = {"project": current.settings.project_name, "fingerprint": current.fingerprint,
                 "documents": [dict(d) for d in sorted(_documents(current).values(),
                                                       key=lambda d: d["path"])]}
@@ -587,16 +593,12 @@ def prepare_material(current: ac.Examination, before: Dict[str, Dict[str, Any]],
     if over:
         prompt = impact.generate_comparison_prompt(identity, base_fp, base_docs, lines, fingerprint,
                                                    packet=True)
-    # The material is Charter's own wording around the documents and
-    # fingerprints. Everything the documents, the project name, and what is
-    # sent with the material bring into it is checked for every undisclosable
-    # value; the whole material is checked again for commits and locations.
-    units = [("the project name", identity["project"])]
-    units += [(f"`{d['path']}`", d["path"] + "\n" + d["text"]) for d in identity["documents"]]
-    units += [(f"the base version of `{d['path']}`", d["path"] + "\n" + d["text"])
-              for d in base_docs]
-    units += list(extra)
-    refusal = disclosure_refusal(units, prompt["text"], und)
+    # Only what Charter itself writes is checked: its own wording and metadata
+    # around the reviewed content, and what is sent with the material. The
+    # documents, their paths and the project name are reviewed content.
+    framing = impact.comparison_framing(identity, base_fp, base_docs, lines, fingerprint,
+                                        packet=over)
+    refusal = disclosure_refusal(list(extra), framing, und)
     if refusal:
         return {"ready": False, "reason": refusal}
     prompt.update(ready=True, reason="", over_limit=over, limit=impact.PRACTICAL_LIMIT_CHARS,

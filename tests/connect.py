@@ -532,12 +532,73 @@ def case_real_shells() -> None:
         shutil.rmtree(base)
 
 
+@contextlib.contextmanager
+def installed_release():
+    """Connect agents as an installed release sees it, whatever checkout runs
+    the tests: no `.git` beside the launchers, so setup names `charter`."""
+    real = connect.development_checkout
+    connect.development_checkout = lambda folder=on_path.LAUNCHERS: False
+    try:
+        yield
+    finally:
+        connect.development_checkout = real
+
+
+def case_development_checkout() -> None:
+    print("\na development checkout's setup names its own launcher, never `charter` on PATH")
+    base = tempfile.mkdtemp(prefix="charter-dev-")
+    try:
+        dev = os.path.join(base, "dev-worktree")
+        release = os.path.join(base, "release")
+        os.makedirs(dev)
+        os.makedirs(release)
+        with open(os.path.join(dev, ".git"), "w", encoding="utf-8") as fh:
+            fh.write("gitdir: elsewhere\n")  # a worktree's `.git` is a file
+        check(connect.development_checkout(dev) and not connect.development_checkout(release),
+              "a launcher folder that is a Git working tree is a development checkout; a release is not")
+        with isolated_private_state():
+            folder = context()
+            # PATH finds another copy first: a development checkout must not care.
+            other = FakeRegistry(user=os.path.join(base, "elsewhere"))
+            win = connect.connection(folder, windows=True, registry=other, launchers=dev)
+            posix = connect.connection(folder, windows=False, registry=other, launchers=dev)
+            dev_cmd, dev_sh = os.path.join(dev, "charter.cmd"), os.path.join(dev, "charter")
+            check(win["command"] == "cmd" and win["args"][:2] == ["/c", dev_cmd]
+                  and win["config"]["mcpServers"][win["server_name"]]["args"][1] == dev_cmd
+                  and posix["command"] == dev_sh and posix["args"][0] == "mcp",
+                  "the MCP configuration runs that checkout's launcher by its full path")
+            check(all(dev_cmd in s["claude_code"] and dev_cmd in s["check"] for s in win["shells"])
+                  and all(dev_sh in s["claude_code"] and dev_sh in s["check"] for s in posix["shells"])
+                  and connect.toml_string(dev_sh) in posix["codex_toml"]
+                  and posix["launch_line"].split(" mcp ")[0].strip('"') == dev_sh,
+                  "so do the claude command, the check command, Codex's entry and the launch line")
+            check(not any(re.search(r"(^|[\s\"'/c])charter(\s|$)", s["claude_code"]) for s in win["shells"] + posix["shells"]),
+                  "no command runs a bare `charter` that PATH could route to another checkout")
+            check(win["connect"] == "ready" and posix["connect"] == "ready" and win["launcher"]["explicit"]
+                  and "development checkout" in win["launcher"]["note"],
+                  "it is ready whatever PATH holds, and says why")
+            spaced = os.path.join(base, "dev worktree")
+            os.makedirs(spaced)
+            open(os.path.join(spaced, ".git"), "w", encoding="utf-8").close()
+            odd = connect.connection(folder, windows=True, registry=other, launchers=spaced)
+            check(odd["connect"] == "files-only" and "config" not in odd and "a space" in odd["mcp_limitation"],
+                  "on Windows, a checkout path `cmd /c` cannot carry offers file access only, and says why")
+            installed = connect.connection(folder, windows=False, registry=other, launchers=release)
+            check(installed["command"] == "charter" and not installed["launcher"]["explicit"],
+                  "an installed release still names `charter`, which its add-to-path puts on PATH")
+            shutil.rmtree(folder)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def run() -> int:
-    case_quoting()
-    case_payload()
-    case_not_ready()
-    case_writes_nothing()
-    case_real_shells()
+    with installed_release():
+        case_quoting()
+        case_payload()
+        case_not_ready()
+        case_writes_nothing()
+        case_real_shells()
+    case_development_checkout()
     print(f"\n{OK} All Connect agents checks passed.")
     return 0
 

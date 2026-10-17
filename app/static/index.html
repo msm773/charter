@@ -12,12 +12,12 @@
 <body>
 <a class="skip-link" href="#main">Skip to main content</a>
 <nav class="rail">
-  <h1>Charter<span id="projectName">no Agent Context open</span></h1>
+  <h1><button type="button" class="wordmark" id="wordmark" aria-label="Charter: open or create an Agent Context">Charter</button><span id="projectName">no Agent Context open</span></h1>
 
   <div class="nav" id="nav">
     <!-- Each count is shown once, in words for assistive technology: the
          visible tally is hidden from it and the label beside it says the same. -->
-    <button data-view="governing" aria-current="true">Governing Documents <em class="tally" id="tallyGoverning" aria-hidden="true"></em><span class="sr-only" id="tallyGoverningLabel"></span></button>
+    <button data-view="governing" aria-current="true">Governing Context <em class="tally" id="tallyGoverning" aria-hidden="true"></em><span class="sr-only" id="tallyGoverningLabel"></span></button>
     <button data-view="candidates">Authority Candidates <em class="tally" id="tallyCandidates" aria-hidden="true"></em><span class="sr-only" id="tallyCandidatesLabel"></span></button>
     <button data-view="proposals">Agent Proposals <em class="tally" id="tallyProposals" aria-hidden="true"></em><span class="sr-only" id="tallyProposalsLabel"></span></button>
     <button data-view="changesets">Change Sets <em class="tally" id="tallyChangeSets" aria-hidden="true"></em><span class="sr-only" id="tallyChangeSetsLabel"></span></button>
@@ -28,25 +28,16 @@
   <!-- The selected Agent Context, and whether agents are served. Git is the
        person's own: read-only, its details only on request. -->
   <section class="rail-meta" id="contextMeta" aria-labelledby="contextMetaTitle">
-    <h2 class="rail-meta-title" id="contextMetaTitle">This Agent Context</h2>
+    <h2 class="rail-meta-title" id="contextMetaTitle">Current Context</h2>
     <dl>
       <dt>Folder</dt><dd id="metaRoot">—</dd>
       <dt>Agents</dt><dd id="metaAgents">—</dd>
       <dt>Governing documents</dt><dd id="metaContext">—</dd>
-      <!-- Git is secondary and read-only: a compact summary, the branch and
-           the count of changed context files; the files themselves only on request. -->
+      <!-- Git is secondary and read-only: the branch and the count of changed
+           context files, with no control that lists the files. -->
       <dt id="metaGitLabel" hidden>Git branch</dt><dd id="metaBranch" hidden>—</dd>
       <dt id="metaChangedLabel" hidden>Context files changed</dt>
-      <dd id="metaChanged" hidden>
-        <div class="git-details" id="gitDetails">
-          <span id="metaChangedCount">—</span>
-          <button type="button" class="git-details-toggle" id="gitDetailsToggle" aria-expanded="false"
-                  aria-controls="gitDetailsPanel" hidden><span aria-hidden="true">ⓘ</span></button>
-          <div class="git-details-panel" id="gitDetailsPanel" role="region" aria-labelledby="metaChangedLabel" hidden>
-            <ul class="paths" id="gitChanged" tabindex="0" aria-labelledby="metaChangedLabel"></ul>
-          </div>
-        </div>
-      </dd>
+      <dd id="metaChanged" hidden><span id="metaChangedCount">—</span></dd>
     </dl>
     <div id="metaPdf"></div>
   </section>
@@ -57,7 +48,7 @@
     <span class="path" id="barPath">No Agent Context open</span>
     <span id="barState"></span>
     <span class="spacer"></span>
-    <button class="btn ghost small" id="btnSwitch" type="button">Open another Agent Context</button>
+    <button class="btn ghost small" id="btnSwitch" type="button">Open Agent Context…</button>
   </div>
 
   <!-- Whether agents are served, what is wrong and the next safe step, and
@@ -68,17 +59,6 @@
   <section class="view" id="view-open" hidden>
     <div class="view-head">
       <h2>Open or Create an Agent Context</h2>
-      <div class="info-wrap" id="aboutOpening">
-        <button type="button" class="info-toggle" id="aboutOpeningToggle"
-                aria-label="About opening and creating an Agent Context"
-                aria-expanded="false" aria-controls="aboutOpeningBody"><span aria-hidden="true">i</span></button>
-        <div class="info-pop" id="aboutOpeningBody" hidden>
-          <p>An <strong>Agent Context</strong> is a dedicated folder agents read: <code>AGENT-CONTEXT.md</code>, <code>.agent-context.json</code> and the governing documents in <code>authoritative/</code>. It may sit inside a project or its own Git repository; nothing else belongs in it.</p>
-          <p><strong>Open Agent Context</strong> checks the folder and shows whether agents can be served. It writes nothing in the folder, except that an interrupted Charter write is rolled back first.</p>
-          <p><strong>Create Agent Context</strong> makes a new, empty one in an empty folder. To start from governing documents you already have, put them in <code>authoritative/</code> and open the folder: Rebuild Agent Context generates the rest.</p>
-          <p>Neither action runs Git, or creates agent instruction files such as <code>AGENTS.md</code> or <code>CLAUDE.md</code>.</p>
-        </div>
-      </div>
     </div>
 
     <section class="start-card" id="startSection" aria-label="Agent Context folder">
@@ -108,24 +88,9 @@
   <!-- governing documents ------------------------------------------------- -->
   <section class="view" id="view-governing" hidden>
     <div class="view-head">
-      <h2>Governing Documents</h2>
-      <div class="info-wrap" id="aboutStates">
-        <button type="button" class="info-toggle" id="aboutStatesToggle" aria-label="About governing documents and candidates"
-                aria-expanded="false" aria-controls="aboutStatesBody"><span aria-hidden="true">i</span></button>
-        <div class="info-pop" id="aboutStatesBody" hidden>
-          <dl class="states">
-            <dt>Governing document — current context</dt>
-            <dd>In this Agent Context's <code>authoritative/</code> folder, listed by the map. Agents read it as current context, within its scope.</dd>
-            <dt>Authority candidate — not context</dt>
-            <dd>Kept in private local state on this computer. Agents never see it.</dd>
-            <dt>Archived — not context</dt>
-            <dd>Replaced or retired documents, kept in private local state for history.</dd>
-          </dl>
-          <p>A <strong>change set</strong> is the only way Charter changes what governs: a candidate may govern alongside, revise or replace one governing document you name — which is then archived privately — and a governing document may be withdrawn, returning it to candidate status. Starting from one candidate or document opens a change set with that one outcome; you can add related outcomes before its preview, which you confirm once by typing <em>change governing context</em>.</p>
-          <p>A governing document is never edited in place: <strong>Revise</strong> files a candidate prefilled from it. A document changed with other tools governs once the Agent Context is valid again, and is shown as changed outside Charter.</p>
-        </div>
-      </div>
+      <h2>Governing Context</h2>
     </div>
+    <p class="lede" id="governingIntro">Documents currently governing this Agent Context.</p>
     <ul class="issues" id="knowledgeIssues"></ul>
 
     <!-- AGENT-CONTEXT.md is generated from what governs; it is never listed
@@ -133,27 +98,18 @@
     <section class="context-map" id="contextMapSection" aria-labelledby="contextMapTitle">
       <div class="context-map-row">
         <h3 id="contextMapTitle">Context Map</h3>
-        <div class="info-wrap" id="aboutContextMap">
-          <button type="button" class="info-toggle" id="aboutContextMapToggle" aria-label="About the context map"
-                  aria-expanded="false" aria-controls="aboutContextMapBody"><span aria-hidden="true">i</span></button>
-          <div class="info-pop" id="aboutContextMapBody" hidden>
-            <p>Charter generates <code>AGENT-CONTEXT.md</code>, the agents' entry point, and <code>.agent-context.json</code>, its integrity record, from the governing documents and this Agent Context's settings. The map is a routing aid, not a governing document, and is never edited by hand.</p>
-            <p><strong>Rebuild Agent Context</strong> regenerates both after documents were changed with other tools — an edit, a merge, a recovery. It is offered only when the governing documents are valid and nothing else is in the folder, and it never changes a governing document.</p>
-          </div>
-        </div>
+        <span class="context-map-state" id="contextMapState" role="status"></span>
         <code class="context-map-file">AGENT-CONTEXT.md</code>
         <span class="context-map-kind" id="contextMapKind">Generated — not a governing document</span>
-        <span class="context-map-state" id="contextMapState" role="status"></span>
-        <span class="actions">
-          <button class="btn ghost small" id="btnViewContext" type="button">View agent context</button>
-          <button class="btn small" id="btnRebuildContext" type="button" hidden>Rebuild Agent Context…</button>
-        </span>
+      </div>
+      <div class="actions context-map-actions">
+        <button class="btn ghost small" id="btnViewContext" type="button">View agent context</button>
+        <button class="btn small" id="btnRebuildContext" type="button" hidden>Rebuild Agent Context…</button>
       </div>
       <p class="hint context-map-detail" id="contextMapDetail"></p>
       <!-- Provenance, beside the context's own status: shown here only, and
            only when this computer has no record of the context. -->
       <p class="context-origin" id="originUnknown" hidden></p>
-      <p class="hint agent-guidance-summary" id="agentGuidanceSummary"></p>
     </section>
 
     <!-- The documents themselves, after the shared section break: a group of
@@ -175,100 +131,66 @@
     <p class="lede">Candidates stay private until you make them governing.</p>
     <p class="hint" id="candidatesUnavailable" hidden></p>
     <div class="docs" id="candidatesList" data-section="candidates"></div>
-    <div class="disclosure archive-disclosure">
-      <button type="button" class="disclosure-toggle" id="archiveToggle" aria-expanded="false"
-              aria-controls="archiveBody">Archived <em class="tally" id="tallyArchive" aria-hidden="true"></em><span class="sr-only" id="tallyArchiveLabel"></span></button>
-      <div class="disclosure-body" id="archiveBody" hidden>
-        <div class="docs" id="archiveList" data-section="archive"></div>
-      </div>
-    </div>
   </section>
 
   <!-- add document (internal name: intake) ------------------------------ -->
   <section class="view" id="view-intake" hidden>
-    <!-- Cancel is never locked: it leaves without filing anything, whatever
-         step the form has reached. -->
+    <!-- Cancel is always available: it leaves without filing anything,
+         whatever the form shows. Until a file is converted, only choosing one
+         is shown; then one form, laid out like Edit…, with no numbered steps. -->
     <div class="view-head">
       <h2>Create Candidate</h2>
       <button class="btn ghost small" id="btnCancelIntake" type="button">Cancel</button>
     </div>
-    <p class="lede" id="intakeLede">Create an authority candidate from a document. It is kept in private local state — not context — and governs nothing until a change set you apply makes it govern.</p>
 
-    <div class="step" id="stepFile" data-done="false">
-      <h3 data-step="1">Choose a File</h3>
+    <div class="intake-pick" id="stepFile">
       <div class="drop" id="drop">
         <p id="dropText">Drop a PDF, Word document, Markdown or text file here</p>
-        <button class="btn ghost" id="btnPick">Choose a file</button>
+        <button class="btn ghost" id="btnPick" type="button">Choose a file</button>
         <input type="file" id="file" accept=".pdf,.docx,.md,.markdown,.txt,.text" hidden>
         <p class="hint" id="dropHint"></p>
       </div>
-      <div id="stagedInfo"></div>
     </div>
 
-    <!-- A locked step's heading and the reason it is locked stay readable; its
-         body is inert until a file has been chosen. -->
-    <div class="step locked" id="stepConvert" data-done="false">
-      <h3 data-step="2">Check the Conversion</h3>
-      <p class="hint step-locked-note">Choose a file in step 1 first.</p>
-      <div class="step-body" id="stepConvertBody" inert>
+    <section class="intake-form" id="stepConvert" aria-labelledby="intakeFormTitle" hidden>
+      <h3 id="intakeFormTitle">Review Converted Document</h3>
+      <div class="intake-file">
+        <span id="stagedInfo"></span>
+        <button class="btn ghost small" id="btnChooseAnother" type="button">Choose another file</button>
+      </div>
       <div id="convertNotes"></div>
-      <div class="field">
-        <label for="markdown">Converted Markdown — edit before filing if the conversion needs help</label>
-        <textarea id="markdown" rows="14" spellcheck="false"></textarea>
-      </div>
-      </div>
-    </div>
-
-    <div class="step locked" id="stepName" data-done="false">
-      <h3 data-step="3">Name the Candidate</h3>
-      <p class="hint step-locked-note">Choose a file in step 1 first.</p>
-      <div class="step-body" id="stepNameBody" inert>
-      <div class="note" id="candidateNote"></div>
       <div class="note" id="frontMatterNote" role="status" hidden></div>
       <div class="field">
         <label for="title">Title</label>
         <input type="text" id="title">
       </div>
       <div class="field">
-        <div class="label-row">
-          <label for="scope">Scope — what does this cover?</label>
-          <div class="info-wrap" id="aboutIntakeScope">
-            <button type="button" class="info-toggle" id="aboutIntakeScopeToggle" aria-label="About scope"
-                    aria-expanded="false" aria-controls="aboutIntakeScopeBody"><span aria-hidden="true">i</span></button>
-            <div class="info-pop" id="aboutIntakeScopeBody" hidden></div>
-          </div>
-        </div>
-        <input type="text" id="scope" placeholder="Describe what this document governs or applies to"
-               aria-describedby="scopeHint">
-        <p class="hint" id="scopeHint">A short routing summary shown in AGENT-CONTEXT.md; it does not replace this document's rules.</p>
+        <label for="scope">Scope</label>
+        <input type="text" id="scope" aria-describedby="scopeHint">
+        <p class="hint" id="scopeHint">A short routing summary shown in AGENT-CONTEXT.md.</p>
       </div>
-      <button class="btn" id="btnPreviewIntake">Preview changes</button>
+      <div class="field">
+        <label for="markdown">Text</label>
+        <textarea id="markdown" rows="14" spellcheck="false"></textarea>
       </div>
-    </div>
+      <div class="actions">
+        <button class="btn" id="btnPreviewIntake" type="button">Preview changes</button>
+      </div>
+    </section>
   </section>
 
   <!-- agent proposals: untrusted requests for a person's review ----------- -->
   <section class="view" id="view-proposals" hidden>
     <div class="view-head">
       <h2>Agent Proposals</h2>
-      <div class="info-wrap" id="aboutProposals">
-        <button type="button" class="info-toggle" id="aboutProposalsToggle" aria-label="About Agent Proposals"
-                aria-expanded="false" aria-controls="aboutProposalsBody"><span aria-hidden="true">i</span></button>
-        <div class="info-pop" id="aboutProposalsBody" hidden>
-          <p>Agents submit proposals with <code>charter propose --context .</code> in this Agent Context's folder. Each is kept in private local state on this computer, untrusted, until you decide it.</p>
-          <p><strong>Accepting a proposal never changes governing context.</strong> It files, updates or retires an authority candidate — not context — after a preview. Making a candidate govern is a separate decision, in a change set.</p>
-          <p>A proposal is <strong>stale</strong> when its target changed after the agent read it; it cannot be accepted as written. An agent's name, reason and expected context impact are its own claims.</p>
-        </div>
-      </div>
-      <button class="btn small" id="btnImportProposal" type="button">Import proposal…</button>
+      <button class="btn small" id="btnImportProposal" type="button">Import agent proposal…</button>
     </div>
-    <p class="lede">Review proposals from agents. Once you accept one, it becomes an authority candidate.</p>
+    <p class="lede" id="proposalsIntro">Accepted proposals become authority candidates.</p>
     <section class="proposal-group" id="proposalsPendingGroup" aria-label="Proposals from agents, awaiting your review">
       <div id="pendingProposals"></div>
     </section>
     <section class="proposal-group" id="proposalsImportedGroup" aria-labelledby="proposalsImportedTitle" hidden>
       <h3 id="proposalsImportedTitle">Imported by You</h3>
-      <p class="hint">Proposals an agent returned as JSON, which you checked and filed.</p>
       <div id="importedProposals"></div>
     </section>
     <section class="proposal-group" id="proposalsUnexpectedGroup" aria-labelledby="proposalsUnexpectedTitle" hidden>
@@ -284,10 +206,10 @@
   <section class="view" id="view-changesets" hidden>
     <div id="changeSetIndex">
       <div class="view-head">
-        <div class="label-row"><h2>Change Sets</h2><span id="changeSetInfo"></span></div>
+        <h2>Change Sets</h2>
         <button class="btn small" id="btnNewChangeSet" type="button">New change set</button>
       </div>
-      <p class="lede">Plan several authority changes and apply them together with one confirmation.</p>
+      <p class="lede">Apply one or more authority changes as a set.</p>
       <div class="changeset-list" id="changeSetList"></div>
     </div>
     <div id="changeSetEditor" hidden></div>
@@ -295,8 +217,8 @@
 
   <!-- connect agents -------------------------------------------------------- -->
   <section class="view" id="view-connect" hidden>
-    <!-- The view's heading is its recommended route; the window title keeps the area's name. -->
-    <h2 id="connectMcpTitle" data-title="Connect Agents">Connect Agents with MCP (Recommended)</h2>
+    <!-- The page's title; its four sections follow, each a heading that opens and closes it. -->
+    <h2 id="connectTitle">Connect Agents</h2>
     <div id="connectBody"></div>
   </section>
 
@@ -304,15 +226,8 @@
   <section class="view" id="view-settings" hidden>
     <div class="view-head">
       <h2>Settings</h2>
-      <div class="info-wrap" id="aboutSettings">
-        <button type="button" class="info-toggle" id="aboutSettingsToggle" aria-label="About settings"
-                aria-expanded="false" aria-controls="aboutSettingsBody"><span aria-hidden="true">i</span></button>
-        <div class="info-pop" id="aboutSettingsBody" hidden>
-          <p>The project name and agent guidance are recorded in <code>.agent-context.json</code> and written into <code>AGENT-CONTEXT.md</code>. Agent guidance is advisory: a governing document's stricter rule always applies.</p>
-          <p>Changing a setting is previewed first, and changes no governing document. The map's other wording is generated and cannot be edited.</p>
-        </div>
-      </div>
     </div>
+    <p class="lede" id="settingsIntro">Settings are reflected in AGENT-CONTEXT.md, which agents read.</p>
     <div id="settingsForm"></div>
   </section>
 

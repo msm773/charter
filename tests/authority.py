@@ -217,9 +217,8 @@ def case_replace() -> None:
         request = seeded(folder, {"document": "authoritative/a.md", "outcome": "replace",
                                   "candidate": revision})
         p = au.plan(folder, "changeset", request)
-        check(any(n.startswith("“Alpha” replaces “Alpha” at `authoritative/a.md`; scope (blank) → "
-                               "A scope. (inherited)") for n in p.notes),
-              "the preview shows candidate and resulting scope, and the inheritance")
+        check(not any("replaces" in n or "scope" in n for n in p.notes),
+              "the preview repeats no scope note: Authority Effects shows scope continuity from the effect")
         ctx = chs.Ctx(folder)
         effect = chs.evaluate(ctx, chs.load(ctx, request["draft_id"]))["effects"][0]
         check(effect["scope_before"] == "A scope." and effect["scope_proposed"] == ""
@@ -736,11 +735,11 @@ def case_revision_origin() -> None:
               and listed[proposed]["revises_path"] == "",
               "the console resolves it to the governing path it still has; others have none")
 
-        request = seeded(folder, {"document": "authoritative/a.md", "outcome": "revise",
-                                  "candidate": revision})
+        request = seeded(folder, {"candidate": revision, "decision": "replace",
+                                  "target": "authoritative/a.md"})
         p = au.plan(folder, "changeset", request)
         check(p.governing_change and p.confirm_phrase == PHRASE,
-              "revising with it is still an ordinary governing change, previewed and confirmed with the phrase")
+              "replacing with it is still an ordinary governing change, previewed and confirmed with the phrase")
         check(raises(au.ActionRefused, au.apply, folder, "changeset", request, p.plan_id, True)
               and any(d.path == "authoritative/a.md" and d.id == "a" for d in ac.examine(folder).documents),
               "it is not applied without the typed phrase")
@@ -886,8 +885,7 @@ def case_preview_survives_midnight() -> None:
         return shown
 
     def noted(p: au.Plan, kind: str, note: str = au.APPLY_DATE_NOTE) -> None:
-        other = au.CHANGESET_DATE_NOTE if note == au.APPLY_DATE_NOTE else au.APPLY_DATE_NOTE
-        check(p.notes.count(note) == 1 and other not in p.notes and dated(p, day1),
+        check(p.notes.count(note) == 1 and dated(p, day1),
               f"{kind}: the preview shows the preview day, and says once that dates are "
               "assigned when it is applied")
 
@@ -968,24 +966,25 @@ def case_preview_survives_midnight() -> None:
             rejected = proposal(operation="create", target_path="authority-candidates/unwanted.md",
                                 proposed_body="Unwanted.\n")
             p = across("reject-proposal", {"proposal_id": rejected, "reason": "Not needed."})
-            check(au.APPLY_DATE_NOTE not in p.notes and au.CHANGESET_DATE_NOTE not in p.notes,
-                  "reject: writes no date, so no date note")
+            check(au.APPLY_DATE_NOTE not in p.notes, "reject: writes no date, so no date note")
             check(rejected not in {r["proposal_id"] for r in apx.listing(folder)["pending"]},
                   "reject: the preview applies on the next day")
 
-            # A coordinated change set: revise, withdraw and govern alongside.
+            # A coordinated change set: replace with a revision, withdraw and govern alongside.
             at(day1)
             revision = add(folder, "Alpha two", "Alpha, revised.")
             newcomer = add(folder, "Delta", "Delta things.")
             ctx = chs.Ctx(folder)
             draft = chs.create(ctx, "Across midnight")
             draft = chs.update(ctx, draft["id"], draft["revision"], {
-                "outcomes": {"authoritative/a.md": {"outcome": "revise", "candidate": revision},
-                             "authoritative/c.md": {"outcome": "withdraw"}},
-                "alongside": [newcomer], "retain_others": True})
+                "candidates": [revision, newcomer],
+                "decisions": {revision: {"decision": "replace", "target": "authoritative/a.md"},
+                              newcomer: {"decision": "govern-alongside"}},
+                "withdrawals": ["authoritative/c.md"]})
             request = {"draft_id": draft["id"], "draft_revision": draft["revision"]}
             p = across("changeset", request, PHRASE)
-            noted(p, "change set", au.CHANGESET_DATE_NOTE)
+            check(not any("dates are assigned" in n for n in p.notes) and dated(p, day1),
+                  "change set: the preview shows the preview day, with no note about when dates are assigned")
             exam = ac.examine(folder)
             governing = {d.path: d for d in exam.documents}
             check(exam.valid and governing["authoritative/a.md"].meta["updated"] == day2
@@ -1025,7 +1024,7 @@ def case_preview_survives_midnight() -> None:
             spare = add(folder, "Spare", "Spare.")
             draft = chs.create(ctx, "Watched set")
             draft = chs.update(ctx, draft["id"], draft["revision"],
-                               {"alongside": [spare], "retain_others": True})
+                               {"candidates": [spare], "decisions": {spare: {"decision": "govern-alongside"}}})
             request = {"draft_id": draft["id"], "draft_revision": draft["revision"]}
             shown = au.plan(folder, "changeset", request)
             at(day2)
@@ -1080,7 +1079,7 @@ def case_concurrent_edits() -> None:
     with isolated_private_state():
         # Between plan and transaction: the candidate the replace consumes.
         folder, cs, kind, request = _replace_setup()
-        revision = chs.load(chs.Ctx(folder), request["draft_id"])["outcomes"][
+        revision = chs.rows(chs.load(chs.Ctx(folder), request["draft_id"]))[0][
             "authoritative/a.md"]["candidate"]
         before = snapshot(folder)
         edited = cs.read_candidate(revision) + "A person's late edit.\n"

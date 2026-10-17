@@ -11,9 +11,10 @@ are the test's own; Charter makes none.
   * the repository — working tree, index, refs and objects — is byte-for-byte
     unchanged, and so is private state;
   * only the Agent Context's subtree is read: files beside it never appear;
-  * the comparison is right, and its review material names no commit, branch,
-    revision, local location or private state, keeps the report contract, and
-    says it is advisory only;
+  * the comparison is right; its review material embeds the reviewed documents
+    exactly as they read, adds no commit, branch, revision, local location or
+    private state of Charter's own, keeps the report contract, and says it is
+    advisory only;
   * a base that does not resolve, is not in the history, has no valid Agent
     Context, or a current context that is not valid and clean, gets a reason
     and no review material;
@@ -595,7 +596,7 @@ def _commit_context(repo: str, folder: str, files: dict, message: str) -> str:
 
 
 def case_disclosure() -> None:
-    print("\nreview material is refused when a document quotes a commit, branch, revision or location")
+    print("\nreviewed text is embedded as it reads; only what Charter itself adds is refused")
     from app import compare as cmp
     with isolated_private_state() as state_root:
         repo, folder, _fp = repository()
@@ -637,83 +638,120 @@ def case_disclosure() -> None:
 
         outside = tempfile.mkdtemp(prefix="charter-packets-")
         try:
-            all_ok = True
+            embedded_ok, refused_ok = True, True
             for label, text, base, category in quoted:
-                write(folder, "authoritative/a.md", doc_text("a", "Alpha", body=f"Alpha rules. {text}\n"))
+                body = f"Alpha rules. {text}\n"
+                write(folder, "authoritative/a.md", doc_text("a", "Alpha", body=body))
                 generate(folder, "Demo project")
                 r = gc.compare(folder, base, cmp.secrets(folder))
                 material = r.get("review_prompt") or {}
-                ok = (r["available"] and not material.get("ready") and "text" not in material
-                      and category in material.get("reason", "") and "`authoritative/a.md`" in material["reason"]
-                      and text not in material["reason"])
-                code, out, err = cli("--context", folder, "--base", base, "--prompt")
-                ok &= code == 1 and "UNTRUSTED DATA" not in out + err and category in out
-                code, out, err = cli("--context", folder, "--base", base, "--prompt", "--json")
-                data = json.loads(out)
-                ok &= (code == 1 and "text" not in data["review_prompt"] and category in data["refused"]
-                       and "UNTRUSTED DATA" not in out)
+                ok = r["available"] and material.get("ready") and body in material.get("text", "")
+                code, out, _err = cli("--context", folder, "--base", base, "--prompt")
+                ok &= code == 0 and body in out
+                code, out, _err = cli("--context", folder, "--base", base, "--prompt", "--json")
+                ok &= code == 0 and body in json.loads(out)["review_prompt"]["text"]
                 if not ok:
-                    print(f"    not refused: {label}")
-                all_ok &= ok
-            check(all_ok, f"each of {len(quoted)} quoted forms — commits full, abbreviated and described; "
-                          "branch, ref and typed base; folder, checkout, private state and home in native, "
-                          "slash, case, MSYS, WSL, file: and escaped forms — is refused, naming the kind, "
-                          "never the value, exit 1, nothing printed")
+                    print(f"    not embedded: {label}")
+                embedded_ok &= ok
+                # The same value is still refused wherever Charter itself would add it.
+                und = gc.undisclosed(folder, base, gc._resolve(folder, base), cmp.secrets(folder))
+                sent = gc.disclosure_refusal([("what is sent with it", text)], "", und)
+                ok = category in sent and text not in sent and "what is sent with it" in sent
+                if category != gc.REVISION:
+                    framed = gc.disclosure_refusal([], f"Charter's wording: {text}", und)
+                    ok &= category in framed and "Charter's own wording" in framed and text not in framed
+                if not ok:
+                    print(f"    not refused where Charter adds it: {label}")
+                refused_ok &= ok
+            check(embedded_ok, f"each of {len(quoted)} quoted forms — commits full, abbreviated and described; "
+                               "branch, ref and typed base; folder, checkout, private state and home in "
+                               "native, slash, case, MSYS, WSL, file: and escaped forms — in a governing "
+                               "document is embedded exactly as it reads, and the prompt is printed, exit 0")
+            check(refused_ok, "and each is still refused, naming the kind and never the value, when "
+                              "Charter itself would add it, beside the material or in its own wording")
 
             write(folder, "authoritative/a.md", doc_text("a", "Alpha", body=f"Alpha rules. {head}\n" + BIG))
             generate(folder, "Demo project")
             code, out, _err = cli("--context", folder, "--base", "base", "--packet", outside)
-            check(code == 1 and gc.COMMIT in out and os.listdir(outside) == [] and head not in out,
-                  "past the limit, a packet quoting a commit is not written")
-            code, out, _err = cli("--context", folder, "--base", "base", "--packet", outside, "--json")
+            saved = os.listdir(outside)
+            check(code == 0 and len(saved) == 1
+                  and head in open(os.path.join(outside, saved[0]), encoding="utf-8").read(),
+                  "past the limit, a packet whose document quotes a commit is written, the quote kept")
+            for name in saved:
+                os.remove(os.path.join(outside, name))
+            named = os.path.join(outside, f"review-{head[:12]}.md")
+            code, out, _err = cli("--context", folder, "--base", "base", "--packet", named)
+            check(code == 1 and gc.COMMIT in out and "the packet's file name" in out
+                  and os.listdir(outside) == [] and head[:12] not in out,
+                  "but a packet file name that would carry a commit, sent with the material, is refused "
+                  "and nothing is written")
+            code, out, _err = cli("--context", folder, "--base", "base", "--packet", named, "--json")
             check(code == 1 and gc.COMMIT in json.loads(out)["refused"] and os.listdir(outside) == [],
                   "and with --json, the same refusal and no file")
 
-            # The base's documents are checked too: a base whose removed document
-            # quotes the current branch, or this checkout's location in MSYS form.
+            # Charter's own wording is checked: were it ever to carry a local
+            # location, no material is prepared.
             write(folder, "authoritative/a.md", original)
             generate(folder, "Demo project")
+            with patched(impact, "comparison_framing", lambda *a, **k: f"Charter wrote {folder} here."):
+                r = gc.compare(folder, "base", cmp.secrets(folder))
+                code, out, err = cli("--context", folder, "--base", "base", "--prompt")
+            check(r["available"] and not r["review_prompt"]["ready"]
+                  and gc.LOCATION in r["review_prompt"]["reason"]
+                  and "Charter's own wording" in r["review_prompt"]["reason"]
+                  and folder not in r["review_prompt"]["reason"]
+                  and code == 1 and "UNTRUSTED DATA" not in out + err,
+                  "a location in Charter's own wording is refused, naming the kind, exit 1, nothing printed")
+            normal = gc.compare(folder, "base", cmp.secrets(folder))["review_prompt"]
+            und = gc.undisclosed(folder, "base", gc._resolve(folder, "base"), cmp.secrets(folder))
+            check(normal["ready"] and not gc.disclosed(normal["text"], und, names=False),
+                  "ordinary material, with documents that quote nothing, still holds none of those values")
+
+            # The base's documents are embedded as they read too.
             base_files = {"authoritative/a.md": doc_text("a", "Alpha", body="Alpha rules.\n"),
                           "authoritative/s.md": doc_text("s", "Steady", body="Steady rules.\n")}
             msys = "/" + repo[0].lower() + repo[2:].replace("\\", "/") if re.match(r"[A-Za-z]:", repo) else repo
-            for tag, quote, category in (("quoted-branch", f"Work on {branch}.\n", gc.REVISION),
-                                         ("quoted-place", f"Kept in {msys}/notes.\n", gc.LOCATION),
-                                         ("quoted-self", "Compare with quoted-self.\n", gc.REVISION)):
+            for tag, quote in (("quoted-branch", f"Work on {branch}.\n"),
+                               ("quoted-place", f"Kept in {msys}/notes.\n"),
+                               ("quoted-self", "Compare with quoted-self.\n")):
                 files = dict(base_files, **{"authoritative/b.md": doc_text("b", "Beta", body=quote)})
                 git(repo, "tag", tag, _commit_context(repo, folder, files, tag))
                 r = gc.compare(folder, tag, cmp.secrets(folder))
-                check(r["available"] and not r["review_prompt"]["ready"]
-                      and category in r["review_prompt"]["reason"]
-                      and "the base version of `authoritative/b.md`" in r["review_prompt"]["reason"],
-                      f"a base document quoting {category.split(',')[0]} ({tag}) is refused too")
+                check(r["available"] and r["review_prompt"]["ready"]
+                      and quote in r["review_prompt"]["text"],
+                      f"a base document quoting {quote.strip()!r} ({tag}) is embedded as it reads")
                 git(repo, "tag", "-d", tag)
 
-            # Whole tokens only: a base named `main` is not refused for `maintain`.
+            # The reported case: a base named `main`, and documents that say `main`.
             if branch == "main":
                 git(repo, "branch", "-m", "main", "trunk")
             git(repo, "branch", "main", "base")
-            write(folder, "authoritative/a.md", doc_text(
-                "a", "Alpha", body="We maintain the domain, mainly; see main.md and remain-main-ish.\n"))
-            generate(folder, "Demo project")
+            for body in ("We maintain the domain, mainly; see main.md and remain-main-ish.\n",
+                         f"A hash-like word {base_commit[:6]}.\n", "Merged into main.\n"):
+                write(folder, "authoritative/a.md", doc_text("a", "Alpha", body=body))
+                generate(folder, "Demo project")
+                r = gc.compare(folder, "main", cmp.secrets(folder))
+                check(r["available"] and r["review_prompt"]["ready"] and body in r["review_prompt"]["text"],
+                      f"--base main: a document saying {body.strip()!r} is embedded, not refused")
+            code, out, _err = cli("--context", folder, "--base", "main", "--prompt")
+            check(code == 0 and "Merged into main." in out, "and `charter compare --base main --prompt` prints it")
+            # The project name and the documents' logical paths are reviewed content too.
+            write(folder, "authoritative/a.md", original)
+            write(folder, "authoritative/main.md", doc_text("main", "Main", body="Main rules.\n"))
+            generate(folder, "main")
             r = gc.compare(folder, "main", cmp.secrets(folder))
-            check(r["available"] and r["review_prompt"]["ready"],
-                  "a document whose words merely contain the base name (`maintain`, `domain`, `main.md`) is "
-                  "not refused")
-            write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Merged into main.\n"))
-            generate(folder, "Demo project")
-            r = gc.compare(folder, "main", cmp.secrets(folder))
-            check(not r["review_prompt"]["ready"] and gc.REVISION in r["review_prompt"]["reason"],
-                  "but the name itself, as a word, is")
-            write(folder, "authoritative/a.md", doc_text("a", "Alpha", body=f"A hash-like word {base_commit[:6]}.\n"))
-            generate(folder, "Demo project")
-            check(gc.compare(folder, "main", cmp.secrets(folder))["review_prompt"]["ready"],
-                  "fewer than 7 hex digits is not taken for a commit")
+            check(r["available"] and r["review_prompt"]["ready"]
+                  and "authoritative/main.md" in r["review_prompt"]["text"]
+                  and "- Project: main" in r["review_prompt"]["text"],
+                  "a project named `main` and a document at `authoritative/main.md` are not refused")
+            os.remove(os.path.join(folder, "authoritative", "main.md"))
             git(repo, "branch", "-D", "main")
             if branch == "main":
                 git(repo, "branch", "-m", "trunk", "main")
-            check("candidate" not in gc.DISCLOSURE and "base versions" in gc.DISCLOSURE,
+            check("candidate" not in gc.DISCLOSURE and "base versions" in gc.DISCLOSURE
+                  and "of its own" in gc.DISCLOSURE and "as they read" in gc.DISCLOSURE,
                   "the disclosure statement describes what comparison material holds: current and base "
-                  "documents, no candidates")
+                  "documents as they read, no candidates, and nothing Charter adds of its own")
             write(folder, "authoritative/a.md", original)
             generate(folder, "Demo project")
             after = repo_snapshot(repo)
@@ -727,7 +765,7 @@ def case_disclosure() -> None:
 
 
 def case_location_aliases() -> None:
-    print("\na location is refused in the spelling the person used, not only the resolved one")
+    print("\na location is recognised in the spelling the person used, not only the resolved one")
     from app import compare as cmp
     from app import host_state as hs
     with isolated_private_state():
@@ -736,31 +774,32 @@ def case_location_aliases() -> None:
         before_repo = repo_snapshot(repo)
         link = repo + "-link"
 
-        def refused(text: str, label: str, through: str = folder) -> None:
-            write(folder, "authoritative/a.md", doc_text("a", "Alpha", body=f"Alpha rules. {text}\n"))
+        def recognised(text: str, label: str, through: str = folder) -> None:
+            body = f"Alpha rules. {text}\n"
+            write(folder, "authoritative/a.md", doc_text("a", "Alpha", body=body))
             generate(folder, "Demo project")
             r = gc.compare(through, "base", cmp.secrets(through))
             material = r.get("review_prompt") or {}
-            code, out, err = cli("--context", through, "--base", "base", "--prompt")
-            check(r["available"] and not material.get("ready") and gc.LOCATION in material.get("reason", "")
-                  and text not in material.get("reason", "") and code == 1
-                  and "UNTRUSTED DATA" not in out + err,
-                  f"{label}: refused, naming the kind, never the value")
+            und = gc.undisclosed(through, "base", gc._resolve(through, "base"), cmp.secrets(through))
+            framed = gc.disclosure_refusal([], f"Charter's wording: {text}", und)
+            check(r["available"] and material.get("ready") and body in material.get("text", "")
+                  and gc.LOCATION in framed and text not in framed,
+                  f"{label}: embedded as it reads in a document, and refused were Charter to add it")
 
         try:
             # A root link, as macOS's /var is for /private/var: made up here, so
             # every platform checks it, the checkout found resolved.
             fake = os.path.join(os.path.dirname(os.path.realpath(repo)), "charter-alias-root")
             with patched(hs, "_root_links", lambda: [(fake, os.path.dirname(os.path.realpath(repo)))]):
-                refused(f"Stored at {fake}/{os.path.basename(repo)}/notes today.",
-                        "the checkout through a root link to where it resolves")
+                recognised(f"Stored at {fake}/{os.path.basename(repo)}/notes today.",
+                           "the checkout through a root link to where it resolves")
             if sys.platform == "darwin" and os.path.realpath(repo).startswith("/private/var/"):
-                refused(f"Stored at {os.path.realpath(repo)[len('/private'):]} today.",
-                        "macOS: the checkout as /var/…, though it resolves to /private/var/…")
+                recognised(f"Stored at {os.path.realpath(repo)[len('/private'):]} today.",
+                           "macOS: the checkout as /var/…, though it resolves to /private/var/…")
             if _link_folder(link, repo):
                 through = os.path.join(link, "context")
-                refused(f"Stored at {link} today.", "the checkout as reached through a link", through)
-                refused(f"Stored at {os.path.realpath(repo)} today.", "and as that link resolves", through)
+                recognised(f"Stored at {link} today.", "the checkout as reached through a link", through)
+                recognised(f"Stored at {os.path.realpath(repo)} today.", "and as that link resolves", through)
             write(folder, "authoritative/a.md", original)
             generate(folder, "Demo project")
             check(repo_snapshot(repo) == before_repo, "and the repository, Git included, is as it was")

@@ -15,7 +15,7 @@ from . import authority as au
 from . import changeset
 from . import host_state as hs
 from . import impact, review_packet
-from .console import ApiError, Session, pick_save_file
+from .console import ApiError, Session, candidate_source, pick_save_file
 
 
 def _guard(fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
@@ -75,9 +75,7 @@ def detail(ctx: changeset.Ctx, draft: Dict[str, Any]) -> Dict[str, Any]:
     def candidate(path: str) -> Dict[str, Any]:
         doc = now.candidates.get(path)
         source = str(doc.meta.get("source") or "") if doc else ""
-        revises_id = str(doc.meta.get(au.REVISES) or "") if doc else ""
-        source_kind = ("proposal" if source.startswith("Agent Proposal ")
-                       else "revise" if revises_id else "create")
+        source_kind, source_agent = candidate_source(doc.meta) if doc else ("create", "")
         lineage = au.revision_lineage(doc.meta, governing_docs, now.exam.hashes, archived) \
             if doc else {"revises_path": "", "revises_title": "", "revises_current": True}
         base = now.governing.get(lineage["revises_path"])
@@ -86,24 +84,39 @@ def detail(ctx: changeset.Ctx, draft: Dict[str, Any]) -> Dict[str, Any]:
                 "present": doc is not None,
                 "origin": "agent-proposal" if source.startswith("Agent Proposal ") else "",
                 "source_kind": source_kind,
+                "source_agent": source_agent,
                 "created": str(doc.meta.get("created") or "") if doc else "",
                 "change_summary": au.change_summary(doc.body, base.body if base else None)
                 if doc else "",
                 **lineage}
 
-    rows = []
-    for path in sorted(draft["outcomes"]):
+    def governing(path: str) -> Dict[str, Any]:
         doc = now.governing.get(path)
-        o = draft["outcomes"][path]
-        rows.append({"path": path, "title": doc.title if doc else path,
-                     "scope": str(doc.meta.get("scope") or "") if doc else "",
-                     "governs": doc is not None, "outcome": o.get("outcome", ""),
-                     "candidate": candidate(o["candidate"]) if o.get("candidate") else None})
-    retained = set(draft.get("retained") or [])
-    others = [{"path": p, "title": now.governing[p].title if p in now.governing else p,
-               "scope": str(now.governing[p].meta.get("scope") or "") if p in now.governing else "",
-               "retained": p in retained}
-              for p in changeset.others(draft)]
+        return {"path": path, "title": doc.title if doc else path,
+                "scope": str(doc.meta.get("scope") or "") if doc else "", "governs": doc is not None}
+
+    plan_view: Dict[str, Any]
+    if changeset.earlier(draft):
+        # As recorded: per-document outcomes, never re-decided here.
+        retained = set(draft.get("retained") or [])
+        plan_view = {"earlier": {
+            "rows": [dict(governing(path), outcome=draft["outcomes"][path].get("outcome", ""),
+                          candidate=candidate(draft["outcomes"][path]["candidate"])
+                          if draft["outcomes"][path].get("candidate") else None)
+                     for path in sorted(draft["outcomes"])],
+            "alongside": [candidate(p) for p in draft["alongside"]],
+            "others": [dict(governing(p), retained=p in retained) for p in changeset.others(draft)],
+            "others_retained": changeset.others_retained(draft)},
+            "conversion": conversion_view(now, draft) if active else None}
+    else:
+        plan_view = {
+            "plan_candidates": [dict(candidate(p), **changeset.decision_of(draft, p),
+                                     target_title=(governing(changeset.decision_of(draft, p)["target"])
+                                                   ["title"] if changeset.decision_of(draft, p)["target"]
+                                                   else ""))
+                                for p in draft["candidates"]],
+            "withdrawals": [governing(p) for p in draft["withdrawals"]],
+            "retained": [governing(p) for p in changeset.others(draft)]}
     used = set(draft["candidates"])
     available = [dict(candidate(p), used=p in used)
                  for p in sorted(now.candidates, key=lambda p: (now.candidates[p].title.casefold(), p))]
@@ -128,14 +141,14 @@ def detail(ctx: changeset.Ctx, draft: Dict[str, Any]) -> Dict[str, Any]:
     planned = changeset.plan_fingerprint(draft)
     return {
         "draft": _public(draft),
+        "form": draft.get("form", changeset.CURRENT),
         "lifecycle": changeset.lifecycle(draft, ev),
-        "review_stage": changeset.review_stage(draft),
+        "review_stage": changeset.review_stage(draft, review),
         "stale": ev["stale"],
         "reasons": ev["reasons"],
-        "rows": rows,
-        "alongside": [candidate(p) for p in draft["alongside"]],
-        "others": others,
-        "others_retained": changeset.others_retained(draft),
+        **plan_view,
+        "governing": [governing(p) for p in sorted(now.governing,
+                                                   key=lambda p: (now.governing[p].title.casefold(), p))],
         "candidates": [candidate(p) for p in draft["candidates"]],
         "available_candidates": available,
         "before": ev["before"],
@@ -154,6 +167,68 @@ def detail(ctx: changeset.Ctx, draft: Dict[str, Any]) -> Dict[str, Any]:
         "disclosure_warning": impact.DISCLOSURE_WARNING,
         "packet_disclosure": impact.PACKET_DISCLOSURE,
     }
+
+
+_FROM_WORDS = {changeset.REVISE: "Revise", changeset.REPLACE: "Replace",
+               changeset.WITHDRAW: "Withdraw", changeset.RETAIN: "Retain",
+               changeset.ALONGSIDE: "Govern alongside"}
+
+
+def conversion_view(now: changeset.Now, draft: Dict[str, Any]) -> Dict[str, Any]:
+    """Every change converting an earlier-form draft would make, in words for
+    the person, before they confirm it."""
+    out = changeset.conversion(draft)
+
+    def gov(path: str) -> str:
+        return f"“{now.governing[path].title}”" if path in now.governing else f"`{path}`"
+
+    def cand(path: str) -> str:
+        return f"“{now.candidates[path].title}”" if path in now.candidates else f"`{path}`"
+
+    lines = []
+    for c in out["changes"]:
+        was = _FROM_WORDS.get(c["from"], "")
+        if c["change"] == "converted":
+            text = (f"Revise {gov(c['document'])} with {cand(c['candidate'])} becomes Replace "
+                    f"{gov(c['document'])} with {cand(c['candidate'])}.")
+        elif c["change"] == "kept" and c["to"] == changeset.REPLACE:
+            text = f"Replace {gov(c['document'])} with {cand(c['candidate'])} is kept as declared."
+        elif c["change"] == "kept" and c["to"] == changeset.WITHDRAW:
+            text = f"Withdraw {gov(c['document'])} is kept as declared."
+        elif c["change"] == "kept":
+            text = f"Govern alongside {cand(c['candidate'])} is kept as declared."
+        elif c["from"] == "retain-others":
+            n = len(c["documents"])
+            text = (f"Retain all other governing documents ({n}) is removed: "
+                    f"{'they are' if n != 1 else 'it is'} retained without a decision.")
+        elif c["why"] == "retained":
+            text = f"Retain {gov(c['document'])} is removed: it is retained without a decision."
+        elif c["why"] == "candidate-used-twice":
+            where = f" for {gov(c['document'])}" if c["document"] else ""
+            text = (f"{was} {cand(c['candidate'])}{where} is removed: a candidate has one decision, "
+                    "and this one is already used above"
+                    + (f"; {gov(c['document'])} is retained." if c["document"] else "."))
+        elif c["why"] == "candidate-not-chosen":
+            text = (f"{was} {gov(c['document'])}, with no candidate chosen, is removed: it is "
+                    "retained.")
+        else:
+            text = f"{gov(c['document'])}, not yet decided, is removed: it is retained."
+        lines.append(dict(c, text=text))
+    return {"changes": lines, "plan_fingerprint": out["plan_fingerprint"]}
+
+
+def convert(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert an earlier-form draft to the current form, once the person has
+    seen every change and confirms. No governing context changes."""
+    ctx = _ctx(session)
+    if body.get("confirm") is not True:
+        raise ApiError("Converting a change set needs your explicit confirmation, after you have "
+                       "seen every change it makes.")
+
+    def run() -> Dict[str, Any]:
+        out = changeset.convert(ctx, _id(body), body.get("revision"))
+        return dict(detail(ctx, out["draft"]), converted=True)
+    return _guard(run)
 
 
 def receipt_detail(draft: Dict[str, Any]) -> Dict[str, Any]:
@@ -176,13 +251,15 @@ def list_drafts(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def create(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
-    """A new draft: empty, or prefilled with the one outcome the person chose
-    as `start`. Candidates join only through that explicit choice."""
+    """A new draft: empty, or prefilled with the one candidate or withdrawal
+    the person chose as `start`. Candidates join only through that explicit
+    choice."""
     ctx = _ctx(session)
-    unseeded = [k for k in ("candidates", "outcomes", "alongside", "retain_others") if k in body]
+    unseeded = [k for k in ("candidates", "decisions", "withdrawals", "outcomes", "alongside",
+                            "retain_others") if k in body]
     if unseeded:
-        raise ApiError("A change set starts empty, or with the one outcome named as `start`. A "
-                       "candidate joins it when you choose it for a row of its plan.")
+        raise ApiError("A change set starts empty, or with the one candidate or withdrawal named "
+                       "as `start`. Add more to it once it is open.")
     return _guard(lambda: detail(ctx, changeset.create(ctx, body.get("title", ""),
                                                        body.get("start"))))
 
@@ -194,8 +271,8 @@ def get(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
 
 def update(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     ctx = _ctx(session)
-    changes = {k: body[k] for k in ("title", "rationale", "candidates", "outcomes", "alongside",
-                                    "retain_others", "scopes") if k in body}
+    changes = {k: body[k] for k in ("title", "rationale", "candidates", "decisions", "withdrawals",
+                                    "outcomes", "alongside", "retain_others", "scopes") if k in body}
     return _guard(lambda: detail(ctx, changeset.update(ctx, _id(body), body.get("revision"),
                                                        changes)))
 
@@ -272,6 +349,18 @@ def attach_report(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
                                                               body.get("label", ""))))
 
 
+def add_review(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
+    ctx = _ctx(session)
+    return _guard(lambda: detail(ctx, changeset.add_review(ctx, _id(body))))
+
+
+def save_review(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Autosave one review: its reviewing agent and its text, as written."""
+    ctx = _ctx(session)
+    return _guard(lambda: detail(ctx, changeset.save_review(ctx, _id(body), body.get("report_id"),
+                                                            body.get("label"), body.get("text"))))
+
+
 def remove_report(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     ctx = _ctx(session)
     return _guard(lambda: detail(ctx, changeset.remove_report(ctx, _id(body),
@@ -301,10 +390,13 @@ ROUTES: Dict[str, Callable[[Session, Dict[str, Any]], Dict[str, Any]]] = {
     "/api/changeset/update": update,
     "/api/changeset/refresh": refresh,
     "/api/changeset/abandon": abandon,
+    "/api/changeset/convert": convert,
     "/api/changeset/delete": delete,
     "/api/changeset/prompt/copied": prompt_copied,
     "/api/changeset/packet/save": save_packet,
     "/api/changeset/report/attach": attach_report,
     "/api/changeset/report/remove": remove_report,
+    "/api/changeset/review/add": add_review,
+    "/api/changeset/review/save": save_review,
     "/api/changeset/apply": apply,
 }

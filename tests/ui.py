@@ -103,6 +103,12 @@ def build_fixture() -> dict:
         "expected_context_impact": {"related": ["authoritative/a.md"], "overlap": "none",
                                     "conflict": "none", "recommended_relationship": "alongside",
                                     "unresolved_decision": "none"}})["proposal_id"]
+    # A create that proposes its title, with a reason far longer than one line.
+    out["proposal_titled_reason"] = ("Releases are checked by hand today, and steps are missed. " * 12).strip()
+    out["proposal_titled"] = apx.file(folder, {
+        "agent": "codex", "operation": "create", "target_path": "authority-candidates/release-checklist.md",
+        "reason": out["proposal_titled_reason"], "proposed_body": "# Release checklist\n\nCheck each step.\n",
+        "proposed_meta": {"title": "Release checklist", "scope": "How a release is checked."}})["proposal_id"]
     # An amend of a candidate, which then changes, so the proposal goes stale.
     # (A create is never stale for a name collision: candidate names are private
     # and a collision is resolved when the proposal is accepted.)
@@ -119,6 +125,16 @@ def build_fixture() -> dict:
                 "proposed_body": "Clearer Beta.\n"}
     out["proposal_imported"] = console.import_file(session, {"json": json.dumps(returned),
                                                              "confirm": True})["proposal_id"]
+    # Creates with no supplied title: one imported whose body opens with a
+    # first-level heading, which titles it, and one filed directly with no
+    # heading at all, which falls back to its logical path.
+    out["proposal_imported_create"] = console.import_file(session, {"json": json.dumps({
+        "agent": "chat-agent", "operation": "create", "target_path": "authority-candidates/imported-rule.md",
+        "reason": "Write the imported rule down.", "proposed_body": "Intro line.\n\n# Imported rule\n\nText.\n"}),
+        "confirm": True})["proposal_id"]
+    out["proposal_untitled"] = apx.file(folder, {
+        "agent": "codex", "operation": "create", "target_path": "authority-candidates/untitled-rule.md",
+        "reason": "A rule with no heading.", "proposed_body": "Just the rule, with no heading.\n"})["proposal_id"]
     cs = ps.PrivateState.default().for_context(folder)
     with open(cs.path(ps.PROPOSALS, apx.PENDING, "dropped-in.json"), "w", encoding="utf-8") as fh:
         fh.write('{"agent": "unknown", "operation": "create"}\n')
@@ -191,18 +207,25 @@ def build_fixture() -> dict:
         "plan_id": out["plans"]["accept-proposal"]["plan_id"], "path": accepted_path})
     out["stage"] = console.stage(session, {"filename": "site-notes.md",
                                            "content_b64": "IyBTaXRlIG5vdGVzCgpHcm91bmQgY29uZGl0aW9ucyBvbiB0aGUgbm9ydGggYm91bmRhcnkuCg=="})
-    # Every governing change is a change set, started here from one candidate
-    # or document with the one outcome chosen: real answers to each start.
+    # Every governing change is a change set, started here from one candidate,
+    # undecided, or from a governing document to withdraw: real answers to each
+    # start, and to the decisions the person then makes.
     from app import api_changeset as api
     revised = next(d["path"] for d in out["state_valid"]["documents"] if d["title"] == "Beta revised")
-    out["cs_start_withdraw"] = api.create(session, {"start": {"document": "authoritative/b.md",
-                                                              "outcome": "withdraw"}})
-    out["cs_start_revise"] = api.create(session, {"start": {"document": "authoritative/b.md",
-                                                            "outcome": "revise", "candidate": revised}})
-    started = api.create(session, {"start": {"alongside": candidate}})
+    out["cs_start_withdraw"] = api.create(session, {"start": {"withdraw": "authoritative/b.md"}})
+    pending = api.create(session, {"start": {"candidate": revised}})
+    out["cs_start_candidate"] = pending
+    out["cs_start_replace_pending"] = api.update(session, {
+        "id": pending["draft"]["id"], "revision": pending["draft"]["revision"],
+        "decisions": {revised: {"decision": "replace", "target": ""}}})
+    out["cs_start_replaced"] = api.update(session, {
+        "id": pending["draft"]["id"], "revision": out["cs_start_replace_pending"]["draft"]["revision"],
+        "decisions": {revised: {"decision": "replace", "target": "authoritative/b.md"}}})
+    started = api.create(session, {"start": {"candidate": candidate}})
     out["cs_start_alongside"] = started
     ready = api.update(session, {"id": started["draft"]["id"], "revision": started["draft"]["revision"],
-                                 "retain_others": True})
+                                 "decisions": {candidate: {"decision": "govern-alongside"}}})
+    out["cs_start_ready"] = ready
     out["start_request"] = {"draft_id": ready["draft"]["id"], "draft_revision": ready["draft"]["revision"]}
     out["start_plan"] = plan("changeset", out["start_request"])
     api.apply(session, {"id": ready["draft"]["id"], "revision": ready["draft"]["revision"],
@@ -269,6 +292,15 @@ def connect_payloads(folder: str) -> dict:
     from app import manager as mg
     out = {}
     saved = os.environ.get("PATH", "")
+    # As an installed release sees it, whichever checkout runs the tests; a
+    # development checkout's own payload names its launcher by full path.
+    dev = os.path.join(tempfile.mkdtemp(prefix="charter-ui-dev-"), "worktree")
+    os.makedirs(dev)
+    open(os.path.join(dev, ".git"), "w", encoding="utf-8").close()
+    out["connect_dev_launcher"] = os.path.join(dev, "charter.cmd")
+    out["connect_windows_dev"] = connect.connection(folder, windows=True, registry=_Registry(""), launchers=dev)
+    real_dev = connect.development_checkout
+    connect.development_checkout = lambda folder=on_path.LAUNCHERS: False
     try:
         for name, path in (("", on_path.LAUNCHERS), ("_needs_path", "")):
             os.environ["PATH"] = path
@@ -284,6 +316,8 @@ def connect_payloads(folder: str) -> dict:
         shutil.rmtree(os.path.dirname(odd))
     finally:
         os.environ["PATH"] = saved
+        connect.development_checkout = real_dev
+        shutil.rmtree(os.path.dirname(dev), ignore_errors=True)
     return out
 
 
@@ -315,18 +349,18 @@ def changeset_payloads() -> dict:
     out["cs_long_scope"] = LONG_SCOPE
     out["cs_drafts"] = {path: console.draft(session, {"path": path}) for path in (revision, newcomer)}
     # A blank candidate scope replacing a document inherits that document's.
-    out["cs_blank"] = api.create(session, {"start": {"document": "authoritative/c.md", "outcome": "replace",
-                                                     "candidate": spare}})
+    out["cs_blank"] = api.create(session, {"start": {"candidate": spare, "decision": "replace",
+                                                     "target": "authoritative/c.md"}})
     created = api.create(session, {})
     out["cs_created"] = created
     did = created["draft"]["id"]
     out["cs_row"] = api.update(session, {"id": did, "revision": created["draft"]["revision"],
-                                         "outcomes": {"authoritative/a.md": {"outcome": ""}}})
+                                         "candidates": [revision]})
     valid = api.update(session, {"id": did, "revision": out["cs_row"]["draft"]["revision"],
-                                 "title": "Restructure",
-                                 "outcomes": {"authoritative/a.md": {"outcome": "revise", "candidate": revision},
-                                              "authoritative/b.md": {"outcome": "withdraw"}},
-                                 "alongside": [newcomer], "retain_others": True})
+                                 "title": "Restructure", "candidates": [revision, newcomer],
+                                 "decisions": {revision: {"decision": "replace", "target": "authoritative/a.md"},
+                                               newcomer: {"decision": "govern-alongside"}},
+                                 "withdrawals": ["authoritative/b.md"]})
     out["cs_valid"] = valid
     out["cs_list"] = api.list_drafts(session, {})
     now = chs.Now(ctx)
@@ -338,18 +372,36 @@ def changeset_payloads() -> dict:
                                 "text": report_for(identity, material, planned)})
     out["cs_reports"] = api.attach_report(session, {"id": did, "label": "Agent two", "text": report_for(
         identity, material, planned, recommendations=[{"path": "authoritative/a.md", "action": "retain"}])})
+    # A third review, added empty, then saved with text that is not a report:
+    # kept as written, and never attached evidence.
+    out["cs_review_added"] = api.add_review(session, {"id": did})
+    out["cs_review_invalid"] = api.save_review(session, {
+        "id": did, "report_id": out["cs_review_added"]["reports"][-1]["id"],
+        "label": "Third agent", "text": "not a report"})
     out["cs_plan"] = console.plan(session, {"kind": "changeset", "request": {
-        "draft_id": did, "draft_revision": out["cs_reports"]["draft"]["revision"]}})
+        "draft_id": did, "draft_revision": out["cs_review_invalid"]["draft"]["revision"]}})
     p = au.plan(folder, "edit-candidate", {"candidate": newcomer, "scope": "Delta, narrower."})
     au.apply(folder, "edit-candidate", p.request, p.plan_id, True)
     out["cs_stale"] = api.get(session, {"id": did})
     out["cs_refreshed"] = api.refresh(session, {"id": did})
+    # The person copied the review prompt before applying: a fact the receipt keeps.
+    copied = api.prompt_copied(session, {"id": did, "mode": "self-contained",
+                                         "plan_fingerprint": out["cs_refreshed"]["plan_fingerprint"]})
     plan = console.plan(session, {"kind": "changeset", "request": {
-        "draft_id": did, "draft_revision": out["cs_refreshed"]["draft"]["revision"]}})
-    api.apply(session, {"id": did, "revision": out["cs_refreshed"]["draft"]["revision"],
+        "draft_id": did, "draft_revision": copied["draft"]["revision"]}})
+    api.apply(session, {"id": did, "revision": copied["draft"]["revision"],
                         "plan_id": plan["plan_id"], "confirm": PHRASE})
     out["cs_applied"] = api.get(session, {"id": did})
     out["cs_applied_list"] = api.list_drafts(session, {})
+    # A draft recorded in the earlier form: shown as recorded, then converted.
+    from tests.changeset import _earlier_record
+    earlier = _earlier_record(ctx, "00000000000000e1", candidates=[spare], outcomes={
+        "authoritative/a.md": {"outcome": "retain"},
+        "authoritative/c.md": {"outcome": "revise", "candidate": spare}})
+    out["cs_earlier"] = api.get(session, {"id": earlier["id"]})
+    out["cs_converted"] = api.convert(session, {"id": earlier["id"], "revision": earlier["revision"],
+                                                "confirm": True})
+    api.delete(session, {"id": earlier["id"], "confirm": True})
     # An active draft, an applied receipt and an abandoned draft: only the
     # first is counted in the navigation.
     gone = api.create(session, {})

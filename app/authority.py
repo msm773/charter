@@ -5,19 +5,22 @@ New or revised material is first an authority candidate, kept in private
 state. A person may retire a candidate, archiving it privately, directly.
 
 Governing context changes only through a coordinated change set
-(`changeset`), whose outcomes may:
+(`changeset`), in which:
 
-  * grant a candidate to govern alongside the existing documents;
-  * revise or replace one named governing document with a candidate: it takes
-    that document's path, and the replaced version is archived privately; or
-  * withdraw a governing document, returning it to candidate status.
+  * a candidate governs alongside the existing documents, or replaces one
+    governing document the person selects: it takes that document's path,
+    and the replaced version is archived privately;
+  * a governing document may be withdrawn, returning it to candidate status;
+    and every other governing document is retained.
 
 There is no direct grant, replace or withdraw action. A change set started
-from one candidate or document is prefilled with that one outcome.
+from one candidate includes it, its decision not yet made; one started from
+a governing document withdraws it.
 
 A governing document's title, body and scope are never edited in place:
-**Revise** files a candidate prefilled from it. Candidates may be added and
-edited freely; neither changes what governs.
+**Revise** files a candidate prefilled from it, applied through replace like
+any other. Candidates may be added and edited freely; neither changes what
+governs.
 
 Every action is first a plan: what governs before and after, every file it
 writes with its diff, scope continuity, and why it cannot apply, if it cannot.
@@ -55,9 +58,8 @@ CONFIRM_PHRASE = "change governing context"
 # is built. Only the dates differ between the two.
 NEUTRAL_DAY = "2000-01-01"
 APPLY_DATE_NOTE = "Candidate dates are assigned when this change is applied."
-# A change set may also date governing documents, archived versions and
-# withdrawn documents returned to candidates.
-CHANGESET_DATE_NOTE = "Document dates are assigned when this change set is applied."
+# A change set's preview carries no such note: it shows only what a person
+# needs to decide (UI Standards).
 
 KINDS = ("add", "revise", "edit-candidate", "retire", "accept-proposal", "reject-proposal",
          "changeset")
@@ -338,13 +340,6 @@ class _Builder:
             plan.expected_hashes = {p: ac.sha256_text(t) for p, t in texts.items()}
             plan.expected_hashes[ac.CONTEXT_MAP] = ac.sha256_text(generated[ac.CONTEXT_MAP])
             plan.after = _listing(docs)
-            plan.notes.append("Every outcome, and the regenerated AGENT-CONTEXT.md and "
-                              ".agent-context.json, are written as one action, rolled back "
-                              "on failure. Charter does not stage, commit or "
-                              "otherwise operate Git.")
-            plan.notes.append("Confirming also confirms that the declared outcomes are "
-                              "complete: Charter checks the structure, not "
-                              "whether the documents agree.")
         else:
             plan.after = plan.before
         plan.problems += tx.path_problems(
@@ -380,7 +375,7 @@ def _add(b: _Builder, req: Dict[str, Any]) -> None:
     if source:
         meta["source"] = _single_line(source, "source")
     b.private(b.candidate_store(logical), logical, None, _render(meta, body))
-    b.plan.summary = f"File “{title}” as an authority candidate. It does not govern."
+    b.plan.summary = f"Create candidate: “{title}” becomes a private authority candidate."
 
 
 def _revise(b: _Builder, req: Dict[str, Any]) -> None:
@@ -450,6 +445,9 @@ REVISES_SHA = "revises_sha256"
 # from or the Agent Proposal and agent that filed it. Private manager state
 # (UI Standards), so never carried into a governing document.
 PRIVATE_KEYS = (REVISES, REVISES_SHA, "source")
+# The source a governing document withdrawn by a change set records, once it
+# is an authority candidate again.
+WITHDRAWN_SOURCE = "Withdrawn governing document"
 
 
 def revision_lineage(meta: Dict[str, Any], documents: List[Document], hashes: Dict[str, str],
@@ -574,7 +572,8 @@ def _accept_proposal(b: _Builder, req: Dict[str, Any]) -> None:
         b.private(b.candidate_store(path), path, cand_text, None)
         b.private(f"{ps.ARCHIVE}/{name}", f"archive/{name}", None, _render(meta, doc.body))
         outcome = f"archive/{name}"
-        b.plan.summary = f"Accept {pid}: retire the authority candidate “{doc.title}”."
+        b.plan.summary = (f"Accept the proposal: the authority candidate “{doc.title}” is retired to "
+                          "the private archive.")
     else:
         current = target.text_of(path) if op == "amend" else None
         body = p.get("proposed_body")
@@ -589,8 +588,7 @@ def _accept_proposal(b: _Builder, req: Dict[str, Any]) -> None:
                                 "a front-matter block, which would be a second one inside the "
                                 "candidate. Reject it, and ask the agent to propose again without it.")
         if op == "create":
-            first = next((ln[2:].strip() for ln in body.splitlines() if ln.startswith("# ")), "")
-            title = meta_in.get("title") or first or path.rsplit("/", 1)[-1][:-3]
+            title = meta_in.get("title") or apx.first_heading(body) or path.rsplit("/", 1)[-1][:-3]
             # Intake never refuses a create for a name already in use (candidate
             # and archived names are private), so a collision is resolved here:
             # the requested name when it is free, otherwise a fresh free name.
@@ -600,7 +598,7 @@ def _accept_proposal(b: _Builder, req: Dict[str, Any]) -> None:
             meta = _candidate_meta(b.new_id(slugify(title)), title, meta_in.get("scope", ""), b.day)
             meta["source"] = source
             b.private(b.candidate_store(logical), logical, None, _render(meta, body))
-            b.plan.summary = f"Accept {pid}: file “{title}” as an authority candidate."
+            b.plan.summary = f"Accept as candidate: “{' '.join(title.split())}” becomes a private authority candidate."
         elif path in b.sit.governing:
             doc = b.sit.governing[path]
             title = meta_in.get("title") or doc.title
@@ -615,8 +613,9 @@ def _accept_proposal(b: _Builder, req: Dict[str, Any]) -> None:
             meta[REVISES] = doc.id
             meta[REVISES_SHA] = b.sit.exam.hashes.get(doc.path, "")
             b.private(b.candidate_store(logical), logical, None, _render(meta, body))
-            b.plan.summary = (f"Accept {pid}: file a revision of “{doc.title}” as a new authority "
-                              "candidate. The governing document does not change.")
+            b.plan.summary = (f"Accept as candidate: a revision of “{doc.title}”, titled “{title}”, "
+                              "becomes a private authority candidate. “" + doc.title + "” keeps governing "
+                              "unchanged.")
         else:
             logical = path
             doc, cand_text = b.require_candidate(path)
@@ -626,7 +625,7 @@ def _accept_proposal(b: _Builder, req: Dict[str, Any]) -> None:
             if "scope" in meta_in:
                 meta["scope"] = meta_in["scope"]
             b.private(b.candidate_store(logical), logical, cand_text, _render(meta, body))
-            b.plan.summary = f"Accept {pid}: update the authority candidate “{doc.title}”."
+            b.plan.summary = f"Accept as candidate: the private authority candidate “{doc.title}” is updated."
         outcome = logical
     _move_record(b, apx, record, text, apx.ACCEPTED, outcome=outcome)
     b.plan.notes.append(PROPOSAL_NOTE)
@@ -634,11 +633,12 @@ def _accept_proposal(b: _Builder, req: Dict[str, Any]) -> None:
 
 def _reject_proposal(b: _Builder, req: Dict[str, Any]) -> None:
     apx, record, text = _proposal(b, req)
-    reason = _text_field(req, "reason", True) or ""
-    if not reason.strip():
-        raise ActionRefused("Say why the proposal is rejected.")
-    _move_record(b, apx, record, text, apx.REJECTED, reason=reason.strip())
-    b.plan.summary = f"Reject {record['proposal_id']}. Nothing else changes."
+    reason = (_text_field(req, "reason") or "").strip()
+    # Optional (UI Standards): kept privately with the rejection only when given.
+    _move_record(b, apx, record, text, apx.REJECTED, **({"reason": reason} if reason else {}))
+    title, _kind = apx.title_of(record["proposal"], apx.Target(b.sit.folder, b.sit.cs, b.sit.exam)
+                                if b.sit.exam.valid else None, b.sit.cs)
+    b.plan.summary = f"Reject the proposal for “{title}”. Nothing else changes."
 
 
 # --- coordinated change sets ------------------------------------------------------------
@@ -659,13 +659,16 @@ def _free_candidate(b: _Builder, name: str, exclude: str, taken: List[str]) -> s
 
 def _compose_changeset(b: _Builder, draft: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Every declared outcome of a change set, composed into one plan, with
-    what each does. Outcomes are the person's, exactly as declared."""
+    what each does: each candidate's replacement or governing alongside, each
+    withdrawal, and every other governing document retained. Outcomes are the
+    person's, exactly as declared."""
     from . import changeset as chs
     b.plan.governing_change = True
     effects: List[Dict[str, Any]] = []
     archived_taken: List[str] = []
     candidates_taken: List[str] = []
-    declared = dict(draft["outcomes"])
+    outcomes, alongside = chs.rows(draft)
+    declared = dict(outcomes)
     for gov in chs.others(draft):
         declared[gov] = {"outcome": chs.RETAIN}
     for gov in sorted(declared):
@@ -705,10 +708,6 @@ def _compose_changeset(b: _Builder, draft: Dict[str, Any]) -> List[Dict[str, Any
                             superseded_by=[doc.id], updated=b.day)
             b.private(b.candidate_store(o["candidate"]), o["candidate"], text, None)
             b.private(f"{ps.ARCHIVE}/{name}", f"archive/{name}", None, _render(archived, old.body))
-            verb = "revises" if o["outcome"] == chs.REVISE else "replaces"
-            b.plan.notes.append(f"“{doc.title}” {verb} “{old.title}” at `{gov}`; scope "
-                                f"{cand_scope or '(blank)'} → {meta['scope'] or '(blank)'}"
-                                + (" (inherited)" if not cand_scope and old_scope else "") + ".")
             effects.append(dict(base, candidate=o["candidate"], candidate_title=doc.title,
                                 candidate_id=doc.id, archived_to=f"archive/{name}",
                                 scope_proposed=cand_scope, scope_after=meta["scope"]))
@@ -716,12 +715,13 @@ def _compose_changeset(b: _Builder, draft: Dict[str, Any]) -> List[Dict[str, Any
             del b.result[gov]
             logical = _free_candidate(b, gov.rsplit("/", 1)[-1], gov, candidates_taken)
             candidates_taken.append(ps.candidate_name(logical))
-            meta = dict(old.meta, authority="non-authoritative", status="active", updated=b.day)
+            meta = dict(old.meta, authority="non-authoritative", status="active", updated=b.day,
+                        source=WITHDRAWN_SOURCE)
             b.private(b.candidate_store(logical), logical, None, _render(meta, old.body))
             effects.append(dict(base, withdrawn_to=logical))
         else:
             effects.append(dict(base, scope_after=old_scope))
-    for logical in draft["alongside"]:
+    for logical in alongside:
         doc, text = b.require_candidate(logical)
         _governable(doc, text)
         path = f"{ac.AUTHORITATIVE}/{ps.candidate_name(logical)}"
@@ -773,9 +773,6 @@ def _changeset(b: _Builder, req: Dict[str, Any]) -> None:
         current = fh.read()
     b.private(record, f"Change set “{draft['title']}” (receipt)", current,
               chs.applied_record(draft, receipt, ac.context_fingerprint(hashes)))
-    b.plan.notes.append("The change set's immutable receipt is kept privately, written in the "
-                        "same action: the change set and its receipt are applied together, or "
-                        "not at all.")
 
 
 def changeset_plan(folder: str, draft: Dict[str, Any], summary_fn: Any = None,
@@ -790,7 +787,6 @@ def changeset_plan(folder: str, draft: Dict[str, Any], summary_fn: Any = None,
     def build(day: str):
         b = _Builder(sit, "changeset", request, day)
         effects = _compose_changeset(b, draft)
-        b.plan.notes.append(CHANGESET_DATE_NOTE)
         return b.finish(), effects
 
     neutral, _effects = build(NEUTRAL_DAY)
@@ -833,9 +829,7 @@ def _plan(sit: Situation, kind: str, request: Dict[str, Any]) -> Plan:
 def _build(sit: Situation, kind: str, request: Dict[str, Any], day: str) -> Plan:
     b = _Builder(sit, kind, request, day)
     _BUILDERS[kind](b, request)
-    if kind == "changeset":
-        b.plan.notes.append(CHANGESET_DATE_NOTE)
-    elif kind in _DATED_KINDS:
+    if kind != "changeset" and kind in _DATED_KINDS:
         b.plan.notes.append(APPLY_DATE_NOTE)
     return b.finish()
 

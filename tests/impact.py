@@ -117,8 +117,9 @@ def case_material() -> None:
         fences = [ln for ln in text.splitlines() if ln.startswith("<<<BEGIN UNTRUSTED DATA ")]
         check(len(fences) == 3 + 2 and "Alpha two body." in text,
               "every governing document and candidate is fenced as untrusted data, in full")
-        check("revise `authoritative/a.md` with candidate" in text and "withdraw `authoritative/b.md`" in text
-              and "govern alongside" in text, "and the complete planned change, as a plan, not a decision")
+        check("replace `authoritative/a.md` with candidate" in text and "withdraw `authoritative/b.md`" in text
+              and "govern alongside" in text and "retain every other governing document: `authoritative/c.md`" in text,
+              "and the complete planned change, retained documents included, as a plan, not a decision")
         for secret in (folder, root, ctx.cs.base, "contexts", "commit "):
             check(secret not in text, f"it holds no {secret if len(secret) < 12 else 'local path'!r}")
         check(impact.private_leaks("see " + folder + "/x", ctx.secrets()),
@@ -137,9 +138,30 @@ def case_material() -> None:
             check(impact.private_leaks("see " + canon[len("/private"):] + "/x", ctx.secrets()),
                   "macOS: and as /var/…, though it is kept as /private/var/…")
 
+        # Reviewed text is embedded exactly as it reads, even when it quotes a
+        # local location; only Charter's own wording is checked.
+        plain = read(folder, "authoritative/c.md").decode()
+        write(folder, "authoritative/c.md", plain + f"\nNotes are kept in {folder}.\n")
+        generate(folder)
+        api.refresh(console.Session(folder), {"id": draft["id"]})
+        p = api.detail(ctx, chs.load(ctx, draft["id"]))["review_prompt"]
+        check(p["ready"] and f"Notes are kept in {folder}." in p["text"],
+              "a governing document quoting a local location is embedded as it reads, not refused")
+        real = impact.prompt_framing
+        impact.prompt_framing = lambda *a, **k: f"Charter wrote {folder} here."
+        try:
+            p = api.detail(ctx, chs.load(ctx, draft["id"]))["review_prompt"]
+        finally:
+            impact.prompt_framing = real
+        check(not p["ready"] and "text" not in p and "Charter's own wording" in p["reason"]
+              and folder not in p["reason"],
+              "but a location in Charter's own wording is refused, and no material is prepared")
+        write(folder, "authoritative/c.md", plain)
+        generate(folder)
+        api.refresh(console.Session(folder), {"id": draft["id"]})
+
         big = "Long line of governing text. " * 2500
         write(folder, "authoritative/c.md", read(folder, "authoritative/c.md").decode() + big)
-        from tests.agent_context import generate
         generate(folder)
         api.refresh(console.Session(folder), {"id": draft["id"]})
         p = api.detail(ctx, chs.load(ctx, draft["id"]))["review_prompt"]
@@ -190,7 +212,7 @@ def case_reports() -> None:
             {"path": "authoritative/a.md", "action": "retain"}])
         detail = api.attach_report(session, {"id": draft["id"], "text": disagree, "label": "Agent two"})
         check([r["status"] for r in detail["reports"]] == ["well-formed", "well-formed"]
-              and detail["rows"][0]["outcome"] == "revise",
+              and detail["plan_candidates"][0]["decision"] == "replace",
               "two reports that disagree are both kept, and neither changes an outcome")
         p = au.plan(folder, "edit-candidate", {"candidate": revision, "scope": "Changed."})
         au.apply(folder, "edit-candidate", p.request, p.plan_id, True)
@@ -205,7 +227,7 @@ def case_reports() -> None:
         check(detail["copied"][-1]["current"] and detail["review_stage"] == "report attached",
               "copying the prompt is remembered, for this plan")
         detail = api.update(session, {"id": draft["id"], "revision": detail["draft"]["revision"],
-                                      "alongside": []})
+                                      "candidates": [revision]})
         check(not detail["copied"][-1]["current"], "and once the plan changes, that copy is for an earlier plan")
         shutil.rmtree(folder)
 
@@ -404,9 +426,81 @@ def case_packet_sibling_folders() -> None:
         shutil.rmtree(machine, ignore_errors=True)
 
 
+def case_reviews() -> None:
+    print("\nreviews: saved as written; only a structurally valid report is attached evidence")
+    with isolated_private_state():
+        folder, ctx, revision, newcomer, spare = setup()
+        session = console.Session(folder)
+        draft = three_outcomes(ctx, chs.create(ctx, "Restructure"), revision, newcomer)
+        fp = chs.plan_fingerprint(draft)
+        before = {d.path: h for d, h in ((d, ac.examine(folder).hashes[d.path]) for d in ac.examine(folder).documents)}
+        shown = api.add_review(session, {"id": draft["id"]})
+        review_id = shown["reports"][0]["id"]
+        check(len(shown["reports"]) == 1 and shown["reports"][0]["status"] == chs.EMPTY
+              and not shown["reports"][0]["valid"] and shown["reports"][0]["label"] == ""
+              and shown["review_stage"] == "no review requested",
+              "Add another review adds an empty review, which counts as nothing")
+        shown = api.save_review(session, {"id": draft["id"], "report_id": review_id, "label": "Agent one"})
+        shown = api.save_review(session, {"id": draft["id"], "report_id": review_id, "text": "Looks fine to me."})
+        stored = chs.load(ctx, draft["id"])["reports"][0]
+        check(stored["label"] == "Agent one" and stored["text"] == "Looks fine to me."
+              and shown["reports"][0]["status"] == impact.MALFORMED and not shown["reports"][0]["valid"]
+              and shown["reports"][0]["issues"],
+              "the reviewing agent and the text save on their own, exactly as written; invalid text gets feedback")
+        ev = chs.evaluate(ctx, chs.load(ctx, draft["id"]))
+        check("- No advisory report attached." in ev["summary"] and shown["review_stage"] == "no review requested",
+              "text that is not a report is not attached evidence")
+        now = chs.Now(ctx)
+        identity = impact.context_identity(now)
+        material = {c["path"]: c for c in chs.candidate_material(ctx, chs.load(ctx, draft["id"]), now)}
+        good = report_for(identity, material, fp)
+        shown = api.save_review(session, {"id": draft["id"], "report_id": review_id, "text": good})
+        check(shown["reports"][0]["valid"] and shown["reports"][0]["status"] == "well-formed"
+              and shown["review_stage"] == "report attached",
+              "once the text is a structurally valid report, it counts as an attached advisory report")
+        bad_field = report_for(identity, material, fp, limitations=5)
+        shown = api.add_review(session, {"id": draft["id"]})
+        second = shown["reports"][1]["id"]
+        shown = api.save_review(session, {"id": draft["id"], "report_id": second, "label": "Agent two", "text": bad_field})
+        check(not shown["reports"][1]["valid"]
+              and any(i["category"] == impact.MALFORMED for i in shown["reports"][1]["issues"]),
+              "a report with a malformed field is not structurally valid")
+        stale = report_for(identity, material, "0" * 64)
+        shown = api.add_review(session, {"id": draft["id"]})
+        third = shown["reports"][2]["id"]
+        shown = api.save_review(session, {"id": draft["id"], "report_id": third, "label": "Agent three", "text": stale})
+        check(shown["reports"][2]["valid"] and shown["reports"][2]["status"] == impact.STALE,
+              "a stale report is still a report: valid in structure, and shown as stale")
+        check(chs.plan_fingerprint(chs.load(ctx, draft["id"])) == fp
+              and {d.path: ac.examine(folder).hashes[d.path] for d in ac.examine(folder).documents} == before,
+              "saving reviews changes neither the plan nor governing context")
+        check(raises(console.ApiError, api.save_review, session, {"id": draft["id"], "report_id": "nope", "text": "x"})
+              and raises(console.ApiError, api.save_review, session, {"id": draft["id"], "report_id": review_id,
+                                                                     "text": "x" * (impact.MAX_REPORT_CHARS + 1)})
+              and raises(console.ApiError, api.save_review, session, {"id": draft["id"], "report_id": review_id,
+                                                                     "text": 7}),
+              "an unknown review, a review too large, or text that is not text is refused")
+        shown = api.remove_report(session, {"id": draft["id"], "report_id": second})
+        check([r["id"] for r in shown["reports"]] == [review_id, third]
+              and chs.plan_fingerprint(chs.load(ctx, draft["id"])) == fp,
+              "Remove review removes only that review, and the plan is unchanged")
+        draft = chs.load(ctx, draft["id"])
+        plan = au.plan(folder, "changeset", {"draft_id": draft["id"], "draft_revision": draft["revision"]})
+        au.apply(folder, "changeset", plan.request, plan.plan_id, au.CONFIRM_PHRASE)
+        receipt = api.get(session, {"id": draft["id"]})["receipt"]
+        check([r["id"] for r in receipt["reports"]] == [review_id, third]
+              and "2 advisory report(s) attached" in receipt["summary"],
+              "the receipt keeps only the structurally valid reports as attached advisory evidence")
+        check(raises(console.ApiError, api.add_review, session, {"id": draft["id"]})
+              and raises(console.ApiError, api.save_review, session, {"id": draft["id"], "report_id": review_id, "text": "x"}),
+              "an applied change set's reviews never change")
+        shutil.rmtree(folder)
+
+
 def run() -> None:
     case_material()
     case_reports()
+    case_reviews()
     case_packet_destinations()
     case_packet_sibling_folders()
     print(f"\n{OK} All impact checks passed.")

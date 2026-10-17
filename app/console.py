@@ -17,9 +17,10 @@ import difflib
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import agent_context as ac
 from . import agent_proposals as apx
@@ -77,14 +78,13 @@ def _guard(fn: Callable[[], Any]) -> Any:
 # --- state -------------------------------------------------------------------------
 
 GUIDANCE_SUMMARY = {
-    "context_check_in": "After reading the map and the governing documents relevant to its task, "
-                        "an agent says so briefly and names them.",
-    "proposal_context_impact_check": "Before proposing a change, an agent assesses duplication, "
-                                     "overlap, conflict and unresolved decisions, and records the "
-                                     "result in the proposal.",
-    "review_newly_discovered_material": "An agent compares relevant material that is not governing "
-                                        "context with the governing documents, and raises material "
-                                        "concerns with a person.",
+    "context_check_in": "After reading the context map and relevant governing documents, the agent "
+                        "sends a brief check-in naming the documents it read.",
+    "proposal_context_impact_check": "Before proposing a change, the agent checks for duplication, "
+                                     "overlap, conflicts, and unresolved decisions.",
+    "review_newly_discovered_material": "The agent compares relevant non-governing material with the "
+                                        "governing documents and raises material concerns for human "
+                                        "review.",
 }
 
 
@@ -97,14 +97,28 @@ def _document(doc_meta: Dict[str, Any], path: str, kind: str) -> Dict[str, Any]:
             "updated": str(doc_meta.get("updated") or "")}
 
 
-def _source_kind(meta: Dict[str, Any]) -> str:
-    """The candidate's human-facing origin: an accepted Agent Proposal, a
-    Revise, or Create candidate. Private manager state, for the console only."""
-    if str(meta.get("source") or "").startswith("Agent Proposal"):
-        return "proposal"
+_PROPOSAL_SOURCE = re.compile(r"^Agent Proposal \S+ \((.*), self-reported\)$")
+
+
+def candidate_source(meta: Dict[str, Any]) -> Tuple[str, str]:
+    """The candidate's human-facing origin — an accepted Agent Proposal, a
+    governing document withdrawn by a change set, a Revise, or Create
+    candidate — and, for a proposal, the agent's self-reported name when it
+    supplied one. Never an invented identity. Private manager state, for the
+    console only."""
+    source = str(meta.get("source") or "")
+    if source.startswith("Agent Proposal"):
+        m = _PROPOSAL_SOURCE.match(source)
+        return "proposal", (m.group(1).strip() if m else "")
+    if source == au.WITHDRAWN_SOURCE:
+        return "withdrawn", ""
     if meta.get(au.REVISES):
-        return "revise"
-    return "create"
+        return "revise", ""
+    # Withdrawn before withdrawals recorded their source: a governing
+    # document's own supersession keys, which no candidate Charter creates has.
+    if not source and ("supersedes" in meta or "superseded_by" in meta):
+        return "withdrawn", ""
+    return "create", ""
 
 
 def _documents(folder: str, cs: ps.ContextState, exam: ac.Examination) -> List[Dict[str, Any]]:
@@ -122,7 +136,7 @@ def _documents(folder: str, cs: ps.ContextState, exam: ac.Examination) -> List[D
         # that governs now (a Revise or an accepted Agent Proposal amendment both
         # record it). Never a filename.
         entry.update(au.revision_lineage(meta, exam.documents, exam.hashes, archived))
-        entry["source_kind"] = _source_kind(meta)
+        entry["source_kind"], entry["source_agent"] = candidate_source(meta)
         entry["created"] = str(meta.get("created") or "")
         entry["change_summary"] = au.change_summary(body, body_by_path.get(entry["revises_path"]))
         if entry["revises_path"]:
@@ -157,13 +171,16 @@ def state(session: Session) -> Dict[str, Any]:
             "confirm_phrase": au.CONFIRM_PHRASE}
     private = ps.PrivateState.default()
     base["legacy_state"] = private.legacy()
+    # Recent: the Agent Contexts opened on this computer, whether or not one is
+    # open now, so Open Agent Context… always offers them.
+    known = [p for p in private.known_contexts() if os.path.isdir(p)]
+    base["recent"] = known[-8:]
     if not session.folder:
-        known = [p for p in private.known_contexts() if os.path.isdir(p)]
-        return dict(base, open=False, recent=known[-8:])
+        return dict(base, open=False)
     folder = session.folder
     if not os.path.isdir(folder):
         session.folder = ""
-        return dict(base, open=False, recent=[],
+        return dict(base, open=False,
                     closed_because="The Agent Context's folder is no longer there.")
     status = mg.check(folder)
     cs = ps.PrivateState.default().for_context(folder)

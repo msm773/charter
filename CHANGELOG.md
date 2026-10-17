@@ -42,15 +42,36 @@ Git.
   or rejecting an Agent Proposal — are direct: previewed as plans, applied as
   previewed with an ordinary confirmation, and they change only private
   candidates.
-- **Every change to governing context is a coordinated change set.** There is
-  no direct grant, replace or withdraw action, in the console or its API.
-  Starting from a candidate (**Plan a change set…**) or a governing document
-  (**Change in a change set…**, **Withdraw in a change set…**) opens a new
-  change set prefilled with the one outcome the person chose there — govern
-  alongside, revise, replace or withdraw — with every other governing document
-  left undecided until they decide it. Nothing is preselected: a candidate made
-  with Revise lists the document it was revised from first, labelled, as
-  context only.
+- **Every change to governing context is a coordinated change set, planned
+  candidate first.** There is no direct grant, replace or withdraw action, in
+  the console or its API. A change set is built from the candidates it
+  includes, and for each the person chooses exactly one decision: **Replace**,
+  with the governing document they select, or **Govern alongside**. It may also
+  withdraw governing documents, in the same change set. Every governing
+  document no candidate replaces and no withdrawal names is retained without a
+  decision and not listed in Build Change Set, while Preview and Apply shows
+  every one; a
+  document that starts governing after a draft was prepared is retained once
+  the draft is refreshed. **Revise…** only writes a revision candidate: it is
+  never a change-set decision, and a revision candidate is applied through
+  Replace. **Plan a change set…** on a candidate opens a change set that
+  includes it, its decision not yet made; **Withdraw in a change set…** on a
+  governing document opens one that withdraws it. Nothing is preselected: a
+  candidate made with Revise lists the document it was revised from first
+  among replacement targets, labelled, as context only. Change-set records are
+  version 2.
+- **Change sets recorded in the earlier form** — version 1, with a retain,
+  revise, replace or withdraw outcome for each governing document — keep their
+  meaning. Applied receipts and abandoned drafts are shown exactly as recorded,
+  **Revised** included. An active one is never an unreadable record: it can be
+  viewed, abandoned or deleted, and is refreshed, reviewed, previewed or
+  applied only after **Convert to current form…**, which lists every change
+  before the person confirms it — each revise becomes a replace of the same
+  document by the same candidate, each replace stays one, govern-alongside and
+  withdraw are kept, and each retain or undecided entry is removed and listed,
+  leaving that document retained. Conversion changes no governing context, and
+  attached reports and prompt records become stale. Nothing converts
+  automatically.
 - **Dates are the day of writing.** A candidate's or document's `created` and
   `updated` dates are assigned when the action or change set is applied, so a
   preview left open past local midnight still applies.
@@ -61,6 +82,20 @@ Git.
   Proposal's body, that begins with a front-matter block is refused. Edit
   leaves an older candidate's leftover block out of the form, and the preview
   shows its removal before it is saved.
+- **Create Candidate** shows only the drop area and **Choose a file** until a
+  file is converted; then one form like **Edit…**, with no numbered steps,
+  under **Review Converted Document**: the file's name, kind and size with
+  **Choose another file**, any notes, **Title**, **Scope** and **Text**, the
+  editable converted document. Choosing another file replaces the conversion,
+  its notes, anything typed and any open preview. Leaving the page — by the navigation, Back,
+  Cancel or opening another Agent Context — discards the chosen file, its
+  conversion, anything typed and any open preview, and a conversion still under
+  way is dropped; reopening it always starts fresh. Converting keeps nothing on
+  this computer, so there is nothing left to clean up.
+- **One compact Scope field** on Create Candidate, **Revise…** and candidate
+  **Edit…**: the label **Scope** and the one helper “A short routing summary
+  shown in AGENT-CONTEXT.md.”, with no information icon, hover panel or
+  placeholder.
 - **Rebuild Agent Context** regenerates the map and metadata after documents
   are edited outside Charter, with a preview; outside changes are reported until
   acknowledged.
@@ -72,17 +107,120 @@ Git.
   write is interrupted.
 - **Agent Proposals** through `charter propose --context .` or an imported file,
   filed privately and reviewed in the console; accepting changes only a
-  candidate.
-- **Coordinated change sets** with explicit outcomes, hash pins, a structural
+  candidate. The page is introduced in one line, with no information panel.
+  Each compact card leads with the friendly title of the document it concerns,
+  with no operation word or internal `p-…` id — the target's current title, or
+  a create's supplied title or else its body's first heading, filed directly
+  or imported, with no badge — or the logical path, labelled as one, only when
+  there is neither; then one line, **Submitted by:** … · **Received:** …,
+  noting an import, and a one-line purpose. **Review proposal…** expands the
+  same card in place: the purpose in full, each changed file with **Read**, and
+  **Accept as candidate**, **Reject proposal** and **Close review** together at
+  the end, with no separate panel and no inline copy of the candidate.
+  **Accept as candidate** applies that preview in one step, with no second
+  preview or Accept, and the notice says exactly **Proposal accepted.**, with
+  no button, link or document name. **Reject proposal** is also on the compact
+  card: it shows a **Reason (optional)** field in place, without opening the
+  review, and rejects with or without a reason, never asking for one in an
+  error; a reason given is kept privately with the rejection. **Cancel** leaves
+  the card as it was.
+  Closing the review, opening another, or leaving Agent Proposals collapses it
+  and drops anything still on its way. Expected context impact stays private advisory
+  review material, kept with the proposal and never shown on the review
+  surface, and the generated map describes it that way, so a map generated
+  before this change fails closed until Rebuild Agent Context. Summaries name
+  documents by title, never as `file “…”`. **Import agent proposal…** is the
+  fallback for an agent that could not file its own JSON: **Import Agent
+  Proposal** asks for the **Agent proposal JSON**, sends people to **Create
+  candidate** for their own material, and puts **Check proposal** beside
+  **Import**, which only a passing check of the exact JSON entered enables —
+  any edit disables it again. A passing check shows nothing more; a failing one
+  shows one concise red error. **Check proposal**, **Import** and **Cancel**
+  sit together, with no header Close; **Cancel** clears and closes the panel. Leaving Agent Proposals closes it
+  and discards what was pasted or checked, including a check still under way.
+- **Authority candidate cards** show the title and then one source tag —
+  **Proposed by: <agent>** when the proposal named its agent, otherwise
+  **Agent Proposal**; **Created by person**; **Revision**; or **Withdrawn
+  governing document**, which a change set's withdrawal now records privately
+  — never an invented identity; then **Filename:** and a one-line **Scope:**,
+  both rows at the same text size.
+- **Coordinated change sets** with explicit decisions, hash pins, a structural
   preview and one typed confirmation; the immutable receipt is written in the
-  same transaction as the change, and lists the final outcomes and the
-  governing documents established. In the editor a planned candidate's scope
-  is one line, with the complete scope behind a disclosure, and **Edit
-  details…** returns to the draft to refresh it. **Advisory review** prompts and packets
-  (`charter-context-impact-prompt/1`, `charter-context-impact-report/1`) with
-  mechanical report checks.
+  same transaction as the change. The receipt leads with **Change set
+  applied** and a plain summary of its non-zero outcome counts and applied
+  date, such as `3 documents updated · 4 retained`; lists each changed
+  document by title with a badge for its outcome as recorded; keeps paths,
+  archive locations, retained documents, established governing documents and
+  the full copyable technical summary behind disclosures; and states whether
+  an advisory report was attached apart from each **Review prompt copied** or
+  **Review packet exported** record, which is not evidence. **Build Change
+  Set** has a **Name**, **Candidates**, **Withdrawals** and a **Change Set
+  Summary** beside one **Agent Review** panel, and scrolls as one page. Each
+  candidate is a compact row: its title, a provenance label only where titles
+  collide, one decision dropdown starting unselected, a target dropdown only
+  after **Replace** — a revision's source listed first as a suggestion, never
+  selected — and a one-line scope, with **View details** for the complete
+  candidate and scope comparison and **Edit details…**, which returns to the
+  draft to refresh it. A new change set's **Name** starts empty and is never
+  filled from a candidate or withdrawal. “No candidates available.” appears
+  only when none is listed or can be added. A required review packet shows only
+  its status and size, **Save review packet…** and the disclosure beside it.
+  **Add a review**, then **Add another review**, adds reviews whose reviewing
+  agent and text save automatically; only a structurally valid report counts
+  as attached advisory evidence, invalid text stays saved with validation
+  feedback, and **Remove review** asks first only for a valid report.
+  **Preview and Apply** shows, in one pass, any blocking problem or
+  decision-relevant warning, **Authority Effects** with each replacement's
+  scope continuity, a collapsed **Retained Governing Documents (N)**, every
+  changed file with its diff and **Read**, and the typed confirmation with
+  **Apply** and **Cancel**: no Governing Now and Governing After lists, and no
+  note that only explains mechanics. **Discard draft** asks once, discards the
+  private draft and returns to Change Sets. The normal Change Sets view lists active drafts and any record
+  it cannot read, never applied change sets or discarded drafts: their
+  receipts and records stay private and unchanged, and a receipt is shown when
+  its change set is applied. The sidebar shows the Git branch and the
+  count of changed context files, with no file list.
+  **Advisory review** prompts and packets (`charter-context-impact-prompt/1`,
+  `charter-context-impact-report/1`) with mechanical report checks. Review
+  material adds no private state, local path or Git detail of Charter's own,
+  and embeds the reviewed documents and candidates exactly as they read: one
+  that quotes a local path, or, for `charter compare`, a word equal to the
+  base such as `main`, no longer stops the material being prepared. Only
+  Charter's own wording, metadata and what it sends with the material are
+  checked.
+- **Console cleanup.** **Open Agent Context…** and the **Charter** wordmark
+  both open the Open or Create Agent Context view. There are no information
+  icons or hover panels anywhere; the README explains each status, including
+  **Agents are served** and **Matches the governing documents**. Governing
+  Documents is now **Governing Context**, with one subtitle; its list scrolls
+  with the page, and its cards drop the Governing badge and use bold
+  **Filename:** and **Scope:** labels. Status labels follow the title they
+  describe, a candidate's source label follows its title, and no label sits
+  beside action buttons. The header always shows **Agent context ready** or
+  **Agent context unavailable**, and the Context Map **Map current**, **Map out
+  of date** or **Map not checked**, each in words as well as colour. A
+  candidate's agent source reads **Proposed by: <agent>**, the name exactly as
+  recorded. The change-set index's empty state reads “No open change sets.”
+  Connect Agents is four sections, each a heading that opens and closes it:
+  **Connect Agents with MCP (Recommended)**, open, then **Add Project
+  Instructions (Optional)**, **Test the Connection (Optional)** and **Connect
+  Agents with File Access**, closed. The Agent Proposals subtitle reads
+  “Accepted proposals become authority candidates.” and the Change Sets
+  subtitle “Apply one or more authority changes as a set.”
+  Settings has a subtitle under its heading and two-line guidance options. The
+  rail's heading reads **CURRENT CONTEXT**. Every enabled action button —
+  Apply, Accept as candidate, Reject proposal, Retire, Close and toast actions
+  included — shares the one treatment of **Read** and **Edit…**: white, ink
+  text, a light outline, with no filled, danger or authority variant; disabled
+  buttons stay visibly disabled. **Recent** lists the Agent
+  Contexts opened on this computer whenever the Open view is shown. The
+  Context Map no longer repeats the agent guidance, which Settings shows. Retired
+  and replaced documents stay in private state; the console shows no archive.
 - **Connect agents:** a guided, copy-only view, offered only while the Agent
-  Context is ready. MCP comes first, as the recommended route: `claude mcp add`
+  Context is ready. From a development checkout or worktree, every
+  configuration and command names that checkout's own launcher by its full
+  path, so PATH can never route an agent to another copy; an installed release
+  names `charter`. MCP comes first, as the recommended route: `claude mcp add`
   commands quoted for each shell, at Claude Code's default local scope rather
   than for every project; Codex's `[mcp_servers.<name>]` TOML; JSON for other
   hosts; a startup pointer for the project's `CLAUDE.md` or `AGENTS.md`; and a

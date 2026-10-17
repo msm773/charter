@@ -78,9 +78,9 @@ function toast(message, isError, action) {
   const actions = [].concat(action || []);  // one action, or several
   const node = el("div", { class: "toast" + (isError ? " error" : ""), role: isError ? "alert" : "status" }, [
     el("span", { class: "toast-text" }, withCode(message)),
-    ...actions.map((a) => el("button", { type: "button", class: "linkish toast-action", text: a.label,
+    ...actions.map((a) => el("button", { type: "button", class: "btn ghost small toast-action", text: a.label,
       onclick: () => { node.remove(); a.onclick(); } })),
-    isError ? el("button", { type: "button", class: "linkish toast-dismiss", text: "Dismiss",
+    isError ? el("button", { type: "button", class: "btn ghost small toast-dismiss", text: "Dismiss",
       onclick: () => node.remove() }) : null,
   ]);
   document.body.appendChild(node);
@@ -139,74 +139,6 @@ function disclosure(label, content, options = {}) {
   return el("div", { class: "disclosure" + (options.class ? " " + options.class : "") }, [button, region]);
 }
 
-/* ---------------------------------------------------- information controls */
-
-/* A small “i” button beside a heading; its popup holds the explanation that
-   would otherwise sit on the page. Keyboard focus or hover shows it. A click
-   (or Enter, or Space) keeps it open until it is clicked again, Escape is
-   pressed, focus leaves it, or someone clicks elsewhere. Hover is only a
-   convenience: everything works from the keyboard, the popup can be hovered
-   without closing, and aria-expanded says whether it is showing. `open` and
-   `onToggle` let a popup that is redrawn stay open. */
-const within = (node, root) => { for (let n = node; n; n = n.parentNode) if (n === root) return true; return false; };
-
-function wireInfoTip(wrap, options = {}) {
-  const button = wrap.querySelector(".info-toggle");
-  const pop = wrap.querySelector(".info-pop");  // not yet in the document when drawn by script
-  let pinned = !!options.open;
-  let focused = false;
-  let hovered = false;
-  const sync = () => {
-    const open = pinned || focused || hovered;
-    button.setAttribute("aria-expanded", String(open));
-    pop.hidden = !open;
-  };
-  const pin = (on) => {
-    if (pinned === on) return;
-    pinned = on;
-    if (options.onToggle) options.onToggle(on);
-  };
-  const close = () => { pin(false); focused = false; hovered = false; sync(); };
-  wrap.infoClose = () => { if (button.getAttribute("aria-expanded") === "true") close(); };
-  button.addEventListener("click", () => {
-    if (pinned) close(); else { pin(true); sync(); }
-  });
-  button.addEventListener("focus", () => { focused = true; sync(); });
-  wrap.addEventListener("focusout", (ev) => {
-    if (wrap.isConnected === false) return;  // redrawn away, not left: the new copy keeps the state
-    if (ev.relatedTarget && within(ev.relatedTarget, wrap)) return;
-    close();
-  });
-  wrap.addEventListener("mouseenter", () => { hovered = true; sync(); });
-  wrap.addEventListener("mouseleave", () => { hovered = false; sync(); });
-  wrap.addEventListener("keydown", (ev) => {
-    if (ev.key !== "Escape" || button.getAttribute("aria-expanded") !== "true") return;
-    ev.preventDefault();
-    close();
-    button.focus();
-  });
-  sync();
-  return wrap;
-}
-
-/* The same control, built for a region that is drawn by script. */
-function infoTip(label, content, options = {}) {
-  const id = options.id || "info-" + (++disclosureSeq);
-  const wrap = el("div", { class: "info-wrap" + (options.class ? " " + options.class : "") }, [
-    el("button", { type: "button", class: "info-toggle", id: options.buttonId || null, "aria-label": label,
-      "aria-expanded": "false", "aria-controls": id }, [el("span", { "aria-hidden": "true", text: "i" })]),
-    el("div", { class: "info-pop", id, hidden: "" }, content),
-  ]);
-  return wireInfoTip(wrap, options);
-}
-
-/* A click anywhere else closes whichever popup is showing. */
-document.addEventListener("click", (ev) => {
-  document.querySelectorAll(".info-wrap").forEach((w) => {
-    if (w.infoClose && !within(ev.target, w)) w.infoClose();
-  });
-});
-
 /* A locked step is inert: out of the tab order and the accessibility tree. */
 function setInert(node, on) {
   node.inert = !!on;
@@ -237,23 +169,11 @@ const issueItem = (i) => el("li", { class: i.level }, [el("span", {}, [
   ...withCode(` — ${i.message}${i.fix ? " " + i.fix : ""}`),
 ])]);
 
-/* Instructional, never an example value: an empty scope field must look empty,
-   and submits nothing unless something is typed into it. */
-const SCOPE_PLACEHOLDER = "Describe what this document governs or applies to";
-/* What scope is for, said at every scope field: the short sentence stays in
-   view, and the fuller explanation is behind “About scope”. */
-const SCOPE_HINT = "A short routing summary shown in AGENT-CONTEXT.md; it does not replace this document's rules.";
-const scopeInfoContent = () => [
-  el("p", { text: "Scope is a short routing summary: the decisions, behavior or project area this "
-    + "document governs." }),
-  el("p", { text: "It appears in AGENT-CONTEXT.md beside the document's title, so a person or an agent "
-    + "can tell which governing documents to read for a task." }),
-  el("p", { text: "It does not replace, summarize or override the document's own rules. Agents still "
-    + "need to read the document itself." }),
-  el("p", { text: "You decide whether the wording describes the document accurately. Charter "
-    + "does not write, judge or approve it." }),
-];
-const scopeInfo = () => infoTip("About scope", scopeInfoContent(), { class: "scope-info" });
+/* Every scope field — Create candidate, Revise… and Edit… — is the same
+   compact control: the label Scope and this one helper, with no information
+   control and no placeholder (Scope Authoring and Revision Workflow). */
+const SCOPE_LABEL = "Scope";
+const SCOPE_HINT = "A short routing summary shown in AGENT-CONTEXT.md.";
 
 function renderDiff(text) {
   const box = el("pre", { class: "diff" });
@@ -390,9 +310,7 @@ function formPanel(title, intro, fields, submitLabel, onSubmit, lead, onCancel) 
     const label = f.type === "checkbox"
       ? el("label", { style: "display:flex; gap:.5rem; align-items:center" }, [input, el("span", { text: f.label })])
       : el("label", { text: f.label, for: `formField-${f.name}` });
-    /* An information control sits beside the label it explains. */
-    const head = f.info ? el("div", { class: "label-row" }, [label, f.info()]) : label;
-    const field = el("div", { class: "field" }, f.type === "checkbox" ? [label] : [head, input]);
+    const field = el("div", { class: "field" }, f.type === "checkbox" ? [label] : [label, input]);
     if (f.hint) {
       /* The hint says what the field means, so it is read with the field. */
       const hintId = `formHint-${f.name}`;
@@ -427,7 +345,7 @@ let panelOpener = null;
    focus moves to the panel heading and Escape closes it; on close, focus
    returns to the control that opened it (UI Standards: visible focus, keyboard
    operability). */
-function showFormPanel(title, inner) {
+function showFormPanel(title, inner, options = {}) {
   const panel = $("review");
   panelOpener = (typeof document !== "undefined" && document.activeElement
                  && document.activeElement.focus) ? document.activeElement : null;
@@ -435,7 +353,7 @@ function showFormPanel(title, inner) {
   const heading = el("h3", { text: title, tabindex: "-1" });
   panel.appendChild(el("section", { class: "review" }, [
     el("header", {}, [heading,
-      el("button", { class: "close", text: "Close", onclick: closePanel })]),
+      options.close === false ? null : el("button", { class: "btn ghost small close", text: "Close", onclick: closePanel })]),
     inner,
   ]));
   panel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -589,6 +507,15 @@ async function refreshChangeSetTally() {
 }
 
 function show(view) {
+  /* Work that belongs to one area never follows the person to another:
+     leaving Agent Proposals closes Import Agent Proposal and any expanded
+     review, and leaving Create
+     candidate discards its whole upload and conversion; arriving there from
+     elsewhere always starts fresh. */
+  const from = currentView;
+  if (from === "proposals" && view !== "proposals") { discardImport(); collapseProposalReview(); }
+  if (from === "intake" && view !== "intake") discardIntake();
+  if (view === "intake" && from !== "intake") resetIntake();
   currentView = view;
   VIEWS.forEach((name) => {
     $("view-" + name).hidden = name !== view;
@@ -627,7 +554,7 @@ function renderShell() {
   const s = open ? state.status : null;
   $("projectName").textContent = open ? state.project_name : "no Agent Context open";
   $("metaRoot").textContent = open ? state.root : "—";
-  $("metaAgents").textContent = open ? (s.agents_served ? "Served" : "Refused") : "—";
+  $("metaAgents").textContent = open ? (s.agents_served ? "Ready" : "Unavailable") : "—";
   const groups = open ? documentGroups() : null;
   $("metaContext").textContent = open ? String(groups.governing.length) : "—";
   $("metaPdf").textContent = open && !state.pdf_support
@@ -644,16 +571,18 @@ function renderShell() {
   $("barPath").textContent = open ? state.root : "No Agent Context open";
   const bar = $("barState");
   bar.textContent = "";
-  if (open) bar.appendChild(s.agents_served ? chip("Agents are served", "ok") : chip("Agents are refused", "stale"));
+  /* One context status label, always: ready, or unavailable with the problem
+     and next safe step named in the status above every view. */
+  if (open) bar.appendChild(s.agents_served ? chip("Agent context ready", "ok") : chip("Agent context unavailable", "stale"));
   $("btnSwitch").hidden = !open;
   syncStartForms(!!state.folder_picker);
   renderContextStatus();
 }
 
 /* Git is the person's own and secondary: a compact, read-only summary in the
-   rail — the branch, and the count of context files Git reports as changed —
-   with the files themselves only on request. A Git failure is said as one,
-   never shown as no changes. */
+   sidebar — the branch, and the count of context files Git reports as
+   changed — with no control that lists the files. A Git failure is said as
+   one, never shown as no changes. */
 const GIT_BRANCH_NOTE = { "not-checkout": "Not a Git checkout", unavailable: "Git unavailable" };
 const UNREAD = "Could not be read";
 
@@ -664,40 +593,10 @@ function renderGit() {
   $("metaGitLabel").hidden = $("metaBranch").hidden = !git;
   $("metaChangedLabel").hidden = $("metaChanged").hidden = !counted;
   const changed = known ? git.changed : [];
-  const toggle = $("gitDetailsToggle");
-  toggle.hidden = !changed.length;
-  if (!changed.length) closeGitDetails(false);
-  $("gitChanged").textContent = "";
   if (!git) return;
   $("metaBranch").textContent = GIT_BRANCH_NOTE[git.state] || git.branch || UNREAD;
   $("metaChangedCount").textContent = known ? String(changed.length) : UNREAD;
-  toggle.setAttribute("aria-label", changed.length === 1 ? "Show the changed context file"
-    : `Show the ${changed.length} changed context files`);
-  changed.forEach((p) => $("gitChanged").appendChild(el("li", {}, [el("code", { text: p })])));
 }
-
-/* The details open and close only by the person's own action: the button,
-   Escape (focus returns to the button), a click elsewhere, or leaving it. */
-const gitDetailsOpen = () => $("gitDetailsToggle").getAttribute("aria-expanded") === "true";
-
-function closeGitDetails(refocus) {
-  $("gitDetailsToggle").setAttribute("aria-expanded", "false");
-  $("gitDetailsPanel").hidden = true;
-  if (refocus) $("gitDetailsToggle").focus();
-}
-
-$("gitDetailsToggle").addEventListener("click", () => {
-  if (gitDetailsOpen()) { closeGitDetails(false); return; }
-  $("gitDetailsToggle").setAttribute("aria-expanded", "true");
-  $("gitDetailsPanel").hidden = false;
-  if ($("gitDetailsPanel").scrollIntoView) $("gitDetailsPanel").scrollIntoView({ block: "nearest" });
-});
-$("gitDetails").addEventListener("focusout", (ev) => {
-  if (ev.relatedTarget && !within(ev.relatedTarget, $("gitDetails"))) closeGitDetails(false);
-});
-document.addEventListener("click", (ev) => {
-  if (gitDetailsOpen() && !within(ev.target, $("gitDetails"))) closeGitDetails(false);
-});
 
 /* Above every view, while it matters: whether agents are served, what is wrong
    and the next safe step, whether the content changed outside Charter, and
@@ -790,8 +689,7 @@ function renderKnowledge() {
     const docs = groups[key];
     const list = $(key + "List");
     list.textContent = "";
-    // The archive is history: compact rows, not full document cards.
-    docs.forEach((d) => list.appendChild(key === "archive" ? archiveRow(d) : docRow(d)));
+    docs.forEach((d) => list.appendChild(docRow(d)));
     list.hidden = !docs.length;  // an empty list holds nothing: its count says so
   });
   Object.entries({ governing: "governingUnavailable", candidates: "candidatesUnavailable" }).forEach(([key, id]) => {
@@ -816,12 +714,13 @@ function recordGroup(id, name, items) {
   ]);
 }
 
-/* The three lists: the view (and list) each is shown in, its count, and the
-   words a screen reader hears for that count. */
+/* The two lists: the view (and list) each is shown in, its count, and the
+   words a screen reader hears for that count. Archived documents — retired
+   candidates and replaced versions — stay in private local state and are
+   not shown in normal views. */
 const CONTEXT_LISTS = [
   { key: "governing", tally: "tallyGoverning", noun: ["governing document", "governing documents"] },
   { key: "candidates", tally: "tallyCandidates", noun: ["authority candidate", "authority candidates"] },
-  { key: "archive", tally: "tallyArchive", noun: ["archived document", "archived documents"] },
 ];
 const countOf = (n, [one, many]) => `${n} ${n === 1 ? one : many}`;
 
@@ -830,7 +729,6 @@ function documentGroups() {
   return {
     governing: docs.filter((d) => d.kind === "governing"),
     candidates: docs.filter((d) => d.kind === "candidate"),
-    archive: docs.filter((d) => d.kind === "archived"),
   };
 }
 
@@ -841,10 +739,14 @@ function renderContextMap() {
   const generated = s.issues.filter((i) => i.level === "error" && i.kind === "generated");
   const box = $("contextMapState");
   box.textContent = "";
+  /* Out of date: a generated file is missing, unreadable, or not what Charter
+     generates. Not checked: a governing-document problem stops the comparison.
+     Otherwise current — a stray file elsewhere does not make the map stale. */
+  const blocking = s.issues.filter((i) => i.level === "error" && i.kind !== "generated" && i.kind !== "stray");
   let label;
-  if (s.agents_served) label = chip("Matches the governing documents", "ok");
-  else if (generated.length) label = chip("Does not match the governing documents", "stale");
-  else label = chip("Not checked until the problems above are corrected", null);
+  if (generated.length) label = chip("Map out of date", "stale");
+  else if (blocking.length) label = chip("Map not checked", "warn");
+  else label = chip("Map current", "ok");
   box.appendChild(label);
   $("contextMapDetail").textContent = "";
   /* Unknown origin, said plainly: no repair is implied. "Valid" is claimed only
@@ -861,9 +763,6 @@ function renderContextMap() {
   $("btnRebuildContext").hidden = !s.rebuild.available;
   $("btnViewContext").disabled = s.issues.some((i) => i.path === "AGENT-CONTEXT.md"
     && i.level === "error" && /no `AGENT-CONTEXT.md`|could not be read|not UTF-8/.test(i.message));
-  const on = (state.agent_guidance || []).filter((g) => g.on).map((g) => g.label);
-  $("agentGuidanceSummary").textContent = `Agent guidance in the map: ${on.length ? on.join(", ") : "none"}.`
-    + " Change it in Settings.";
 }
 
 /* A governing change needs a valid, clean Agent Context to start from. */
@@ -874,36 +773,32 @@ const NOT_VALID = "Change-set actions are unavailable until the Agent Context is
    disabled; each disabled action is described by it. */
 const UNAVAILABLE_NOTE = { governing: "governingUnavailable", candidate: "candidatesUnavailable" };
 
-const SOURCE_LABEL = { revise: "Revise", proposal: "Agent Proposal", create: "Create candidate" };
+/* A candidate's one compact source tag. An identity is named only when Charter
+   knows it — an Agent Proposal's self-reported agent name — and never invented. */
+const SOURCE_LABEL = { proposal: "Agent Proposal", create: "Created by person", revise: "Revision",
+  withdrawn: "Withdrawn governing document" };
+const sourceTag = (c) => (c.source_kind === "proposal" && c.source_agent
+  ? `Proposed by: ${c.source_agent}` : SOURCE_LABEL[c.source_kind] || "");
 
 function competingNotice(co) {
   /* "with a count when more than one other candidate exists." */
   return "Another revision candidate exists for this document." + (co > 1 ? ` ${co} others in all.` : "");
 }
 
-/* The archive is history, shown compactly: one line per document — its title,
-   when it was archived, and Read — not a full card. It governs nothing and is
-   private local state (never agent-facing). */
-function archiveRow(doc) {
-  return el("div", { class: "doc archive-row is-retired" }, [
-    el("div", { class: "archive-line" }, [
-      el("span", { class: "title", text: doc.title }),
-      doc.updated ? el("span", { class: "archive-date", text: doc.updated }) : null,
-    ]),
-    el("div", { class: "actions" }, [
-      chip("Archived — not context"),
-      el("button", { class: "btn ghost small", text: "Read",
-        onclick: (event) => openDocument(doc.path, event.currentTarget) }),
-    ]),
-  ]);
-}
-
 function docRow(doc) {
   const isCandidate = doc.kind === "candidate";
+  const tag = isCandidate ? sourceTag(doc) : "";
+  const labelled = (cls, label, text) => el("div", { class: cls + " labelled" }, [el("strong", { text: label + " " }),
+    el("span", { text })]);
   const meta = el("div", {}, [
-    el("div", { class: "title", text: doc.title }),
-    el("div", { class: "path", text: doc.path }),
-    doc.scope ? el("div", { class: "scope", text: "Scope: " + doc.scope }) : null,
+    /* A candidate leads with its title and, immediately after it, one compact
+       source tag; its filename and scope follow, labelled. */
+    isCandidate
+      ? el("div", { class: "title-row" }, [el("span", { class: "title", text: doc.title }),
+        tag ? el("span", { class: "source-tag", text: tag }) : null])
+      : el("div", { class: "title", text: doc.title }),
+    labelled("path", "Filename:", doc.path),
+    doc.scope ? labelled("scope", "Scope:", doc.scope) : null,
     /* Human-only candidate lineage: which governing document a revision revises,
        and where the candidate came from. Private local state (never agent-facing). */
     isCandidate && doc.revises_title
@@ -914,22 +809,13 @@ function docRow(doc) {
         ? "Made from an earlier version of this document, which has changed since. Applying it as "
           + "it is would undo those changes: compare it with the governing document first."
         : "The document it revises no longer governs." }) : null,
-    isCandidate && doc.source_kind
-      ? el("div", { class: "origin source", text: "Source: " + (SOURCE_LABEL[doc.source_kind] || doc.source_kind) }) : null,
     isCandidate && doc.co_revisions > 0
       ? el("div", { class: "origin competing", text: competingNotice(doc.co_revisions) }) : null,
-    /* The "Governing" chip already says a governing document is read by agents;
-       only the private location is worth stating, on candidates. */
-    doc.governing ? null
-      : el("div", { class: "origin location", text: "Private local state on this computer — agents never see it." }),
   ]);
   const governingAction = (text, cls, onclick) => el("button", { class: cls, text, onclick,
     disabled: canChangeGoverning() ? null : "",
     "aria-describedby": canChangeGoverning() ? null : UNAVAILABLE_NOTE[doc.kind] });
   const actions = el("div", { class: "actions" }, [
-    doc.kind === "governing" ? chip("Governing", "authority")
-      : doc.kind === "candidate" ? chip("Authority candidate — not context", "proposed")
-      : chip("Archived — not context"),
     el("button", { class: "btn ghost small", text: "Read",
       onclick: (event) => openDocument(doc.path, event.currentTarget) }),
     doc.kind === "candidate" ? el("button", { class: "btn ghost small", text: "Edit…",
@@ -946,15 +832,13 @@ function docRow(doc) {
       onclick: () => startRevision(doc) }) : null,
     doc.kind === "candidate" ? el("button", { class: "btn ghost small", text: "Retire…",
       onclick: () => startRetirement(doc) }) : null,
-    doc.kind === "governing" ? governingAction("Change in a change set…", "btn ghost small",
-      () => startDocumentChangeSet(doc)) : null,
     doc.kind === "governing" ? governingAction("Withdraw in a change set…", "btn ghost small",
       () => startWithdrawal(doc)) : null,
     doc.kind === "candidate" ? governingAction("Plan a change set…", "btn small primary-action",
       () => startCandidateChangeSet(doc)) : null,
   ]);
   return el("div", {
-    class: "doc" + (doc.governing ? " is-authority" : "") + (doc.kind === "archived" ? " is-retired" : ""),
+    class: "doc" + (doc.governing ? " is-authority" : ""),
   }, [meta, actions]);
 }
 
@@ -1001,7 +885,7 @@ async function openComparison(candidatePath, againsts, label, opener) {
   comparisonOpener = opener || null;
   const viewer = $("docViewer");
   viewer.textContent = "";
-  const close = el("button", { class: "close", text: "Close", onclick: closeComparison });
+  const close = el("button", { class: "btn ghost small close", text: "Close", onclick: closeComparison });
   const inner = el("div", { class: "reader-body" });
   sections.forEach((s) => {
     inner.appendChild(el("h4", { class: "cmp-head",
@@ -1049,7 +933,7 @@ function renderReader() {
   const { data } = reading;
   const { meta, body } = CharterMarkdown.splitFrontMatter(data.text);
   const rendered = readerMode === "rendered";
-  const close = el("button", { class: "close", text: "Close", onclick: closeDocument });
+  const close = el("button", { class: "btn ghost small close", text: "Close", onclick: closeDocument });
   const article = el("article", { class: "reader", role: "dialog", "aria-modal": "true",
     "aria-labelledby": "readerTitle", "data-state": data.state }, [
     el("header", {}, [
@@ -1115,8 +999,7 @@ $("docViewer").addEventListener("click", (event) => {
 if (document.addEventListener) {
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (gitDetailsOpen()) closeGitDetails(true);  // the rail's Git details, opened last
-    else if (reading) closeDocument();
+    if (reading) closeDocument();
     else if (comparing) closeComparison();  // a comparison overlay is open
     else if (panelOpener) closePanel();  // a form/preview panel is open
   });
@@ -1150,8 +1033,7 @@ async function startCandidateEdit(doc, options = {}) {
         + "agents read.", tone: "note" },
     [
       { name: "title", label: "Title", value: draft.title },
-      { name: "scope", label: "Scope — what does it cover?", value: draft.scope,
-        placeholder: SCOPE_PLACEHOLDER, hint: SCOPE_HINT, info: scopeInfo },
+      { name: "scope", label: SCOPE_LABEL, value: draft.scope, hint: SCOPE_HINT },
       { name: "body", label: "Text", type: "textarea", rows: 18, value: draft.body },
     ],
     "Preview the change",
@@ -1196,8 +1078,7 @@ async function startRevision(doc) {
     null,
     [
       { name: "title", label: "Title", value: draft.title },
-      { name: "scope", label: "Scope — what does it cover?", value: draft.scope,
-        placeholder: SCOPE_PLACEHOLDER, hint: SCOPE_HINT, info: scopeInfo },
+      { name: "scope", label: SCOPE_LABEL, value: draft.scope, hint: SCOPE_HINT },
       { name: "body", label: "Text", type: "textarea", rows: 18, value: draft.body },
     ],
     "Preview the candidate",
@@ -1209,12 +1090,13 @@ async function startRevision(doc) {
 }
 
 /* Every change to what governs is a change set. Starting from one candidate
-   or one governing document opens a new change set prefilled with the one
-   outcome the person chose here — nothing more. Every other governing
-   document is left undecided until the person decides it in the change set,
-   where related outcomes can be added before its preview. Nothing here starts
-   chosen: a candidate made with Revise… lists the document it was revised
-   from first, labelled, as context only — never selected for the person. */
+   opens a new change set that includes it, its decision not yet made;
+   starting from a governing document's Withdraw in a change set… opens one
+   that withdraws it — nothing more. Every other governing document is
+   retained without a decision, and related candidates and withdrawals can be
+   added before its preview. Nothing starts chosen: a candidate made with
+   Revise… lists the document it was revised from first among replacement
+   targets, labelled, as context only — never selected for the person. */
 async function startChangeSet(start) {
   let made;
   try { made = await call("/api/changeset/create", { start }); }
@@ -1226,164 +1108,22 @@ async function startChangeSet(start) {
 }
 
 const REVISED_FROM = "the document this was revised from";
-const choiceRadio = (name, id, value, disabled) => el("input", { type: "radio", name, id, value,
-  disabled: disabled ? "" : null, style: "width:auto" });
-const choiceOption = (input, label, hint) => el("label", { class: "choice", for: input.id }, [
-  input, el("span", {}, [el("strong", { text: label }), el("span", { class: "hint", text: hint })])]);
-const UNDECIDED_NOTE = "Every other governing document stays undecided until you decide it in the change "
-  + "set. Nothing changes until you preview the change set and confirm it there.";
 
-/* From a candidate: govern alongside, or revise or replace a governing
-   document the person names. */
+/* From a candidate: a new change set that includes it, its decision not yet
+   made — Replace, with the governing document the person selects, or Govern
+   alongside, chosen in the change set itself. */
 function startCandidateChangeSet(doc) {
-  const target = `${state.authoritative_dir}/${doc.path.split("/").pop()}`;
-  const governing = documentGroups().governing;
-  const origin = doc.revises_path ? governing.find((d) => d.path === doc.revises_path) : null;
-  const inner = el("div", { class: "inner" });
-  inner.appendChild(el("div", { class: "note authority",
-    text: "Choose what this candidate does. A new change set opens with that one outcome." }));
-  inner.appendChild(el("dl", { class: "scope-compare" }, [
-    el("dt", { text: "Its scope" }),
-    el("dd", { id: "startCandidateScope", class: doc.scope ? "" : "empty",
-      text: doc.scope || "No scope stated" }),
-  ]));
-  inner.appendChild(el("p", { class: "hint", text: "To change its title, scope or text first, use Edit on the candidate." }));
-
-  const none = !governing.length;
-  const alongside = choiceRadio("startOutcome", "startAlongside", "alongside", false);
-  const revise = choiceRadio("startOutcome", "startRevise", "revise", none);
-  const replace = choiceRadio("startOutcome", "startReplace", "replace", none);
-  const ordered = origin ? [origin].concat(governing.filter((d) => d !== origin)) : governing;
-  const chosen = el("select", { id: "startTarget" }, [
-    el("option", { value: "", text: "Choose the governing document" })]
-    .concat(ordered.map((d) => el("option", { value: d.path,
-      text: `${d.title} (${d.path})` + (d === origin ? ` — ${REVISED_FROM}` : "") }))));
-  chosen.value = "";
-  const currentScope = el("dd", { id: "startCurrentScope" });
-  const currentLabel = el("dt", { text: "Current scope" });
-  const outcome = el("p", { class: "scope-outcome", id: "startScopeOutcome", role: "status" });
-  const compare = el("div", { id: "startScopeCompare", hidden: "" }, [
-    el("dl", { class: "scope-compare" }, [currentLabel, currentScope]), outcome]);
-  const syncScopes = () => {
-    const old = governing.find((d) => d.path === chosen.value);
-    compare.hidden = !old;
-    if (!old) return;
-    const proposed = (doc.scope || "").trim();
-    const current = (old.scope || "").trim();
-    currentLabel.textContent = `Current scope of “${old.title}”`;
-    currentScope.textContent = current || "No scope stated";
-    currentScope.className = current ? "" : "empty";
-    outcome.textContent = proposed
-      ? `If the change set is applied, AGENT-CONTEXT.md shows: “${proposed}”.`
-      : current
-        ? `The candidate has no scope, so it would inherit “${old.title}”'s current scope: “${current}”.`
-        : "Neither document states a scope, so AGENT-CONTEXT.md would say the scope is not stated.";
-  };
-  const targetDetail = el("div", { class: "replace-detail", id: "startTargetDetail", hidden: "" }, [
-    el("div", { class: "field" }, [
-      el("label", { for: "startTarget", text: "Governing document" }), chosen,
-      el("p", { class: "hint", id: "startTargetHint", text: origin
-        ? `Listed first because this candidate was made with Revise… from “${origin.title}”. Nothing is `
-          + "chosen for you: choose the document yourself."
-        : "One document. Charter does not guess it from names or version numbers." }),
-    ]),
-    compare,
-  ]);
-  const sync = () => { targetDetail.hidden = !(revise.checked || replace.checked); syncScopes(); };
-  [alongside, revise, replace].forEach((r) => r.addEventListener("change", sync));
-  chosen.addEventListener("change", syncScopes);
-  const unavailable = "Nothing governs yet, so there is nothing to revise or replace.";
-  inner.appendChild(el("fieldset", { class: "field start-mode", id: "startOutcomes" }, [
-    el("legend", { text: "What should this candidate do?" }),
-    choiceOption(alongside, "Govern alongside",
-      `Everything that governs today keeps governing. It would be written to ${target}.`),
-    choiceOption(revise, "Revise a governing document with this candidate",
-      none ? unavailable : "This candidate is a new version of one governing document, and takes its path."),
-    choiceOption(replace, "Replace a governing document with this candidate",
-      none ? unavailable : "This candidate takes over from a different governing document, at its path."),
-    targetDetail,
-  ]));
-  inner.appendChild(el("p", { class: "hint", id: "startUndecided", text: UNDECIDED_NOTE }));
-  sync();
-  inner.appendChild(el("div", { class: "actions" }, [
-    el("button", { class: "btn", id: "btnOpenChangeSet", text: "Open change set", onclick: () => {
-      if (alongside.checked) { startChangeSet({ alongside: doc.path }); return; }
-      const picked = revise.checked ? "revise" : replace.checked ? "replace" : "";
-      if (!picked) { toast("Choose what this candidate does.", true); return; }
-      if (!chosen.value) { toast(`Choose the governing document to ${picked}.`, true); return; }
-      startChangeSet({ document: chosen.value, outcome: picked, candidate: doc.path });
-    } }),
-    el("button", { class: "btn ghost", text: "Cancel", onclick: closeReview }),
-  ]));
-  review = null;
-  showFormPanel(`Plan a Change Set with “${doc.title}”`, inner);
-}
-
-/* From a governing document: revise or replace it with a candidate the person
-   names, or withdraw it. A person with no candidate for it yet is pointed to
-   Revise…, which files one. */
-function startDocumentChangeSet(doc) {
-  const candidates = documentGroups().candidates;
-  const made = candidates.filter((c) => c.revises_path === doc.path);
-  const ordered = made.concat(candidates.filter((c) => made.indexOf(c) === -1));
-  const none = !candidates.length;
-  const inner = el("div", { class: "inner" });
-  inner.appendChild(el("div", { class: "note authority",
-    text: `“${doc.title}” governs at ${doc.path}. Choose what happens to it. A new change set opens with that one outcome.` }));
-  const revise = choiceRadio("docOutcome", "docRevise", "revise", none);
-  const replace = choiceRadio("docOutcome", "docReplace", "replace", none);
-  const withdraw = choiceRadio("docOutcome", "docWithdraw", "withdraw", false);
-  const labels = candidateLabels(ordered);
-  const chosen = el("select", { id: "docCandidate" }, [
-    el("option", { value: "", text: "Choose the authority candidate" })]
-    .concat(ordered.map((c) => el("option", { value: c.path, text: labels[c.path] }))));
-  chosen.value = "";
-  const candidateDetail = el("div", { class: "replace-detail", id: "docCandidateDetail", hidden: "" }, [
-    el("div", { class: "field" }, [
-      el("label", { for: "docCandidate", text: "Authority candidate" }), chosen,
-      el("p", { class: "hint", text: "Nothing is chosen for you: choose the candidate yourself." }),
-    ]),
-  ]);
-  const sync = () => { candidateDetail.hidden = !(revise.checked || replace.checked); };
-  [revise, replace, withdraw].forEach((r) => r.addEventListener("change", sync));
-  const needCandidate = "There is no authority candidate yet. Use Revise… to file one from this document first.";
-  inner.appendChild(el("fieldset", { class: "field start-mode", id: "docOutcomes" }, [
-    el("legend", { text: `What should happen to “${doc.title}”?` }),
-    choiceOption(revise, "Revise it with a candidate",
-      none ? needCandidate : "A new version of it, filed as a candidate, takes its path."),
-    choiceOption(replace, "Replace it with a candidate",
-      none ? needCandidate : "A different candidate takes over at its path."),
-    choiceOption(withdraw, "Withdraw it", "It stops governing and becomes an authority candidate again."),
-    candidateDetail,
-  ]));
-  if (none) {
-    inner.appendChild(el("div", { class: "actions" }, [
-      el("button", { class: "btn ghost small", id: "docReviseFirst", text: "Revise this document…",
-        onclick: () => startRevision(doc) })]));
-  }
-  inner.appendChild(el("p", { class: "hint", text: UNDECIDED_NOTE }));
-  inner.appendChild(el("div", { class: "actions" }, [
-    el("button", { class: "btn", id: "btnOpenChangeSet", text: "Open change set", onclick: () => {
-      if (withdraw.checked) { startChangeSet({ document: doc.path, outcome: "withdraw" }); return; }
-      const picked = revise.checked ? "revise" : replace.checked ? "replace" : "";
-      if (!picked) { toast(`Choose what happens to “${doc.title}”.`, true); return; }
-      if (!chosen.value) { toast(`Choose the candidate to ${picked} it with.`, true); return; }
-      startChangeSet({ document: doc.path, outcome: picked, candidate: chosen.value });
-    } }),
-    el("button", { class: "btn ghost", text: "Cancel", onclick: closeReview }),
-  ]));
-  review = null;
-  showFormPanel(`Change “${doc.title}” in a Change Set`, inner);
+  return startChangeSet({ candidate: doc.path });
 }
 
 /* Withdrawing is chosen on the governing document itself: the change set
-   opens with that one outcome, and is previewed and confirmed there. */
+   opens with that one withdrawal, and is previewed and confirmed there. */
 function startWithdrawal(doc) {
-  return startChangeSet({ document: doc.path, outcome: "withdraw" });
+  return startChangeSet({ withdraw: doc.path });
 }
 
 function startRetirement(doc) {
-  planFor("retire", { candidate: doc.path }, { applyLabel: "Retire", applyClass: "btn danger" });
+  planFor("retire", { candidate: doc.path }, { applyLabel: "Retire" });
 }
 
 /* ------------------------------------------------------------------ intake */
@@ -1391,8 +1131,6 @@ function startRetirement(doc) {
 /* Create candidate asks only for a title and a scope: every document is filed as
    a candidate, under a name the server picks. */
 function renderIntakeForm() {
-  $("candidateNote").textContent =
-    "Filed as an authority candidate in private local state on this computer — not context.";
   /* The drop target, the file picker and the hint offer PDF only while it can be converted. */
   $("dropText").textContent = state.pdf_support
     ? "Drop a PDF, Word document, Markdown or text file here"
@@ -1403,14 +1141,12 @@ function renderIntakeForm() {
     : "DOCX, Markdown and plain text. PDF needs the optional pypdf package.";
 }
 
-/* A locked step cannot be reached at all — not by pointer, keyboard or screen
-   reader — and says what it is waiting for; its heading stays readable. */
+/* Progressive disclosure: until a chosen file is converted, only choosing a
+   file is shown. Then one form, laid out like Edit…, takes its place:
+   Review Converted Document, with the file, its notes, Title, Scope and Text. */
 function unlockIntake(done) {
-  ["stepConvert", "stepName"].forEach((id) => {
-    $(id).classList.toggle("locked", !done);
-    setInert($(id + "Body"), !done);
-  });
-  $("stepFile").dataset.done = String(done);
+  $("stepFile").hidden = done;
+  $("stepConvert").hidden = !done;
 }
 
 /* Each file chosen starts a new read and conversion. Choosing another file,
@@ -1427,6 +1163,7 @@ function abandonIntakeWork() {
 
 async function stageFile(file) {
   abandonIntakeWork();
+  clearConversion();  // another file replaces the conversion and everything derived from it
   const seq = intakeSeq;
   const root = state.root;
   const current = () => seq === intakeSeq && state.root === root;
@@ -1440,9 +1177,7 @@ async function stageFile(file) {
       if (!current()) return;
       staged = answer;
       $("stagedInfo").textContent = "";
-      $("stagedInfo").appendChild(el("div", { class: "note",
-        text: `${staged.filename} — ${staged.kind}, ${(staged.bytes / 1024).toFixed(1)} kB, `
-          + `sha256 ${staged.sha256.slice(0, 12)}…` }));
+      $("stagedInfo").textContent = `${staged.filename} — ${staged.kind}, ${(staged.bytes / 1024).toFixed(1)} kB`;
       $("convertNotes").textContent = "";
       staged.notes.forEach((n) => $("convertNotes").appendChild(el("div", { class: "note" }, withCode(n))));
       $("markdown").value = staged.markdown;
@@ -1450,7 +1185,6 @@ async function stageFile(file) {
       $("scope").value = staged.suggested_scope || "";
       showFrontMatterNote(staged.front_matter);
       unlockIntake(true);
-      $("stepConvert").dataset.done = "true";
       $("stepConvert").scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) { if (current()) toast(err.message, true); }
   };
@@ -1493,7 +1227,6 @@ function intakeRequest() {
    updates or retires an authority candidate, after a preview; rejecting one
    records why. An agent's name, reason and expected impact are its claims. */
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-const OPERATION_WORD = { create: "Create", amend: "Amend", retire: "Retire" };
 let proposalData = null;
 
 async function renderAgentProposals() {
@@ -1505,6 +1238,7 @@ async function renderAgentProposals() {
     toast("The Agent Proposals could not be read.", true);
     return;
   }
+  collapseProposalReview();  // a fresh list: any expanded review is closed
   const pending = $("pendingProposals");
   pending.textContent = "";
   proposalData.pending.forEach((p) => pending.appendChild(proposalCard(p)));
@@ -1518,59 +1252,210 @@ async function renderAgentProposals() {
   $("proposalsUnexpectedGroup").hidden = !proposalData.unexpected.length;
 }
 
-function impactBlock(impact) {
-  if (impact === undefined || impact === null || impact === "") return null;
-  const text = typeof impact === "string" ? impact : JSON.stringify(impact, null, 2);
-  return disclosure("Expected context impact (the agent's assessment, advisory)",
-    [el("pre", { class: "code impact", text })]);
+/* A proposal leads with the friendly title of the document it concerns — that
+   document's current title, or the title a create supplies, else its body's
+   first heading — with no operation word, and only when there is no title,
+   its logical path, labelled as one. One metadata line says who submitted it
+   and when it arrived; internal p-… identifiers are never shown. In the list
+   a card stays compact: that identity, the metadata line and a one-line
+   purpose. Review proposal… expands the same card in place. */
+const PATH_TITLE_LABEL = "Logical path — no title found";
+const proposalKind = (p) => p.title_kind || (p.title ? "current" : "path");
+const proposalTitle = (p) => p.title || p.target_path;
+
+function proposalHeading(p, id, level) {
+  return el(level, { class: "proposal-title", id }, [
+    proposalKind(p) === "path" ? el("code", { class: "proposal-target", text: proposalTitle(p) })
+      : el("span", { text: proposalTitle(p) }),
+  ]);
 }
 
+function proposalMeta(p) {
+  const who = (p.agent || "an unnamed agent") + (p.source === "imported" ? ", imported by you" : "");
+  return el("div", { class: "proposal-meta" }, [
+    el("strong", { text: "Submitted by:" }), document.createTextNode(` ${who} · `),
+    el("strong", { text: "Received:" }), document.createTextNode(` ${relativeTime(p.received)}`),
+  ]);
+}
+
+/* The DOM id fragment for a proposal: its record, never shown as text. */
+const proposalKey = (p) => String(p.proposal_id).replace(/[^\w-]/g, "_");
+
 function proposalCard(p) {
-  const target = el("code", { class: "proposal-target", text: p.target_path });
-  const card = el("article", { class: "proposal" + (p.stale ? " is-stale" : ""), "data-id": p.proposal_id }, [
+  const key = proposalKey(p);
+  const kind = proposalKind(p);
+  const card = el("article", { class: "proposal" + (p.stale ? " is-stale" : ""), "data-id": p.proposal_id,
+    "aria-labelledby": `proposalTitle-${key}` });
+  const open = el("button", { class: "btn small proposal-open", text: "Review proposal…",
+    "aria-describedby": `proposalTitle-${key}`, "aria-expanded": "false", "aria-controls": `proposalDetail-${key}`,
+    onclick: () => openProposalReview(p, card) });
+  /* Rejecting needs no review: the compact card asks for a reason inline. */
+  const reject = el("button", { class: "btn ghost small proposal-reject-open", id: `proposalReject-${key}`,
+    text: "Reject proposal", "aria-describedby": `proposalTitle-${key}`, "aria-controls": `proposalDetail-${key}`,
+    onclick: () => openCardRejection(p, card) });
+  [
     el("header", {}, [
-      chip(OPERATION_WORD[p.operation] || p.operation, "proposed"), target,
+      proposalHeading(p, `proposalTitle-${key}`, "h4"),
+      kind === "path" ? chip(PATH_TITLE_LABEL, null) : null,
       p.stale ? chip("Stale", "stale") : null,
     ]),
-    el("div", { class: "proposal-meta", text: `${p.proposal_id} · from ${p.agent || "an unnamed agent"} `
-      + `(self-reported) · ${p.source === "imported" ? "imported" : "received"} ${relativeTime(p.received)}` }),
-    el("div", { class: "proposal-reason" }, [el("strong", { text: "Reason: " }), document.createTextNode(p.reason)]),
-  ]);
-  const impact = impactBlock(p.expected_context_impact);
-  if (impact) card.appendChild(impact);
-  if (p.stale) {
-    card.appendChild(el("div", { class: "note warn", text: p.stale_reasons.join(" ")
-      + " It cannot be accepted as written: reject it, or ask the agent to propose again." }));
-  }
-  card.appendChild(el("div", { class: "actions" }, [
-    el("button", { class: "btn small", text: "Review and accept…", disabled: p.stale ? "" : null,
-      onclick: () => planFor("accept-proposal", { proposal_id: p.proposal_id },
-        { applyLabel: p.operation === "retire" ? "Accept: retire the candidate" : "Accept as candidate" }) }),
-    el("button", { class: "btn ghost small", text: "Reject…", onclick: () => startProposalRejection(p) }),
-  ]));
+    proposalMeta(p),
+    el("p", { class: "proposal-reason proposal-reason-preview", id: `proposalReason-${key}` }, [
+      el("strong", { text: "Purpose: " }), el("span", { text: p.reason })]),
+    el("div", { class: "actions proposal-open-row" }, [open, reject]),
+    el("div", { class: "proposal-detail", id: `proposalDetail-${key}`, role: "region",
+      "aria-labelledby": `proposalTitle-${key}`, hidden: "" }),
+  ].forEach((n) => card.appendChild(n));
   return card;
 }
 
-function startProposalRejection(p) {
-  formPanel(
-    `Reject ${p.proposal_id}`,
-    { text: "Rejecting changes nothing else. The reason is kept with the proposal, privately.", tone: "note" },
-    [{ name: "reason", label: "Why", type: "textarea", rows: 3, value: "" }],
-    "Preview the rejection",
-    (values) => planFor("reject-proposal", { proposal_id: p.proposal_id, reason: values.reason },
-      { applyLabel: "Reject proposal", applyClass: "btn danger" }),
-  );
+/* The one expanded review, and a counter that makes any answer still on its
+   way for an earlier review obsolete. */
+let proposalReview = null;  // { card, p }: the one card being reviewed or rejected
+let proposalReviewSeq = 0;
+
+/* Close the expanded review or the card's own rejection: the card is compact
+   again and everything prepared — its preview, a rejection reason being typed,
+   an answer still on its way — is discarded. */
+function collapseProposalReview() {
+  proposalReviewSeq++;
+  const open = proposalReview;
+  proposalReview = null;
+  if (!open) return;
+  const { card } = open;
+  card.classList.remove("is-expanded");
+  card.classList.remove("is-rejecting");
+  const detail = card.querySelector(".proposal-detail");
+  if (detail) { detail.textContent = ""; detail.hidden = true; }
+  const button = card.querySelector(".proposal-open");
+  if (button) button.setAttribute("aria-expanded", "false");
+  const row = card.querySelector(".proposal-open-row");
+  if (row) row.hidden = false;
+}
+
+/* Reject proposal, straight from the compact card: no review opens. The card
+   asks for a concise reason in place; confirming records it, and Cancel
+   leaves the card as it was. */
+function openCardRejection(p, card) {
+  collapseProposalReview();
+  const seq = proposalReviewSeq;
+  proposalReview = { card, p };
+  card.classList.add("is-rejecting");
+  card.querySelector(".proposal-open-row").hidden = true;
+  const detail = card.querySelector(".proposal-detail");
+  detail.textContent = "";
+  detail.hidden = false;
+  detail.appendChild(el("div", { class: "proposal-reject-slot" }));
+  const back = card.querySelector(".proposal-reject-open");
+  startProposalRejection(p, detail, seq, () => { collapseProposalReview(); if (back && back.focus) back.focus(); });
+}
+
+/* Review proposal…: the same card, expanded in place, is the one complete
+   review surface. Its heading, metadata line and Purpose — now shown in full —
+   stay the only summary. Before either decision it adds what accepting would
+   write: each changed file, with Read for the candidate as it would be. Accept
+   as candidate applies exactly that preview, with no later screen or second
+   Accept. The agent's expected context impact stays private advisory review
+   material, never shown here. */
+function openProposalReview(p, card) {
+  collapseProposalReview();
+  const seq = proposalReviewSeq;
+  proposalReview = { card, p };
+  card.classList.add("is-expanded");
+  const button = card.querySelector(".proposal-open");
+  button.setAttribute("aria-expanded", "true");
+  card.querySelector(".proposal-open-row").hidden = true;
+  const detail = card.querySelector(".proposal-detail");
+  detail.textContent = "";
+  detail.hidden = false;
+  const change = el("div", { class: "proposal-change" },
+    p.stale ? [] : [el("p", { class: "hint", text: "Preparing the preview…" })]);
+  const accept = el("button", { class: "btn", id: "btnAcceptProposal", text: "Accept as candidate", disabled: "" });
+  const decisions = el("div", { class: "actions proposal-decisions" }, [
+    accept,
+    el("button", { class: "btn ghost", id: "btnRejectProposal", text: "Reject proposal",
+      onclick: () => startProposalRejection(p, detail, seq) }),
+    el("button", { class: "btn ghost", id: "btnCloseProposalReview", text: "Close review",
+      onclick: () => { collapseProposalReview(); if (button.focus) button.focus(); } }),
+  ]);
+  if (p.stale) {
+    detail.appendChild(el("div", { class: "note warn", id: "proposalReviewStale", text: p.stale_reasons.join(" ")
+      + " It cannot be accepted as written: reject it, or ask the agent to propose again." }));
+  }
+  detail.appendChild(change);
+  detail.appendChild(el("div", { class: "proposal-reject-slot" }));
+  detail.appendChild(decisions);
+  if (!p.stale) proposalPreview(p, seq, change, accept);
+}
+
+/* The accept plan, computed once and shown in the expanded card: each file it
+   writes, with Read for the candidate as it would be. Accept applies this
+   plan. */
+async function proposalPreview(p, seq, change, accept) {
+  const request = { proposal_id: p.proposal_id };
+  let plan;
+  try { plan = await call("/api/plan", { kind: "accept-proposal", request }); }
+  catch (err) {
+    if (seq !== proposalReviewSeq) return;
+    change.textContent = "";
+    change.appendChild(el("div", { class: "note error", id: "proposalReviewUnavailable", role: "alert", text: err.message }));
+    return;
+  }
+  if (seq !== proposalReviewSeq) return;
+  change.textContent = "";
+  const issues = plan.issues || [];
+  if (issues.length) change.appendChild(el("ul", { class: "issues", id: "proposalReviewProblems" }, issues.map(issueItem)));
+  const readPlanned = (path, opener) => openPreview({ source: "plan", kind: "accept-proposal", request,
+    plan_id: plan.plan_id, path }, opener);
+  /* The candidate change only: the proposal's own private record, which
+     holds its expected context impact, is bookkeeping and not shown here. */
+  const items = changeItems(plan.changes.filter((c) => !/^Agent Proposal /.test(c.path)));
+  if (items.length) change.appendChild(fileList(items, readPlanned));
+  if (plan.blocked || !plan.changes.length) return;
+  accept.disabled = false;
+  accept.addEventListener("click", (event) => applyPlan("accept-proposal", request, plan, event.currentTarget, true, {}));
+}
+
+/* Reject proposal: an optional reason, in the same card. Confirming rejects
+   the proposal with or without one; a reason given is kept privately with the
+   rejection and not shown in normal views. Nothing else changes. */
+function startProposalRejection(p, detail, seq, onCancel) {
+  if (seq !== proposalReviewSeq || detail.querySelector("#proposalRejectReason")) return;
+  const reason = el("textarea", { id: "proposalRejectReason", rows: 2 });
+  const confirmButton = el("button", { class: "btn", id: "btnConfirmReject", text: "Reject proposal",
+    onclick: async (event) => {
+      /* The reason is optional: rejected either way, and kept privately only when given. */
+      const why = reason.value.trim();
+      const request = Object.assign({ proposal_id: p.proposal_id }, why ? { reason: why } : {});
+      let plan;
+      try { plan = await call("/api/plan", { kind: "reject-proposal", request }); }
+      catch (err) { toast(err.message, true); return; }
+      if (seq !== proposalReviewSeq) return;
+      await applyPlan("reject-proposal", request, plan, event.currentTarget, true, {});
+    } });
+  const form = el("div", { class: "proposal-reject", id: "proposalRejectForm" }, [
+    el("div", { class: "field" }, [el("label", { for: "proposalRejectReason", text: "Reason (optional)" }), reason]),
+    el("div", { class: "actions" }, [confirmButton,
+      el("button", { class: "btn ghost", id: "btnCancelReject", type: "button", text: "Cancel", onclick: () => {
+        if (onCancel) { onCancel(); return; }
+        form.remove();
+        const decline = detail.querySelector("#btnRejectProposal");
+        if (decline && decline.focus) decline.focus();
+      } })]),
+  ]);
+  detail.querySelector(".proposal-reject-slot").appendChild(form);
+  if (reason.focus) reason.focus();
 }
 
 function unexpectedRow(u) {
   return el("div", { class: "doc unexpected-record" }, [
     el("div", {}, [
-      el("div", { class: "title", text: u.name }),
+      el("div", { class: "title-row" }, [el("span", { class: "title", text: u.name }),
+        chip("Unexpected — not a proposal", "stale")]),
       el("div", { class: "origin", text: `${u.why} Untrusted local material — not a proposal. `
         + `${(u.bytes / 1024).toFixed(1)} kB.` }),
     ]),
     el("div", { class: "actions" }, [
-      chip("Unexpected — not a proposal", "stale"),
       el("button", { class: "btn ghost small", text: "View contents", onclick: () => viewUnexpected(u, false) }),
       el("button", { class: "btn ghost small", text: "Import a copy…", onclick: () => viewUnexpected(u, true) }),
     ]),
@@ -1591,52 +1476,109 @@ async function viewUnexpected(u, asImport) {
 
 /* Import: a proposal an agent returned as JSON, checked exactly as `charter
    propose` checks it, then filed only when the person confirms. */
+/* Import Agent Proposal: the fallback for an agent that could not file its
+   own proposal JSON. Proposals are agent-submitted material; a person adds
+   their own through Create candidate. The panel belongs to Agent Proposals:
+   leaving that area closes it and drops whatever was pasted or checked. */
+let importPanel = null;  // the open Import Agent Proposal panel
+let importSeq = 0;
+
 function startImport(prefill) {
   review = null;
+  const seq = ++importSeq;
   const box = el("textarea", { id: "importJson", rows: 12, spellcheck: "false" });
   box.value = prefill || "";
   const result = el("div", { id: "importResult" });
+  /* Import files exactly the JSON that passed Check proposal: any edit
+     disables it again, and clears what the last check said. */
+  const importButton = el("button", { class: "btn", id: "btnFileImport", text: "Import", disabled: "" });
+  let passed = null;  // the exact text that passed, while it is still what the field holds
+  const invalidate = () => { passed = null; importButton.disabled = true; result.textContent = ""; };
+  box.addEventListener("input", invalidate);
+  importButton.addEventListener("click", () => {
+    if (passed === null || passed !== box.value) { invalidate(); return; }
+    fileImport(passed, importButton, seq);
+  });
   const inner = el("div", { class: "inner" }, [
-    el("div", { class: "note", text: "Paste the one JSON proposal an agent returned when it could not file "
-      + "it. It is checked exactly as `charter propose` checks it, and filed only when you confirm." }),
-    el("div", { class: "field" }, [el("label", { for: "importJson", text: "Proposal JSON" }), box]),
-    el("div", { class: "actions" }, [el("button", { class: "btn", id: "btnCheckImport", text: "Check",
-      onclick: () => checkImport(box.value, result) })]),
+    el("p", { class: "note", id: "importInstruction" }, [
+      document.createTextNode("Paste an agent proposal as JSON below. Use "),
+      el("strong", { text: "Create candidate" }),
+      document.createTextNode(" for material you want to add yourself. The JSON must follow Charter’s "
+        + "proposal format; Charter checks it before anything is filed."),
+    ]),
+    el("div", { class: "field" }, [el("label", { for: "importJson", text: "Agent proposal JSON" }), box]),
     result,
+    el("div", { class: "actions" }, [
+      el("button", { class: "btn ghost", id: "btnCheckImport", text: "Check proposal", onclick: async () => {
+        const text = box.value;
+        invalidate();
+        if (await checkImport(text, result, seq) && seq === importSeq && box.value === text) {
+          passed = text;
+          importButton.disabled = false;
+        }
+      } }),
+      importButton,
+      el("button", { class: "btn ghost", id: "btnCancelImport", type: "button", text: "Cancel", onclick: () => {
+        const opener = panelOpener;
+        discardImport();
+        if (opener && opener.focus) opener.focus();
+      } }),
+    ]),
   ]);
-  showFormPanel("Import Proposal", inner);
+  showFormPanel("Import Agent Proposal", inner, { close: false });
+  importPanel = inner;
 }
 
-async function checkImport(text, result) {
+/* Leaving Agent Proposals: the import panel closes, and its pasted JSON, its
+   check result and any answer still on its way are discarded. */
+function discardImport() {
+  importSeq++;
+  const panel = importPanel;
+  importPanel = null;
+  let shown = false;
+  for (let n = panel; n; n = n.parentNode) if (n === $("review")) shown = true;
+  if (shown) {
+    review = null;
+    panelOpener = null;
+    $("review").textContent = "";
+  }
+}
+
+/* Check proposal: true when the JSON would be filed. A passing check says
+   nothing — it only enables Import. A failing one is one concise error. */
+async function checkImport(text, result, seq) {
   result.textContent = "";
   let checked;
+  const fail = (message) => {
+    if (seq !== importSeq) return false;
+    result.appendChild(el("div", { class: "note error", id: "importError", role: "alert" }, withCode(message)));
+    return false;
+  };
   try { checked = await call("/api/proposals/import/check", { json: text }); }
-  catch (err) { result.appendChild(el("div", { class: "note warn" }, withCode(err.message))); return; }
+  catch (err) { return fail(err.message); }
+  if (seq !== importSeq) return false;
   if (!checked.ok) {
-    result.appendChild(el("div", { class: "note warn", text: "It would be refused, and is not filed:" }));
-    result.appendChild(el("ul", { class: "issues", id: "importProblems" }, checked.problems.map((p) =>
-      el("li", { class: "error" }, [el("code", { text: p.field || "proposal" }), ...withCode(` — ${p.message}`)]))));
+    return fail("Not a valid agent proposal: " + checked.problems.map((p) =>
+      (p.field ? `\`${p.field}\` — ` : "") + p.message).join(" "));
+  }
+  return true;
+}
+
+async function fileImport(text, button, seq) {
+  button.disabled = true;
+  let filed;
+  try { filed = await call("/api/proposals/import", { json: text, confirm: true }); }
+  catch (err) { button.disabled = false; toast(err.message, true); return; }
+  if (seq !== importSeq) return;
+  if (filed.result !== "pending") {
+    button.disabled = false;  // the person can correct and try again
+    toast(filed.result === "refused" ? filed.problems.map((p) => p.message).join(" ") : filed.problem.message, true);
     return;
   }
-  const s = checked.summary;
-  result.appendChild(el("div", { class: "note", id: "importSummary",
-    text: `${OPERATION_WORD[s.operation]} ${s.target_path}, from ${s.agent} (self-reported): ${s.reason}` }));
-  result.appendChild(el("div", { class: "actions" }, [el("button", { class: "btn", id: "btnFileImport",
-    text: "File as imported proposal", onclick: async (event) => {
-      const btn = event.currentTarget;
-      btn.disabled = true;
-      let filed;
-      try { filed = await call("/api/proposals/import", { json: text, confirm: true }); }
-      catch (err) { btn.disabled = false; toast(err.message, true); return; }
-      if (filed.result !== "pending") {
-        btn.disabled = false;  // the person can correct and try again
-        toast(filed.result === "refused" ? filed.problems.map((p) => p.message).join(" ") : filed.problem.message, true);
-        return;
-      }
-      closeReview();
-      await refreshQuiet();
-      toast(`Filed ${filed.proposal_id} as an imported proposal, for review. It is not context.`);
-    } })]));
+  importPanel = null;
+  closeReview();
+  await refreshQuiet();
+  toast("Imported the agent proposal, for review. It is not context.");
 }
 
 /* ---------------------------------------------------------- connect agents */
@@ -1688,21 +1630,35 @@ function connectHostPanels(c) {
   };
 }
 
-/* Connect with MCP, under the view's heading: one instruction, a PATH
-   prerequisite when needed, the host choice (its legend for assistive
-   technology only), the chosen host's setup, and the optional instruction
-   for the agent as a small action. */
+/* Connect Agents is four sections with one disclosure pattern — a heading
+   that is its own toggle — in this order: MCP, open; then project
+   instructions, the connection test, and file access, closed. A closed
+   section shows nothing of its text. What a person opens or closes stays so
+   across redraws in this session. */
+const connectOpen = {};
+function connectSection(ids, title, body, open, cls) {
+  const key = ids.section + (open ? ":open" : ":closed");   // a route offered alone starts open regardless
+  if (key in connectOpen) open = connectOpen[key];
+  const region = el("div", { class: "disclosure-body", id: ids.body, hidden: open ? null : "" }, body);
+  const toggle = el("button", { type: "button", class: "disclosure-toggle", id: ids.toggle,
+    "aria-expanded": String(!!open), "aria-controls": ids.body, text: title, onclick: () => { connectOpen[key] = toggleDisclosure(toggle); } });
+  return el("section", { class: "connect-method connect-section " + cls, id: ids.section, "aria-labelledby": ids.title }, [
+    el("h3", { class: "connect-section-title", id: ids.title }, [toggle]), region]);
+}
+
+/* Connect with MCP: the purpose sentence, a PATH prerequisite when needed,
+   the host choice (its legend for assistive technology only), and the chosen
+   host's setup with its Copy actions. */
 function connectMcp(c) {
-  const mcp = el("section", { class: "connect-method connect-mcp", id: "connectMcp",
-    "aria-labelledby": "connectMcpTitle" });
+  const mcp = [];
   if (c.connect === "files-only") {
-    mcp.appendChild(el("div", { class: "note warn", id: "connectMcpLimitation" }, withCode(c.mcp_limitation)));
+    mcp.push(el("div", { class: "note warn", id: "connectMcpLimitation" }, withCode(c.mcp_limitation)));
     return mcp;
   }
-  mcp.appendChild(el("p", { id: "connectMcpInstruction",
+  mcp.push(el("p", { id: "connectMcpInstruction",
     text: "Configure the Charter MCP server for your agent." }));
   if (c.connect === "needs-path") {
-    mcp.appendChild(el("div", { class: "connect-prerequisite", id: "connectPrerequisite" }, [
+    mcp.push(el("div", { class: "connect-prerequisite", id: "connectPrerequisite" }, [
       el("div", { class: "note warn", id: "connectLauncher" }, withCode(c.launcher.note)),
       copyBlock("connectAddToPath", "Before Connecting: Add Charter to Your PATH", c.launcher.fix,
         "Copy command", c.launcher.restart),
@@ -1725,30 +1681,18 @@ function connectMcp(c) {
     });
     return el("label", { for: input.id }, [input, el("span", { text: label })]);
   });
-  mcp.appendChild(el("fieldset", { class: "connect-hosts", id: "connectHosts" },
+  mcp.push(el("fieldset", { class: "connect-hosts", id: "connectHosts" },
     [el("legend", { class: "sr-only", text: "Choose an agent host" })].concat(radios)));
-  CONNECT_HOSTS.forEach(([key]) => mcp.appendChild(panels[key]));
-  /* The startup pointer: where it goes, then the text to copy. */
-  mcp.appendChild(el("section", { class: "connect-instruct", id: "connectPointerSection",
-    "aria-labelledby": "connectPointerTitle" }, [
-    el("h3", { class: "connect-label", id: "connectPointerTitle", text: "Instruct Your Agent to Use Charter" }),
-    el("p", { class: "hint", id: "connectPointerNote" }, withCode(c.pointer_note)),
-    copyBlock("connectPointer", "", c.pointer, "Copy startup pointer", ""),
-  ]));
+  CONNECT_HOSTS.forEach(([key]) => mcp.push(panels[key]));
   return mcp;
 }
 
-/* File access: the other route, a section whose heading is its own closed
-   toggle. It starts open only when it is the one route offered. */
+/* File access: the other route, closed unless it is the one route offered. */
 function connectFiles(c, open) {
-  const body = el("div", { class: "disclosure-body", id: "connectFilesDetails", hidden: open ? null : "" }, [
+  return connectSection({ section: "connectOther", title: "connectFilesTitle", toggle: "connectFilesToggle",
+    body: "connectFilesDetails" }, "Connect Agents with File Access", [
     el("p", { class: "hint", id: "connectFilesNote" }, withCode(c.files_note)),
-    copyBlock("connectInstruction", "", c.instruction, "Copy agent instruction", "")]);
-  const toggle = el("button", { type: "button", class: "disclosure-toggle", id: "connectFilesToggle",
-    "aria-expanded": String(!!open), "aria-controls": "connectFilesDetails", text: "Connect Agents with File Access",
-    onclick: () => toggleDisclosure(toggle) });
-  return el("section", { class: "connect-method connect-files", id: "connectOther" }, [
-    el("h2", {}, [toggle]), el("div", { class: "disclosure" }, [body])]);
+    copyBlock("connectInstruction", "", c.instruction, "Copy agent instruction", "")], open, "connect-files");
 }
 
 function drawConnect() {
@@ -1770,12 +1714,19 @@ function drawConnect() {
     box.appendChild(el("p", { class: "connect-status-line " + c.connect, id: "connectStatus",
       "data-connect": c.connect }, [el("span", { id: "connectStatusText" }, withCode(c.status_text))]));
   }
-  box.appendChild(connectMcp(c));
-  box.appendChild(el("section", { class: "connect-method connect-test", id: "connectVerify",
-    "aria-labelledby": "connectTestTitle" }, [
-    el("h3", { class: "connect-label", id: "connectTestTitle", text: "Test the Connection" }),
+  box.appendChild(connectSection({ section: "connectMcp", title: "connectMcpTitle", toggle: "connectMcpToggle",
+    body: "connectMcpDetails" }, "Connect Agents with MCP (Recommended)", connectMcp(c), true, "connect-mcp"));
+  if (c.connect !== "files-only") {
+    box.appendChild(connectSection({ section: "connectPointerSection", title: "connectPointerTitle",
+      toggle: "connectPointerToggle", body: "connectPointerDetails" }, "Add Project Instructions (Optional)", [
+      el("p", { class: "hint", id: "connectPointerNote" }, withCode(c.pointer_note)),
+      copyBlock("connectPointer", "", c.pointer, "Copy startup pointer", ""),
+    ], false, "connect-instruct"));
+  }
+  box.appendChild(connectSection({ section: "connectVerify", title: "connectTestTitle", toggle: "connectTestToggle",
+    body: "connectTestDetails" }, "Test the Connection (Optional)", [
     copyBlock("connectVerifyPrompt", "", c.verify_prompt, "Copy prompt", ""),
-  ]));
+  ], false, "connect-test"));
   box.appendChild(connectFiles(c, c.connect === "files-only"));
 }
 
@@ -1873,6 +1824,10 @@ function renderReview() {
   if (review.applied) { renderRecorded(); return; }
   const { plan, options } = review;
   const inner = el("div", { class: "inner" });
+  if (plan.kind === "changeset" && options.changeSet) {
+    renderChangeSetPreview(panel, plan, options);
+    return;
+  }
   (plan.notes || []).forEach((n) => {
     inner.appendChild(el("div", { class: plan.governing_change ? "note authority" : "note" }, withCode(n)));
   });
@@ -1887,8 +1842,7 @@ function renderReview() {
   if (!plan.changes.length && !issues.length) {
     inner.appendChild(el("div", { class: "note", text: "Nothing would change." }));
   }
-  if (plan.kind === "changeset" && options.changeSet) inner.appendChild(governingSetCompare(options.changeSet));
-  else if (plan.governing_change && plan.after) inner.appendChild(governingBeforeAfter(plan));
+  if (plan.governing_change && plan.after && plan.kind !== "changeset") inner.appendChild(governingBeforeAfter(plan));
 
   /* Each Markdown result can be read as a document: the server recomputes this
      plan, pinned to what is shown here, and renders that file of it. */
@@ -1904,31 +1858,100 @@ function renderReview() {
         ? `Type “${plan.confirm_phrase}” once to apply the whole change set`
         : `Type “${plan.confirm_phrase}” to confirm` }),
       confirmInput,
-      el("p", { class: "hint", text: "This changes the governing context agents read, so it is confirmed in words." }),
     ]));
   }
 
   inner.appendChild(el("div", { class: "actions" }, [
     el("button", {
-      class: options.applyClass || (plan.governing_change ? "btn authority" : "btn"),
+      class: "btn",
       id: "btnApply",
       text: options.applyLabel || "Apply",
       disabled: (plan.blocked || !plan.changes.length) || null,
       onclick: (event) => applyReview(confirmInput ? confirmInput.value : true, event.currentTarget),
     }),
     el("button", { class: "btn ghost", text: "Cancel", onclick: closeReview }),
-    plan.blocked ? chip("Cannot apply — see above", "stale") : null,
   ]));
 
   panel.appendChild(el("section", { class: "review", id: "reviewPanel" }, [
     el("header", {}, [
       el("h3", { text: "Preview" }),
       chip(planLabel(plan.kind), plan.governing_change ? "authority" : "proposed"),
+      plan.blocked ? chip("Cannot apply — see below", "stale") : null,
       el("span", { text: plan.summary }),
-      el("button", { class: "close", text: "Close", onclick: closeReview }),
+      el("button", { class: "btn ghost small close", text: "Close", onclick: closeReview }),
     ]),
     inner,
   ]));
+}
+
+/* Preview and Apply for a change set: what a person needs to decide, once
+   each, in this order — anything that blocks applying or bears on the
+   decision; Authority Effects, with each replacement's scope continuity; the
+   retained documents, collapsed; every changed file, with its diff and Read;
+   and the typed confirmation. No before-and-after lists, and no note that
+   repeats these or only explains mechanics (UI Standards). */
+const EFFECT_LINE = { replace: "Replaced", "govern-alongside": "Governs alongside", withdraw: "Withdrawn",
+  revise: "Revised" };
+
+function renderChangeSetPreview(panel, plan, options) {
+  const cs = options.changeSet;
+  const effects = (cs.effects || []).filter((e) => e.effect !== "retain");
+  const retained = (cs.effects || []).filter((e) => e.effect === "retain");
+  const inner = el("div", { class: "inner cs-preview", id: "csPreviewBody" });
+  const issues = plan.issues || [];
+  if (issues.length) inner.appendChild(el("ul", { class: "issues", id: "planProblems" }, issues.map(issueItem)));
+  (plan.notes || []).forEach((n) => inner.appendChild(el("div", { class: "note warn cs-preview-warning" }, withCode(n))));
+
+  inner.appendChild(el("section", { class: "cs-section", id: "csAuthorityEffects", "aria-labelledby": "csAuthorityEffectsTitle" }, [
+    el("h4", { id: "csAuthorityEffectsTitle", text: "Authority Effects" }),
+    el("ul", { class: "cs-list cs-effects" }, effects.map((e) => el("li", { class: "cs-item cs-effect", "data-path": e.document }, [
+      el("div", { class: "title-row" }, [el("span", { class: "title", text: e.title }),
+        chip(EFFECT_LINE[e.effect] || e.effect, e.effect === "withdraw" ? "stale" : e.effect === "govern-alongside" ? "ok" : "authority")]),
+      e.effect === "replace" || e.effect === "revise" ? el("div", { class: "hint cs-effect-by", text: `By “${e.candidate_title}”` }) : null,
+      e.effect === "replace" || e.effect === "revise" ? scopeContinuity(e) : null,
+    ]))),
+  ]));
+  if (retained.length) {
+    inner.appendChild(disclosure(groupLabel("Retained Governing Documents", retained.length),
+      [el("ul", { class: "cs-list", id: "csPreviewRetained" }, retained.map((e) => el("li", { class: "cs-item" }, [
+        el("span", { class: "title", text: e.title })])))],
+      { id: "csPreviewRetainedBody", buttonId: "csPreviewRetainedToggle", class: "cs-retained" }));
+  }
+
+  const readPlanned = (path, opener) => openPreview({ source: "plan", kind: review.kind,
+    request: review.request, plan_id: plan.plan_id, path }, opener);
+  if (plan.changes.length) inner.appendChild(fileList(changeItems(plan.changes), readPlanned));
+
+  const confirmInput = el("input", { type: "text", id: "confirmPhrase", spellcheck: "false" });
+  inner.appendChild(el("div", { class: "field" }, [
+    el("label", { for: "confirmPhrase", text: `Type “${plan.confirm_phrase}” once to apply the whole change set` }),
+    confirmInput,
+  ]));
+  inner.appendChild(el("div", { class: "actions" }, [
+    el("button", { class: "btn", id: "btnApply", text: "Apply",
+      disabled: (plan.blocked || !plan.changes.length) || null,
+      onclick: (event) => applyReview(confirmInput.value, event.currentTarget) }),
+    el("button", { class: "btn ghost", text: "Cancel", onclick: closeReview }),
+  ]));
+  panel.appendChild(el("section", { class: "review", id: "reviewPanel" }, [
+    el("header", {}, [
+      el("h3", { text: "Preview" }),
+      plan.blocked ? chip("Cannot apply — see below", "stale") : null,
+      el("button", { class: "btn ghost small close", text: "Close", onclick: closeReview }),
+    ]),
+    inner,
+  ]));
+}
+
+/* A replacement's scope continuity: the candidate's scope, the scope it
+   replaces, and the resulting scope — a blank candidate scope said to inherit. */
+function scopeContinuity(e) {
+  const inherits = !e.scope_proposed && e.scope_before;
+  return el("dl", { class: "scope-compare cs-effect-scope" }, [
+    el("dt", { text: "Current scope" }), el("dd", { text: e.scope_before || "None stated" }),
+    el("dt", { text: "Candidate's scope" }), el("dd", { text: e.scope_proposed || (inherits ? "Blank — inherits the current scope" : "None stated") }),
+    el("dt", { text: "Resulting scope" }), el("dd", { text: (e.scope_after || "None stated") + (inherits ? " (inherited)" : "") }),
+  ]);
 }
 
 /* The governing set before and after: what agents read now, and would read. */
@@ -1955,7 +1978,7 @@ function renderRecorded() {
       el("h3", { text: "Done" }),
       chip(planLabel(plan.kind), plan.governing_change ? "authority" : "proposed"),
       el("span", { text: plan.summary || "" }),
-      el("button", { class: "close", text: "Close", onclick: closeReview }),
+      el("button", { class: "btn ghost small close", text: "Close", onclick: closeReview }),
     ]),
     inner,
   ]));
@@ -2020,9 +2043,16 @@ async function applyPlan(kind, request, plan, button, confirm, options = {}) {
   } else {
     focusAfter(currentViewHeading());
   }
+  const followUp = (applied && applied.follow_up) || [];
+  /* Accepting a proposal says exactly “Proposal accepted.”: no action, link,
+     document name or other detail. Anything that failed after the acceptance
+     was recorded is its own error, never added to that notice. */
+  if (kind === "accept-proposal") {
+    toast(followUp.length ? followUp.join(" ") : "Proposal accepted.", followUp.length > 0);
+    return;
+  }
   const message = doneMessage(plan) + (kind === "add" || kind === "revise"
-    ? " Filed as an authority candidate — not context." : kind === "accept-proposal"
-    ? " Only an authority candidate changed — not context." : kind === "reject-proposal"
+    ? " Filed as an authority candidate — not context." : kind === "reject-proposal"
     ? " The proposal is rejected, with your reason." : kind === "changeset"
     ? " Every declared outcome was applied as one action; its receipt is kept privately."
     : options && options.returnTo ? " Back to the change set: refresh it to use the edited candidate." : "");
@@ -2032,7 +2062,6 @@ async function applyPlan(kind, request, plan, button, confirm, options = {}) {
     : [];
   /* Applied is applied: anything that failed after it is said with it, and
      stays until dismissed. One toast shows at a time, so it is one message. */
-  const followUp = (applied && applied.follow_up) || [];
   toast(followUp.length ? `${message} ${followUp.join(" ")}` : message, followUp.length > 0,
     [{ label: "View details", onclick: showApplied }].concat(goThere));
 }
@@ -2061,15 +2090,16 @@ async function applyFailed(err) {
 
 /* A coordinated change set is the person's plan of several authority
    changes, applied together: one preview, one typed confirmation, one
-   all-or-nothing write. It has two screens. Build change set holds the plan — only the
-   governing documents the person adds, each with the outcome they declare,
-   and the candidates they add to govern alongside — beside its live
-   context-impact review. Preview and apply shows everything the plan writes
-   before one confirmation. A candidate joins the set only by being chosen for
-   a row. The draft is private local state — kept on this computer only — and
-   changes nothing until it is applied; then it is an immutable receipt. Every outcome is
-   the person's: no control here starts chosen, and nothing a report says
-   chooses one. */
+   all-or-nothing write. It has two screens. Build change set holds the plan —
+   the candidates the person includes, each with the one decision they make,
+   Replace with a governing document they select or Govern alongside; the
+   governing documents they withdraw; and, collapsed, every other governing
+   document, retained without a decision — beside its live context-impact
+   review. Preview and apply shows everything the plan writes before one
+   confirmation. The draft is private local state — kept on this computer
+   only — and changes nothing until it is applied; then it is an immutable
+   receipt. Every decision is the person's: no control here starts chosen, and
+   nothing a report says chooses one. */
 let changeSet = null;  // the draft open in the editor, as the server describes it
 let csScreen = "build";  // "build", or "preview" while its preview is open
 let csQueue = Promise.resolve();  // changes to the draft, sent one at a time
@@ -2077,13 +2107,6 @@ let csRationale = null;  // rationale typed but not yet saved: { text, timer }
 let csPacket = {};  // the review packet's save, for one plan: { plan, confirm, typing, error, saved }
 const csOpen = {};  // which of the editor's disclosures the person opened, across redraws
 
-const OUTCOME_OPTIONS = [
-  ["", "Choose an outcome"],
-  ["retain", "Retain — keeps governing, unchanged"],
-  ["revise", "Revise — a revision of it replaces it"],
-  ["replace", "Replace — another candidate replaces it"],
-  ["withdraw", "Withdraw — stops governing, becomes a candidate again"],
-];
 const LIFECYCLE_TONE = { "structurally valid": "ok", blocked: "stale",
   "waiting for required candidates or decisions": "proposed", applied: "authority" };
 const REPORT_STATUS = {
@@ -2106,61 +2129,42 @@ async function renderChangeSets() {
   try { data = await call("/api/changesets/list", {}); } catch (err) { toast(err.message, true); return; }
   list.textContent = "";
   renderChangeSetTally(data.drafts.filter(isActiveDraft).length);
-  const slot = $("changeSetInfo");
-  if (slot && !slot.firstChild) {
-    slot.appendChild(infoTip("About change sets", [
-      el("p", { text: "A coordinated change set applies several authority changes — grants, revisions, "
-        + "replacements and withdrawals — as one action, with one confirmation." }),
-      el("p", { text: data.private_note }),
-      el("p", { text: "Once applied, the Agent Context's files are the approved context, and the draft is kept "
-        + "as a private receipt. Charter never commits: Git is yours." }),
-    ], { id: "aboutChangeSets" }));
-  }
-  if (!data.drafts.length) {
-    list.appendChild(el("p", { class: "hint", id: "noChangeSets",
-      text: "No change sets for this Agent Context on this computer. Start one with New change set." }));
-  }
   const groupFor = ({ id, name, holds }) => {
     const rows = data.drafts.filter(holds).map(changeSetRow);
     return rows.length ? recordGroup(id, name, rows) : null;
   };
-  /* Active drafts are the everyday work, shown first. Applied change sets and
-     abandoned drafts are history: compact, together behind a collapsed Change
-     history disclosure below the active drafts. Each keeps its own group and
-     count within that history, in the same order. */
+  /* Active drafts are the everyday work. Applied change sets and abandoned
+     drafts are history: the normal view does not list them — their receipts
+     and records stay, unchanged, in private local state. A record Charter
+     cannot read is never hidden: it is listed after the active drafts, where
+     it can be deleted. */
   const active = groupFor(CHANGE_SET_ACTIVE);
-  if (active) list.appendChild(active);
-  const history = CHANGE_HISTORY_GROUPS.map(groupFor).filter(Boolean);
-  const historyCount = data.drafts.filter(isHistoryRecord).length;
-  if (historyCount) {
-    list.appendChild(disclosure(groupLabel("Change History", historyCount), history,
-      { id: "csHistoryBody", buttonId: "csHistoryToggle", class: "change-history" }));
-  }
-  /* A record Charter cannot read is none of these; it stays listed last, after the
-     active drafts and the change history, where it can be deleted. */
   const unreadable = groupFor(CHANGE_SET_UNREADABLE);
+  if (!active && !unreadable) {
+    list.appendChild(el("p", { class: "hint", id: "noChangeSets",
+      text: "No open change sets." }));
+  }
+  if (active) list.appendChild(active);
   if (unreadable) list.appendChild(unreadable);
   renderChangeSetEditor();
 }
 
 /* The index's groups, each shown only when it has a member. An incomplete or
-   stale draft is active; applied and abandoned change sets are history. */
+   stale draft is active; applied and abandoned change sets are not listed. */
 const CHANGE_SET_ACTIVE = { id: "csGroupActive", name: "Active Drafts", holds: isActiveDraft };
-const CHANGE_HISTORY_GROUPS = [
-  { id: "csGroupApplied", name: "Applied Change Sets", holds: (d) => !d.unreadable && d.state === "applied" },
-  { id: "csGroupAbandoned", name: "Abandoned Drafts", holds: (d) => !d.unreadable && d.state === "abandoned" },
-];
 const CHANGE_SET_UNREADABLE = { id: "csGroupUnreadable", name: "Unreadable Records", holds: (d) => !!d.unreadable };
-const isHistoryRecord = (d) => !d.unreadable && (d.state === "applied" || d.state === "abandoned");
 
+/* A row: its title, then its status label; its action on its own. */
 function changeSetRow(d) {
   return el("div", { class: "doc changeset-row", "data-id": d.id }, [
     el("div", {}, [
-      el("div", { class: "title", text: d.title || "Unreadable draft" }),
+      el("div", { class: "title-row" }, [
+        el("span", { class: "title", text: d.title || "Unreadable draft" }),
+        chip(d.unreadable ? "unreadable" : d.state, d.state === "active" ? "proposed" : null),
+      ]),
       el("div", { class: "path", text: d.unreadable || changeSetCounts(d) }),
     ]),
     el("div", { class: "actions" }, [
-      chip(d.unreadable ? "unreadable" : d.state, d.state === "active" ? "proposed" : null),
       d.unreadable
         ? el("button", { class: "btn ghost small", text: "Delete", onclick: () => deleteChangeSet(d.id, d.id) })
         : el("button", { class: "btn small", text: "Open", onclick: () => openChangeSet(d.id) }),
@@ -2186,7 +2190,7 @@ function changeSetCounts(d) {
    Back returns to the index and Forward reopens it. */
 function showChangeSet(next) {
   if (!changeSet || changeSet.draft.id !== next.draft.id) {
-    csScreen = "build"; csPacket = {}; dropRationale();
+    csScreen = "build"; csPacket = {}; csConverting = false; dropRationale(); dropReviews();
     refreshChangeSetTally();  // a newly started draft counts at once
   }
   const entering = !changeSet;
@@ -2218,6 +2222,7 @@ async function leaveChangeSet() {
 
 async function closeChangeSet() {
   await flushRationale();
+  await flushReviews();
   if (csScreen === "preview" && review && review.kind === "changeset") { review = null; $("review").textContent = ""; }
   changeSet = null;
   csScreen = "build";
@@ -2266,15 +2271,20 @@ async function newChangeSet() {
   return made;
 }
 
-/* Abandoning is irreversible: confirm it clearly first (it is not reversible
-   afterwards, and the draft is kept only as an abandoned record). */
-async function abandonChangeSet() {
+/* Discard draft: one clear confirmation, then the private draft is
+   discarded — its record kept, unchanged and unlisted, in private local state — and the person is back
+   at Change Sets. Nothing else changes: no candidate, no governing context. */
+async function discardChangeSet() {
   const d = changeSet && changeSet.draft;
-  const label = d && d.title ? `the change set “${d.title}”` : "this change set";
-  if (typeof confirm === "function" && !confirm(`Abandon ${label}? It can no longer be edited or `
-      + "applied, and is kept only as an abandoned record. This cannot be undone. No governing "
-      + "context is affected.")) return;
-  await changeSetCall("/api/changeset/abandon");
+  const label = d && d.title ? `the private draft “${d.title}”` : "this private draft";
+  if (typeof confirm === "function" && !confirm(`Discard ${label}? It will be discarded. Its record stays private on this computer; `
+      + "no candidate or governing context changes.")) return;
+  await flushRationale();
+  await flushReviews();
+  const next = await changeSetCall("/api/changeset/abandon");
+  if (!next) return;
+  toast(`Discarded ${label}.`);
+  await leaveChangeSet();
 }
 
 async function deleteChangeSet(id, label) {
@@ -2350,14 +2360,16 @@ function restoreFocus(saved) {
    is the plan's first field; otherwise it heads the panel. */
 function changeSetHeader(cs, active, previewing) {
   const d = cs.draft;
+  const editing = active && !previewing && cs.form !== "earlier";
   return el("header", { class: "cs-head" }, [
-    active && !previewing ? null : el("h3", { class: "cs-title-text", id: "csTitleText", text: d.title }),
+    editing ? null : el("h3", { class: "cs-title-text", id: "csTitleText", text: d.title }),
     active ? el("ol", { class: "cs-steps", id: "csSteps", "aria-label": "Steps" }, [
       el("li", { "aria-current": previewing ? null : "step", text: "1. Build Change Set" }),
       el("li", { "aria-current": previewing ? "step" : null, text: "2. Preview and Apply" }),
     ]) : null,
     el("div", { class: "cs-status", id: "csStatus" }, [
       chip(cs.lifecycle, LIFECYCLE_TONE[cs.lifecycle] || null),
+      cs.form === "earlier" ? chip("Earlier form", "proposed") : null,
       chip(cs.review_stage, null),
       chip("Private draft — not context", "proposed"),
     ]),
@@ -2377,12 +2389,13 @@ function changeSetPreviewing() {
 
 async function previewChangeSet() {
   await flushRationale();
+  await flushReviews();
   await csQueue;  // the preview is of the draft with every edit saved
   const cs = changeSet;
   if (!cs || !cs.valid) return;
   csScreen = "preview";
   await planFor("changeset", { draft_id: cs.draft.id, draft_revision: cs.draft.revision },
-    { applyLabel: "Apply change set", applyClass: "btn authority", changeSet: cs });
+    { applyLabel: "Apply", changeSet: cs });
   renderChangeSetEditor();
   /* On the preview screen now: focus its heading, not the button that vanished. */
   focusAfter("csTitleText");
@@ -2391,8 +2404,7 @@ async function previewChangeSet() {
 /* The name is the person's, prominent and editable; it heads the change
    summary. */
 function changeSetTitle(d) {
-  const input = el("input", { type: "text", id: "csTitle", class: "cs-title-input", maxlength: "200",
-    "aria-label": "Change set name", placeholder: "Name this change set" });
+  const input = el("input", { type: "text", id: "csTitle", class: "cs-title-input", maxlength: "200" });
   input.value = d.untitled ? "" : d.title;
   input.addEventListener("change", () => {
     const value = input.value.trim();
@@ -2400,37 +2412,31 @@ function changeSetTitle(d) {
     if (value !== d.title) changeSetCall("/api/changeset/update", { title: value });
   });
   input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); input.blur(); } });
-  return el("div", { class: "cs-title" }, [input, el("p", { class: "hint", id: "csTitleHint", text: d.untitled
-    ? "Name this change set. Its name heads the change summary; Charter never names it for you."
-    : "Its name heads the change summary." })]);
+  return el("div", { class: "field cs-title" }, [el("label", { for: "csTitle", text: "Name" }), input]);
 }
 
 /* Build change set: the plan, and beside it — below it on a narrow screen —
-   its context-impact review and the agents' responses, two panels that stay
-   in view while the plan is built. */
+   one Agent Review panel. The page scrolls as a whole. */
 function changeSetBuild(cs, active) {
   const d = cs.draft;
+  /* A draft in the earlier form is shown as recorded and changes only by
+     being converted or discarded. */
+  const earlier = cs.form === "earlier";
+  const editable = active && !earlier;
   const plan = el("div", { class: "cs-col cs-plan", id: "csPlan" }, [
-    active ? changeSetTitle(d) : null,
-    changeSetRows(cs, active),
-    changeSetAlongside(cs, active),
-    changeSetOthers(cs, active),
-    active ? changeSetRationale(cs) : null,
-    changeSetSummary(cs),
-    changeSetReasons(cs, active),
+    editable ? changeSetTitle(d) : null,
+    earlier ? changeSetEarlier(cs, active) : changeSetCandidates(cs, editable),
+    earlier ? null : changeSetWithdrawals(cs, editable),
+    editable ? changeSetRationale(cs) : null,
+    changeSetReasons(cs, editable),
     el("div", { class: "actions cs-next" }, [
-      active ? el("button", { class: "btn authority", id: "csPreview", text: "Preview and apply →",
+      editable ? el("button", { class: "btn", id: "csPreview", text: "Preview and apply →",
         disabled: cs.valid ? null : "", onclick: previewChangeSet }) : null,
-      active ? null : el("span", { class: "hint", text: "Abandoned: this draft no longer changes." }),
-      active ? el("button", { class: "btn ghost", text: "Abandon", onclick: abandonChangeSet }) : null,
-      active ? null : el("button", { class: "btn ghost", text: "Delete draft", onclick: () => deleteChangeSet(d.id, d.title) }),
+      active ? null : el("span", { class: "hint", text: "Discarded: this draft no longer changes." }),
+      active ? el("button", { class: "btn ghost", id: "csDiscard", text: "Discard draft", onclick: discardChangeSet }) : null,
     ]),
   ]);
-  const reviewColumn = el("div", { class: "cs-col cs-review", id: "csReview" }, [
-    changeSetPrompt(cs, active),
-    changeSetReports(cs, active),
-  ]);
-  return el("div", { class: "inner cs-build", id: "csBuild" }, [plan, reviewColumn]);
+  return el("div", { class: "inner cs-build", id: "csBuild" }, [plan, changeSetAgentReview(cs, editable)]);
 }
 
 /* A picker option distinguishes candidates that share a title by their source,
@@ -2439,7 +2445,7 @@ function changeSetBuild(cs, active) {
 function candidateLabel(c) {
   const parts = [c.title];
   const bits = [];
-  if (c.source_kind) bits.push(SOURCE_LABEL[c.source_kind] || c.source_kind);
+  if (sourceTag(c)) bits.push(sourceTag(c));
   if (c.revises_title) {
     bits.push(c.revises_current === false
       ? `revises an earlier version of “${c.revises_title}”` : `revises “${c.revises_title}”`);
@@ -2466,68 +2472,238 @@ function candidateLabels(list) {
   return labels;
 }
 
-const candidateOption = (c, chosen, labels) => el("option", { value: c.path,
-  text: `${(labels && labels[c.path]) || candidateLabel(c)}${c.used && c.path !== chosen ? " (already in this plan)" : ""}` });
+/* A candidate's provenance, shown only where it tells candidates that share
+   a title apart: its source, and the document a revision revises. */
+function provenanceOf(cs, c) {
+  const all = cs.available_candidates || [];
+  const same = all.filter((o) => (o.title || "").trim().toLowerCase() === (c.title || "").trim().toLowerCase());
+  if (same.length < 2) return "";
+  const bits = [];
+  if (sourceTag(c)) bits.push(sourceTag(c));
+  if (c.revises_title) bits.push(`revises “${c.revises_title}”`);
+  if (c.change_summary) bits.push(c.change_summary);
+  return bits.join(" · ");
+}
 
-/* One governing document the person is changing: its outcome, and for a
-   revision or replacement, the candidate they choose. */
-function changeSetRows(cs, active) {
-  const list = el("ul", { class: "cs-list", id: "csRows" });
-  cs.rows.forEach((r, i) => list.appendChild(planRow(cs, r, i, active)));
-  const pick = el("select", { id: "csAddRow", "aria-label": "Governing document to change" },
+/* The candidates the plan includes, each a compact row with exactly one
+   decision the person makes, from one dropdown: Replace, with the governing
+   document they then select, or Govern alongside. A candidate already in the
+   plan is not offered again. */
+function changeSetCandidates(cs, active) {
+  const items = cs.plan_candidates || [];
+  const list = el("ul", { class: "cs-list", id: "csCandidates" });
+  items.forEach((c, i) => list.appendChild(planCandidate(cs, c, i, active)));
+  const free = cs.available_candidates.filter((c) => !c.used);
+  const freeLabels = candidateLabels(free);
+  const pick = el("select", { id: "csAddCandidate", "aria-label": "Authority candidate to include" },
+    [el("option", { value: "", text: "Choose an authority candidate" })]
+      .concat(free.map((c) => el("option", { value: c.path, text: freeLabels[c.path] }))));
+  return csSection("Candidates", [
+    items.length ? list : null,
+    active && free.length ? el("div", { class: "actions cs-add" }, [pick,
+      el("button", { class: "btn ghost small", id: "csAddCandidateButton", text: "Add", onclick: () => {
+        if (!pick.value) { toast("Choose an authority candidate.", true); return; }
+        changeSetCall("/api/changeset/update", { candidates: items.map((c) => c.path).concat([pick.value]) });
+      } })]) : null,
+    /* Only when the section lists no candidate and none can be added: with
+       every candidate already planned, it simply offers no Add. */
+    items.length || free.length ? null
+      : el("p", { class: "hint", id: "csNoCandidates", text: "No candidates available." }),
+  ]);
+}
+
+/* The governing documents a candidate may replace: not one another candidate
+   already replaces or the plan withdraws. One made with Revise… lists the
+   document it was drafted from first, labelled as a suggestion — never
+   selected. */
+function replacementTargets(cs, c) {
+  const taken = new Set((cs.plan_candidates || []).filter((o) => o.path !== c.path && o.decision === "replace"
+    && o.target).map((o) => o.target).concat((cs.withdrawals || []).map((w) => w.path)));
+  const open = (cs.governing || []).filter((g) => !taken.has(g.path) || g.path === c.target);
+  const origin = c.revises_path ? open.find((g) => g.path === c.revises_path) : null;
+  return origin ? [origin].concat(open.filter((g) => g !== origin)) : open;
+}
+
+const DECISION_OPTIONS = [["", "Choose a decision"], ["replace", "Replace"], ["govern-alongside", "Govern alongside"]];
+
+function planCandidate(cs, c, i, active) {
+  const send = (d) => changeSetCall("/api/changeset/update", { decisions: { [c.path]: d } });
+  const decision = el("select", { id: `csDecision-${i}`, class: "cs-decision", disabled: active ? null : "",
+    "aria-label": `Decision for “${c.title}”` },
+    DECISION_OPTIONS.map(([value, label]) => el("option", { value, text: label })));
+  decision.value = c.decision || "";
+  decision.addEventListener("change", () => send({ decision: decision.value,
+    target: decision.value === "replace" ? (c.target || "") : "" }));
+  let target = null;
+  let origin = null;
+  if (c.decision === "replace") {
+    const targets = replacementTargets(cs, c);
+    origin = c.revises_path && targets[0] && targets[0].path === c.revises_path ? targets[0] : null;
+    target = el("select", { id: `csTarget-${i}`, class: "cs-target", disabled: active ? null : "",
+      "aria-label": `Governing document “${c.title}” replaces` },
+      [el("option", { value: "", text: "Choose the document it replaces" })]
+        .concat(targets.map((g) => el("option", { value: g.path,
+          text: g === origin ? `${g.title} — suggested: ${REVISED_FROM}` : g.title }))));
+    if (c.target && !targets.some((g) => g.path === c.target)) {
+      target.appendChild(el("option", { value: c.target, text: c.target_title || c.target }));
+    }
+    target.value = c.target || "";
+    target.addEventListener("change", () => send({ decision: "replace", target: target.value }));
+  }
+  const replaced = (cs.governing || []).find((g) => g.path === c.target);
+  const blank = c.decision === "replace" && replaced && replaced.scope
+    ? "Blank — inherits the replaced document's scope" : "Blank — no scope stated";
+  const provenance = provenanceOf(cs, c);
+  return el("li", { class: "cs-item cs-row cs-candidate", "data-path": c.path }, [
+    el("div", { class: "cs-row-head" }, [
+      el("div", { class: "cs-row-name" }, [
+        el("div", { class: "title-row" }, [el("span", { class: "title", text: c.title }),
+          c.present ? null : chip("No longer an authority candidate", "stale")]),
+        provenance ? el("div", { class: "path cs-provenance", text: provenance }) : null,
+      ]),
+    ]),
+    el("div", { class: "cs-row-controls" }, [decision, target]),
+    scopeLine(`csScopeLine-${i}`, "Scope", c.scope, blank),
+    c.decision === "replace" && c.revises_title && c.revises_current === false
+      ? el("p", { class: "note warning cs-earlier", id: `csEarlier-${i}`,
+        text: `“${c.title}” was made from an earlier version of “${c.revises_title}”. `
+          + "Applying it would undo whatever changed in that document since, unless the candidate repeats "
+          + "it: compare them before you apply." }) : null,
+    el("div", { class: "actions cs-row-actions" }, [
+      el("button", { class: "btn ghost small", id: `csViewDetails-${i}`, type: "button", text: "View details",
+        "aria-label": `View details of “${c.title}”`, onclick: (event) => viewCandidateDetails(cs, c, event.currentTarget) }),
+      editDetails(c, `csEditDetails-${i}`, active),
+      active ? el("button", { class: "btn ghost small", type: "button", text: "Remove", "aria-label": `Remove ${c.title} from the plan`,
+        onclick: () => changeSetCall("/api/changeset/update",
+          { candidates: (cs.plan_candidates || []).filter((o) => o.path !== c.path).map((o) => o.path) }) }) : null,
+    ]),
+  ]);
+}
+
+/* View details: the complete candidate's details and, for a replacement, its
+   scope beside the scope it replaces — on request, never in the row. */
+function viewCandidateDetails(cs, c, opener) {
+  const replaced = c.decision === "replace" ? (cs.governing || []).find((g) => g.path === c.target) : null;
+  const effect = (cs.effects || []).find((e) => e.candidate === c.path);
+  const facts = [["Title", c.title], ["Logical path", c.path],
+    ["Source", sourceTag(c) || "—"],
+    c.revises_title ? ["Revises", c.revises_current === false ? `an earlier version of “${c.revises_title}”`
+      : `“${c.revises_title}”`] : null,
+    c.change_summary ? ["Change", c.change_summary] : null,
+    ["Decision", c.decision === "replace" ? (replaced ? `Replace “${replaced.title}”` : "Replace — document not chosen")
+      : c.decision === "govern-alongside" ? "Govern alongside" : "Not yet chosen"]].filter(Boolean);
+  review = null;
+  showFormPanel(`Details: ${c.title}`, el("div", { class: "inner cs-details", id: "csDetails" }, [
+    el("dl", { class: "scope-compare cs-details-facts" },
+      facts.reduce((out, [k, v]) => out.concat([el("dt", { text: k }), el("dd", { text: v })]), [])),
+    el("h5", { text: replaced ? "Scope Comparison" : "Scope" }),
+    candidateScope(c, replaced ? { path: replaced.path, scope: replaced.scope } : null, effect, false),
+    el("div", { class: "actions" }, [
+      c.present ? el("button", { class: "btn ghost small", id: "csDetailsRead", type: "button", text: "Read the candidate",
+        onclick: (event) => openDocument(c.path, event.currentTarget) }) : null,
+      c.present && (c.revises_path || replaced) ? el("button", { class: "btn ghost small", id: "csDetailsCompare",
+        type: "button", text: "Compare with governing…", onclick: (event) => openComparison(c.path,
+          [replaced ? replaced.path : c.revises_path], `Compare “${c.title}” with “${replaced ? replaced.title
+            : c.revises_title}”`, event.currentTarget) }) : null,
+    ]),
+  ]));
+  if (opener) panelOpener = opener;
+}
+
+/* Governing documents the plan withdraws: each stops governing and becomes an
+   authority candidate again. A withdrawal uses no candidate. */
+function changeSetWithdrawals(cs, active) {
+  const withdrawals = cs.withdrawals || [];
+  const list = el("ul", { class: "cs-list", id: "csWithdrawals" }, withdrawals.map((w) =>
+    el("li", { class: "cs-item cs-row", "data-path": w.path }, [
+      el("div", { class: "cs-row-head" }, [
+        el("div", { class: "title-row" }, [el("span", { class: "title", text: w.title }),
+          w.governs ? null : chip("No longer governs", "stale")]),
+        active ? el("button", { class: "btn ghost small", type: "button", text: "Remove",
+          "aria-label": `Remove the withdrawal of ${w.title}`,
+          onclick: () => changeSetCall("/api/changeset/update",
+            { withdrawals: withdrawals.filter((o) => o.path !== w.path).map((o) => o.path) }) }) : null,
+      ]),
+    ])));
+  const replaced = new Set((cs.plan_candidates || []).filter((c) => c.decision === "replace").map((c) => c.target));
+  const open = (cs.governing || []).filter((g) => !replaced.has(g.path)
+    && !withdrawals.some((w) => w.path === g.path));
+  const pick = el("select", { id: "csAddWithdrawal", "aria-label": "Governing document to withdraw" },
     [el("option", { value: "", text: "Choose a governing document" })]
-      .concat((cs.others || []).map((g) => el("option", { value: g.path, text: `${g.title} — ${g.path}` }))));
-  return csSection("Governing Documents You Are Changing", [
-    cs.rows.length ? list : el("p", { class: "hint", id: "csNoRows",
-      text: "Add each governing document this change set revises, replaces or withdraws." }),
-    active && (cs.others || []).length ? el("div", { class: "actions cs-add" }, [pick,
-      el("button", { class: "btn ghost small", id: "csAddRowButton", text: "Add to plan", onclick: () => {
+      .concat(open.map((g) => el("option", { value: g.path, text: g.title }))));
+  return csSection("Withdrawals", [
+    el("p", { class: "hint", id: "csWithdrawalsHint", text: "Withdrawn documents become authority candidates." }),
+    withdrawals.length ? list : null,
+    active && open.length ? el("div", { class: "actions cs-add" }, [pick,
+      el("button", { class: "btn ghost small", id: "csAddWithdrawalButton", text: "Add", onclick: () => {
         if (!pick.value) { toast("Choose a governing document.", true); return; }
-        changeSetCall("/api/changeset/update", { outcomes: { [pick.value]: { outcome: "" } } });
+        changeSetCall("/api/changeset/update", { withdrawals: withdrawals.map((w) => w.path).concat([pick.value]) });
       } })]) : null,
   ]);
 }
 
-function planRow(cs, r, i, active) {
-  const outcome = el("select", { id: `csOutcome-${i}`, disabled: active && r.governs ? null : "" },
-    OUTCOME_OPTIONS.map(([value, label]) => el("option", { value, text: label })));
-  outcome.value = r.outcome || "";
-  const needsCandidate = r.outcome === "revise" || r.outcome === "replace";
-  const chosen = r.candidate ? r.candidate.path : "";
-  const labels = candidateLabels(cs.available_candidates);
-  const pick = el("select", { id: `csCandidate-${i}`, disabled: active ? null : "" },
-    [el("option", { value: "", text: "Choose the candidate" })]
-      .concat(cs.available_candidates.map((c) => candidateOption(c, chosen, labels))));
-  if (chosen && !cs.available_candidates.some((c) => c.path === chosen)) {
-    pick.appendChild(el("option", { value: chosen, text: r.candidate.title }));
-  }
-  pick.value = chosen;
-  const send = (o) => changeSetCall("/api/changeset/update", { outcomes: { [r.path]: o } });
-  outcome.addEventListener("change", () => send({ outcome: outcome.value, candidate: "" }));
-  pick.addEventListener("change", () => send({ outcome: r.outcome, candidate: pick.value }));
-  const effect = (cs.effects || []).find((e) => e.document === r.path);
-  return el("li", { class: "cs-item cs-row", "data-path": r.path }, [
-    el("div", { class: "cs-row-head" }, [
-      el("div", {}, [el("div", { class: "title", text: r.title }), el("div", { class: "path", text: r.path })]),
-      r.governs ? null : chip("No longer governs", "stale"),
-      active ? el("button", { class: "btn ghost small", text: "Remove", "aria-label": `Remove ${r.title} from the plan`,
-        onclick: () => send(null) }) : null,
+/* A draft recorded in the earlier form, shown exactly as recorded: an outcome
+   for each governing document. It is refreshed, reviewed, previewed or
+   applied only once the person converts it, after seeing every change. */
+const EARLIER_OUTCOME = { retain: "Retain", revise: "Revise", replace: "Replace", withdraw: "Withdraw", "": "Not yet decided" };
+let csConverting = false;  // the conversion's confirmation is open
+
+function changeSetEarlier(cs, active) {
+  const earlier = cs.earlier || { rows: [], alongside: [], others: [] };
+  const rows = el("ul", { class: "cs-list", id: "csEarlierRows" }, earlier.rows.map((r) =>
+    el("li", { class: "cs-item cs-row", "data-path": r.path }, [
+      el("div", { class: "cs-row-head" }, [
+        el("div", {}, [el("div", { class: "title", text: r.title }), el("div", { class: "path", text: r.path })]),
+        chip(EARLIER_OUTCOME[r.outcome] || r.outcome, null),
+      ]),
+      r.candidate ? el("p", { class: "hint", text: `With “${r.candidate.title}” — ${r.candidate.path}` }) : null,
+    ])));
+  const alongside = earlier.alongside.length ? el("ul", { class: "cs-list", id: "csEarlierAlongside" },
+    earlier.alongside.map((c) => el("li", { class: "cs-item cs-row" }, [el("div", { class: "cs-row-head" }, [
+      el("div", {}, [el("div", { class: "title", text: c.title }), el("div", { class: "path", text: c.path })]),
+      chip("Govern alongside", null)])]))) : null;
+  const others = earlier.others.length ? el("p", { class: "hint", id: "csEarlierOthers",
+    text: `Every other governing document (${earlier.others.length}): `
+      + (earlier.others_retained ? "Retain all other governing documents was chosen." : "not yet decided.") }) : null;
+  return csSection("Recorded in the Earlier Form", [
+    el("p", { class: "note warning", id: "csEarlierNote", text: "This change set was recorded in the earlier "
+      + "form, which declared an outcome for every governing document. It is shown exactly as recorded. "
+      + "To refresh, review, preview or apply it, convert it to the current form first." }),
+    earlier.rows.length ? rows : null,
+    alongside,
+    others,
+    active ? (csConverting ? conversionPanel(cs) : el("div", { class: "actions" }, [
+      el("button", { class: "btn", id: "csConvert", type: "button", text: "Convert to current form…",
+        onclick: () => { csConverting = true; renderChangeSetEditor(); focusAfter("csConversionHeading"); } })])) : null,
+  ], null, "csEarlier");
+}
+
+function conversionPanel(cs) {
+  const changes = (cs.conversion && cs.conversion.changes) || [];
+  const word = { converted: "Converted", kept: "Kept", removed: "Removed" };
+  return el("div", { class: "cs-conversion", id: "csConversion", role: "region", "aria-labelledby": "csConversionHeading" }, [
+    el("h5", { id: "csConversionHeading", tabindex: "-1", text: "Converting to the Current Form Changes This" }),
+    el("ul", { class: "issues", id: "csConversionChanges" }, changes.map((c) => el("li", {
+      class: c.change === "removed" ? "warning" : "" }, [
+      el("span", {}, [chip(word[c.change] || c.change, c.change === "removed" ? "proposed" : null),
+        el("span", { text: ` ${c.text}` })]),
+    ]))),
+    el("p", { class: "hint", id: "csConversionNote", text: "Converting changes no governing context. The plan "
+      + "changes, so attached reports and prompt records become stale; they are kept as history. Nothing is "
+      + "converted until you confirm." }),
+    el("div", { class: "actions" }, [
+      el("button", { class: "btn", id: "csConvertConfirm", type: "button", text: "Convert", onclick: async () => {
+        const next = await changeSetCall("/api/changeset/convert", { confirm: true });
+        csConverting = false;
+        if (next) { renderChangeSetEditor(); toast("Converted to the current form. Review the plan; refresh it if it says so."); }
+      } }),
+      el("button", { class: "btn ghost", id: "csConvertCancel", type: "button", text: "Cancel", onclick: () => {
+        csConverting = false; renderChangeSetEditor(); focusAfter("csConvert");
+      } }),
     ]),
-    el("div", { class: "cs-row-fields" }, [
-      el("div", { class: "field" }, [el("label", { for: `csOutcome-${i}`, text: "Outcome" }), outcome]),
-      needsCandidate ? el("div", { class: "field" }, [el("label", { for: `csCandidate-${i}`,
-        text: r.outcome === "revise" ? "Revised by" : "Replaced by" }), pick]) : null,
-    ]),
-    needsCandidate && r.candidate ? rowScope(r, effect, i, active) : null,
-    needsCandidate && r.candidate && r.candidate.revises_title && r.candidate.revises_current === false
-      ? el("p", { class: "note warning cs-earlier", id: `csEarlier-${i}`,
-        text: `“${r.candidate.title}” was made from an earlier version of “${r.candidate.revises_title}”. `
-          + "Applying it would undo whatever changed in that document since, unless the candidate repeats "
-          + "it: compare them before you apply." }) : null,
   ]);
 }
 
-const sameScope = (a, b) => String(a || "").split(/\s+/).join(" ").trim() === String(b || "").split(/\s+/).join(" ").trim();
 
 /* A planned candidate's scope, on one line however long it is: the whole
    text is there for a screen reader, and clipped on screen. Its complete
@@ -2552,23 +2728,6 @@ function editDetails(c, id, active) {
     onclick: () => startCandidateEdit({ path: c.path }, { returnTo: draftId }) });
 }
 
-function rowScope(r, effect, i, active) {
-  const c = r.candidate;
-  const after = effect ? effect.scope_after : (c.scope || r.scope);
-  const changes = !sameScope(after, r.scope);
-  const blank = r.scope ? "Blank — inherits the replaced document's scope" : "Blank — no scope stated";
-  return el("div", { class: "cs-scope", id: `csScope-${i}` }, [
-    c.present ? null : chip("No longer an authority candidate", "stale"),
-    scopeLine(`csScopeLine-${i}`, "Candidate's scope", c.scope, blank,
-      chip(changes ? "Scope changes" : "Scope unchanged", changes ? "proposed" : null)),
-    el("div", { class: "cs-scope-actions" }, [
-      csDisclosure(`scope-${r.path}`, "Full scope and comparison",
-        [candidateScope(c, r, effect, true)], { buttonId: `csScopeToggle-${i}` }),
-      editDetails(c, `csEditDetails-${i}`, active),
-    ]),
-  ]);
-}
-
 /* A candidate's scope, as its own metadata says — beside the scope it
    replaces, for a revision or replacement. Read-only here: scope is changed
    with Edit details on the candidate, which makes any report stale. */
@@ -2577,7 +2736,8 @@ function candidateScope(c, row, effect, nested) {
     el("dt", { text: "Candidate's scope" }), el("dd", { text: c.scope || "None stated" }),
     el("dt", { text: "Current scope" }), el("dd", { text: row.scope || "None stated" }),
     el("dt", { text: "Scope after" }),
-    el("dd", { text: effect ? (effect.scope_after || "None stated")
+    el("dd", { text: effect
+      ? (effect.scope_after || "None stated") + (!c.scope && row.scope && effect.scope_after ? " (inherited)" : "")
       : (c.scope || (row.scope ? `${row.scope} (inherited)` : "None stated")) }),
   ] : [el("dt", { text: "Candidate's scope" }), el("dd", { text: c.scope || "None stated" })]);
   compare.classList.add(row ? "scope-compare-row" : "scope-compare-one");
@@ -2589,73 +2749,13 @@ function candidateScope(c, row, effect, nested) {
   ]);
 }
 
-function changeSetAlongside(cs, active) {
-  const list = el("ul", { class: "cs-list", id: "csAlongside" });
-  cs.alongside.forEach((c, j) => list.appendChild(el("li", { class: "cs-item cs-row", "data-path": c.path }, [
-    el("div", { class: "cs-row-head" }, [
-      el("div", {}, [el("div", { class: "title", text: c.title }), el("div", { class: "path", text: c.path })]),
-      chip("Governs alongside", "ok"),
-      active ? el("button", { class: "btn ghost small", text: "Remove", "aria-label": `Remove ${c.title} from the plan`,
-        onclick: () => changeSetCall("/api/changeset/update",
-          { alongside: cs.alongside.filter((o) => o.path !== c.path).map((o) => o.path) }) }) : null,
-    ]),
-    el("div", { class: "cs-scope", id: `csAlongsideScope-${j}` }, [
-      c.present ? null : chip("No longer an authority candidate", "stale"),
-      scopeLine(`csAlongsideScopeLine-${j}`, "Scope", c.scope, "Blank — no scope stated"),
-      el("div", { class: "cs-scope-actions" }, [
-        csDisclosure(`alongside-scope-${c.path}`, "Full scope", [candidateScope(c, null, null, true)],
-          { buttonId: `csAlongsideScopeToggle-${j}` }),
-        editDetails(c, `csAlongsideEdit-${j}`, active),
-      ]),
-    ]),
-  ])));
-  const free = cs.available_candidates.filter((c) => !c.used);
-  const freeLabels = candidateLabels(free);
-  const pick = el("select", { id: "csAddAlongside", "aria-label": "Authority candidate to govern alongside" },
-    [el("option", { value: "", text: "Choose an authority candidate" })]
-      .concat(free.map((c) => el("option", { value: c.path, text: freeLabels[c.path] }))));
-  return csSection("New Documents to Govern Alongside", [
-    cs.alongside.length ? list : null,
-    active && free.length ? el("div", { class: "actions cs-add" }, [pick,
-      el("button", { class: "btn ghost small", id: "csAddAlongsideButton", text: "Add to govern alongside", onclick: () => {
-        if (!pick.value) { toast("Choose an authority candidate.", true); return; }
-        changeSetCall("/api/changeset/update", { alongside: cs.alongside.map((c) => c.path).concat([pick.value]) });
-      } })]) : null,
-    !cs.alongside.length && !(active && free.length)
-      ? el("p", { class: "hint", text: "No other authority candidate is waiting." }) : null,
-  ]);
-}
-
-/* Every governing document the plan does not name stays only by the
-   person's one explicit choice, shown compactly with the list behind it. */
-function changeSetOthers(cs, active) {
-  const others = cs.others || [];
-  if (!others.length) return null;
-  const list = el("ul", { class: "set-list", id: "csOthersList" },
-    others.map((g) => el("li", {}, [el("span", { text: `${g.title} — ${g.path}` })])));
-  const body = cs.others_retained
-    ? [chip("Retained — your decision", "ok"),
-      csDisclosure("others", `Retaining ${documentsOf(others.length)}`, [list], { buttonId: "csOthersToggle" }),
-      active ? el("button", { class: "btn ghost small", id: "csUnretain", text: "Undo",
-        onclick: () => changeSetCall("/api/changeset/update", { retain_others: false }) }) : null]
-    : [active ? el("button", { class: "btn small", id: "csRetainOthers",
-        text: `Retain all other governing documents (${others.length})`,
-        onclick: () => changeSetCall("/api/changeset/update", { retain_others: true }) }) : null,
-      csDisclosure("others", `Show the ${documentsOf(others.length)}`, [list], { buttonId: "csOthersToggle" })];
-  return csSection("Every Other Governing Document", [
-    cs.others_retained ? null : el("p", { class: "hint",
-      text: "Each governing document needs an outcome you choose. One not in the plan stays only if you retain it." }),
-    el("div", { class: "cs-retained", id: "csOthers" }, body),
-  ]);
-}
-
 /* The rationale is part of the draft, saved as the person writes it: shortly
    after they stop typing, when they leave the field, and before anything
    that leaves or previews the draft. There is no Save step. */
 const RATIONALE_PAUSE_MS = 800;
 
 function changeSetRationale(cs) {
-  const rationale = el("textarea", { id: "csRationale", rows: 2, "aria-describedby": "csRationaleHint" });
+  const rationale = el("textarea", { id: "csRationale", rows: 3, "aria-labelledby": "csRationaleHeading" });
   rationale.value = csRationale ? csRationale.text : (cs.draft.rationale || "");
   rationale.addEventListener("input", () => {
     if (csRationale && csRationale.timer) clearTimeout(csRationale.timer);
@@ -2665,12 +2765,8 @@ function changeSetRationale(cs) {
     if (!csRationale) csRationale = { text: rationale.value, timer: null };
     flushRationale();
   });
-  return csSection("Context-Impact Rationale", [
-    el("p", { class: "hint", id: "csRationaleHint",
-      text: "Why these outcomes make the governing set coherent. It goes into the change summary, "
-        + "and is saved as you write." }),
-    rationale,
-  ]);
+  return el("section", { class: "cs-section", id: "csRationaleSection" }, [
+    el("h4", { id: "csRationaleHeading", text: "Change Set Summary" }), rationale]);
 }
 
 /* Save the rationale typed so far, once. Text typed while it saves stays
@@ -2700,9 +2796,8 @@ function changeSetReasons(cs, active) {
       ...withCode(` — ${r.message}${r.refreshable ? " Refresh resolves this." : ""}`)]),
   ])));
   return csSection(cs.stale ? "Stale — Refresh Before Applying" : "Readiness", [
-    reasons.length ? list : el("p", { class: "hint", text: cs.lifecycle === "structurally valid"
-      ? "Structurally valid: every outcome is declared, and the result passes validation. "
-        + "Whether the documents agree is still your judgement." : "" }),
+    reasons.length ? list : el("p", { class: "hint", id: "csReady",
+      text: cs.lifecycle === "structurally valid" ? "Ready to preview." : "" }),
     active && refreshable ? el("div", { class: "actions" }, [el("button", { class: "btn small", id: "csRefresh",
       text: "Refresh", onclick: async () => {
         const next = await changeSetCall("/api/changeset/refresh");
@@ -2713,60 +2808,10 @@ function changeSetReasons(cs, active) {
   ]);
 }
 
-function changeSetSummary(cs) {
-  const summary = cs.summary || "";
-  if (!summary) return null;
-  return csSection("Change Summary", [csDisclosure("summary", "Show the change summary", [
-    el("pre", { class: "code", id: "csSummary", text: summary }),
-    el("div", { class: "actions" }, [el("button", { class: "btn ghost small", id: "csCopySummary",
-      text: "Copy summary", onclick: () => copyText(summary, "csSummary") })]),
-  ], { buttonId: "csSummaryToggle" })]);
-}
-
-/* The live context-impact review, prepared from a complete plan: no mode to
-   choose, nothing to generate. Within the practical single-message limit it
-   is a self-contained prompt to copy; past it, the same review as one review
-   packet the person saves where they choose and attaches. Preparing either
-   discloses nothing; copying or attaching does, and says so beside it. */
-function changeSetPrompt(cs, active) {
-  const p = cs.review_prompt || { ready: false, reason: "" };
-  const body = [];
-  if (active && !p.ready) {
-    body.push(el("p", { class: "hint", id: "csPromptWaiting" }, withCode(p.reason)));
-  } else if (active && p.over_limit) {
-    body.push(...changeSetPacket(cs, p));
-  } else if (active) {
-    body.push(el("p", { class: "cs-includes", id: "csPromptIncludes", text: promptIncludes(p) }));
-    const text = el("textarea", { id: "csPromptText", rows: 10, readonly: "", "aria-label": "Review prompt" });
-    text.value = p.text;
-    text.addEventListener("copy", () => recordCopy(p));
-    body.push(el("div", { class: "cs-copy" }, [
-      el("button", { class: "btn small", id: "csCopyPrompt", text: "Copy review prompt",
-        onclick: () => copyReviewPrompt(p) }),
-      el("p", { class: "cs-copy-warning", id: "csDisclosure", text: cs.disclosure_warning }),
-    ]));
-    body.push(csDisclosure("prompt", "Show the prompt text", [text], { buttonId: "csShowPrompt" }));
-  }
-  const last = active ? (cs.copied || []).slice(-1)[0] : null;
-  if (last && p.ready) {
-    body.push(el("p", { class: "hint", id: "csCopied", text: last.current
-      ? (last.mode === "packet" ? "You saved a review packet for this plan." : `You copied the ${MODE_NAME[last.mode] || last.mode} for this plan.`)
-      : `You ${last.mode === "packet" ? "saved a review packet" : "copied a review prompt"} for an earlier version of this plan: `
-        + "a report written from it will be stale." }));
-  }
-  return el("section", { class: "cs-section cs-panel", id: "csPromptPanel" }, [
-    el("div", { class: "label-row" }, [el("h4", { text: "Context-Impact Review" }), infoTip("About context-impact review", [
-      el("p", { text: "Charter prepares review material for an agent of your choice. It contacts no "
-        + "agent or service and uses no AI." }),
-      el("p", { text: "A review that fits in one message is a prompt to copy. A larger one is a review packet: one Markdown "
-        + "file you save outside every Agent Context and Charter's private state, then attach. It is "
-        + "never committed, kept or removed for you." }),
-      el("p", { text: "The agent's report is advisory. Its form is checked, never its conclusions, and it never selects an outcome." }),
-    ])]),
-    ...body,
-  ]);
-}
-
+/* What a review prompt holds, in one line. Within the practical
+   single-message limit the review is a prompt to copy; past it, one packet
+   to save. Preparing either discloses nothing; copying or saving does, and
+   says so beside it. */
 function promptIncludes(p) {
   const inc = p.includes || {};
   return `Includes ${documentsOf(inc.documents)} in full, ${countOf(inc.candidates, ["candidate", "candidates"])} `
@@ -2777,18 +2822,16 @@ function promptIncludes(p) {
 const sizeOf = (bytes) => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB`
   : `${Math.max(1, Math.round(bytes / 1024)).toLocaleString("en")} KB`;
 
-/* Past the limit: the packet, saved where the person chooses. What it holds
-   and the disclosure stay visible where it is saved; the request to send with
-   it is ready to copy. The packet's text never comes to the page. */
+/* Past the limit: the packet, saved where the person chooses. Compact and
+   factual: its status and size, the save action, and the disclosure beside
+   it. The packet itself holds its review instructions; its text never comes
+   to the page. */
 function changeSetPacket(cs, p) {
   if (csPacket.plan !== cs.plan_fingerprint) csPacket = { plan: cs.plan_fingerprint };
   const out = [
-    el("p", { class: "cs-includes", id: "csPacketIntro", text: `This review is ${p.size_chars.toLocaleString("en")} characters, `
-      + `past the practical single-message limit of ${p.limit.toLocaleString("en")}. Save it as one review packet and attach `
-      + "the file to the agent you choose." }),
-    el("p", { class: "cs-includes", id: "csPacketIncludes", text: `The packet holds the review instructions, ${documentsOf(p.includes.documents)} `
-      + `in full, ${countOf(p.includes.candidates, ["candidate", "candidates"])}, the complete planned change, every hash, `
-      + `and the report format, all marked as data to review. One Markdown file, ${sizeOf(p.size_bytes)}.` }),
+    el("p", { class: "cs-includes", id: "csPacketStatus", text: `Review packet required: `
+      + `${p.size_chars.toLocaleString("en")} characters, past the ${p.limit.toLocaleString("en")}-character `
+      + `single-message limit · ${sizeOf(p.size_bytes)}.` }),
     el("div", { class: "cs-copy" }, [
       el("button", { class: "btn small", id: "csSavePacket", type: "button", text: "Save review packet…",
         onclick: () => savePacket(cs, {}) }),
@@ -2796,7 +2839,7 @@ function changeSetPacket(cs, p) {
     ]),
   ];
   if (csPacket.typing) {
-    const path = el("input", { type: "text", id: "csPacketPath", placeholder: `For example C:\\Users\\you\\Downloads\\${p.file_name}` });
+    const path = el("input", { type: "text", id: "csPacketPath" });
     path.value = csPacket.typed || "";
     out.push(el("div", { class: "note", id: "csPacketTyped" }, [
       el("label", { for: "csPacketPath", text: "No Save dialog is available here. Type the full path of the file, or of a folder:" }),
@@ -2826,14 +2869,6 @@ function changeSetPacket(cs, p) {
       s.warning ? el("p", { text: s.warning }) : null,
     ]));
   }
-  /* Once saved, the request names the file as it was saved, renamed or not. */
-  const requestText = (csPacket.saved && csPacket.saved.request) || p.request;
-  const request = el("pre", { class: "code", id: "csPacketRequest", text: requestText });
-  out.push(csSection("Request to Send with the Packet", [
-    request,
-    el("div", { class: "actions" }, [el("button", { class: "btn ghost small", id: "csCopyRequest", type: "button",
-      text: "Copy request", onclick: () => copyText(requestText, "csPacketRequest") })]),
-  ], null, "csPacketRequestPanel"));
   return out;
 }
 
@@ -2887,25 +2922,144 @@ async function copyReviewPrompt(p) {
 const recordCopy = (p) => changeSetCall("/api/changeset/prompt/copied",
   { mode: p.mode, plan_fingerprint: p.plan_fingerprint });
 
-function changeSetReports(cs, active) {
-  const grid = el("div", { class: "report-grid", id: "csReports" });
-  (cs.reports || []).forEach((r) => grid.appendChild(reportCard(r, active)));
-  const label = el("input", { type: "text", id: "csReportLabel", placeholder: "Which agent, or a note" });
-  const text = el("textarea", { id: "csReportText", rows: 5,
-    placeholder: "Paste the agent's whole response, or only its JSON report. No code fences needed." });
-  return csSection("Agent Responses", [
-    active ? el("div", { class: "field" }, [el("label", { for: "csReportText", text: "The agent's response" }), text]) : null,
-    active ? el("div", { class: "field" }, [el("label", { for: "csReportLabel", text: "Label" }), label]) : null,
-    active ? el("div", { class: "actions" }, [el("button", { class: "btn ghost small", id: "csAttach", text: "Attach report",
-      onclick: () => changeSetCall("/api/changeset/report/attach", { text: text.value, label: label.value }) })]) : null,
-    (cs.reports || []).length ? grid : el("p", { class: "hint", text: "No report attached." }),
-  ], infoTip("About reports", [
-    el("p", { text: "A report is an agent's advisory claims, never Charter's findings, and never "
-      + "governing context." }),
-    el("p", { text: "Report issues are form checks only: missing, stale, malformed or unsupported. They never judge "
-      + "the report's conclusions, and no report is chosen over another." }),
-    el("p", { text: "A report is stale once the context or this plan changes after its prompt was copied." }),
-  ]), "csResponsesPanel");
+/* Agent Review: one panel with the review material to give an agent — a
+   prompt to copy, or past the practical limit a packet to save, its
+   disclosure beside it — and any number of reviews, each with its reviewing
+   agent and response, saved as they are written. Only a structurally valid
+   report counts as an attached advisory report; any other text stays saved,
+   with what is wrong with it. */
+function changeSetAgentReview(cs, active) {
+  const reviews = cs.reports || [];
+  const list = el("div", { class: "cs-reviews", id: "csReviews" }, reviews.map((r, i) => reviewEntry(r, i, active)));
+  return el("section", { class: "cs-col cs-review cs-section", id: "csAgentReview" }, [
+    el("h4", { text: "Agent Review" }),
+    ...(active ? reviewMaterial(cs) : []),
+    reviews.length ? list : null,
+    active ? el("div", { class: "actions" }, [el("button", { class: "btn ghost small", id: "csAddReview", type: "button",
+      text: reviews.length ? "Add another review" : "Add a review", onclick: addReview })]) : null,
+  ]);
+}
+
+function reviewMaterial(cs) {
+  const p = cs.review_prompt || { ready: false, reason: "" };
+  const body = [];
+  if (!p.ready) {
+    body.push(el("p", { class: "hint", id: "csPromptWaiting" }, withCode(p.reason)));
+  } else if (p.over_limit) {
+    body.push(...changeSetPacket(cs, p));
+  } else {
+    body.push(el("p", { class: "cs-includes", id: "csPromptIncludes", text: promptIncludes(p) }));
+    const text = el("textarea", { id: "csPromptText", rows: 10, readonly: "", "aria-label": "Review prompt" });
+    text.value = p.text;
+    text.addEventListener("copy", () => recordCopy(p));
+    body.push(el("div", { class: "cs-copy" }, [
+      el("button", { class: "btn small", id: "csCopyPrompt", text: "Copy review prompt",
+        onclick: () => copyReviewPrompt(p) }),
+      el("p", { class: "cs-copy-warning", id: "csDisclosure", text: cs.disclosure_warning }),
+    ]));
+    body.push(csDisclosure("prompt", "Show the prompt text", [text], { buttonId: "csShowPrompt" }));
+  }
+  const last = (cs.copied || []).slice(-1)[0];
+  if (last && p.ready) {
+    body.push(el("p", { class: "hint", id: "csCopied", text: last.current
+      ? (last.mode === "packet" ? "You saved a review packet for this plan." : `You copied the ${MODE_NAME[last.mode] || last.mode} for this plan.`)
+      : `You ${last.mode === "packet" ? "saved a review packet" : "copied a review prompt"} for an earlier version of this plan: `
+        + "a report written from it will be stale." }));
+  }
+  return body;
+}
+
+/* Reviews being written: what the person typed, kept until it is saved, so
+   a redraw never loses it. Each review saves on its own, shortly after the
+   person stops typing, when they leave the field, and before anything that
+   leaves or previews the draft. */
+const csReviewDrafts = {};
+
+function reviewEntry(r, i, active) {
+  const pending = csReviewDrafts[r.id] || {};
+  const label = el("input", { type: "text", id: `csReviewAgent-${i}`, maxlength: "200", disabled: active ? null : "" });
+  label.value = pending.label !== undefined ? pending.label : (r.label || "");
+  const text = el("textarea", { id: `csReviewText-${i}`, rows: 6, disabled: active ? null : "",
+    "aria-describedby": `csReviewState-${i}` });
+  text.value = pending.text !== undefined ? pending.text : (r.text || "");
+  const edited = (field, input) => () => {
+    const d = csReviewDrafts[r.id] = csReviewDrafts[r.id] || {};
+    d[field] = input.value;
+    if (d.timer) clearTimeout(d.timer);
+    d.timer = setTimeout(() => flushReview(r.id), RATIONALE_PAUSE_MS);
+  };
+  label.addEventListener("input", edited("label", label));
+  text.addEventListener("input", edited("text", text));
+  label.addEventListener("change", () => { edited("label", label)(); flushReview(r.id); });
+  text.addEventListener("change", () => { edited("text", text)(); flushReview(r.id); });
+  return el("article", { class: "cs-review-entry" + (r.valid ? " is-valid" : ""), id: `csReview-${i}`, "data-report": r.id }, [
+    el("div", { class: "field" }, [el("label", { for: `csReviewAgent-${i}`, text: "Reviewing agent" }), label]),
+    el("div", { class: "field" }, [el("label", { for: `csReviewText-${i}`, text: "Response" }), text]),
+    reviewState(r, i),
+    active ? el("div", { class: "actions" }, [el("button", { class: "btn ghost small", id: `csRemoveReview-${i}`,
+      type: "button", text: "Remove review", onclick: () => removeReview(r) })]) : null,
+  ]);
+}
+
+/* What the saved text is: a report — its claims and its form checks, side by
+   side with the others — or, when it is not one yet, why. */
+function reviewState(r, i) {
+  const id = `csReviewState-${i}`;
+  if (r.status === "empty") return el("p", { class: "hint", id, text: "Not yet written." });
+  if (!r.valid) {
+    return el("div", { class: "note warn", id, role: "status" }, [
+      el("p", { text: "Not a structurally valid report yet, so it is not attached as advisory evidence. "
+        + "It stays saved as written." }),
+      el("ul", { class: "issues report-issues" }, (r.issues || []).map((x) => el("li", { class: "error" }, [
+        el("span", {}, [el("code", { text: x.category }), ...withCode(` ${x.path ? x.path + ": " : ""}${x.message}`)])]))),
+    ]);
+  }
+  return el("div", { id }, [reportCard(Object.assign({}, r, { label: r.label || "Unnamed reviewing agent" }), false)]);
+}
+
+async function flushReview(id) {
+  const d = csReviewDrafts[id];
+  if (!d || !changeSet) { delete csReviewDrafts[id]; return; }
+  if (d.timer) clearTimeout(d.timer);
+  d.timer = null;
+  const body = { report_id: id };
+  if (d.label !== undefined) body.label = d.label;
+  if (d.text !== undefined) body.text = d.text;
+  const sent = { label: d.label, text: d.text };
+  const saved = await changeSetCall("/api/changeset/review/save", body);
+  // Kept when the save failed, or when the person typed more meanwhile.
+  const now = csReviewDrafts[id];
+  if (saved && now && !now.timer && now.label === sent.label && now.text === sent.text) delete csReviewDrafts[id];
+}
+
+async function flushReviews() {
+  for (const id of Object.keys(csReviewDrafts)) await flushReview(id);
+}
+
+function dropReviews() {
+  Object.keys(csReviewDrafts).forEach((id) => {
+    if (csReviewDrafts[id].timer) clearTimeout(csReviewDrafts[id].timer);
+    delete csReviewDrafts[id];
+  });
+}
+
+async function addReview() {
+  await flushReviews();
+  const next = await changeSetCall("/api/changeset/review/add");
+  const n = next && (next.reports || []).length;
+  if (n) focusAfter(`csReviewAgent-${n - 1}`);
+}
+
+/* Removing a review removes only that private draft review. A structurally
+   valid report counts as attached evidence, so removing one is confirmed
+   first. The plan and governing context never change. */
+async function removeReview(r) {
+  if (r.valid && typeof confirm === "function" && !confirm(`Remove the review from `
+      + `${r.label ? `“${r.label}”` : "an unnamed reviewing agent"}? It is a structurally valid report, so it counts `
+      + "as attached advisory evidence. Removing it changes nothing in the plan or governing context.")) return;
+  if (csReviewDrafts[r.id] && csReviewDrafts[r.id].timer) clearTimeout(csReviewDrafts[r.id].timer);
+  delete csReviewDrafts[r.id];
+  await changeSetCall("/api/changeset/report/remove", { report_id: r.id });
 }
 
 function reportCard(r, active) {
@@ -2949,86 +3103,110 @@ function reportCard(r, active) {
   ]);
 }
 
+/* A receipt's outcome summary: plain labels, only the categories with a
+   count, in this order. An earlier-form receipt counts its revisions as
+   recorded. */
+const RECEIPT_COUNTS = [
+  ["replace", "updated"], ["revise", "revised"], ["govern-alongside", "newly governing"],
+  ["withdraw", "withdrawn"], ["retain", "retained"],
+];
+
+function receiptSummary(outcomes) {
+  const parts = [];
+  RECEIPT_COUNTS.forEach(([effect, word]) => {
+    const n = outcomes.filter((e) => e.effect === effect).length;
+    if (!n) return;
+    parts.push(parts.length ? `${n} ${word}` : `${n} ${n === 1 ? "document" : "documents"} ${word}`);
+  });
+  return parts.join(" · ");
+}
+
 /* An applied change set: an immutable receipt of what it did, as it was
-   applied. Nothing here edits it. */
+   applied. It leads with its completion and what it did, in plain words;
+   paths, archive locations and the full technical summary are a disclosure
+   away. Nothing here edits it. */
 function changeSetReceipt(cs) {
   const r = cs.receipt || {};
   const d = cs.draft;
-  const changed = (r.outcomes || []).filter((e) => e.effect !== "retain");
-  const retained = (r.outcomes || []).filter((e) => e.effect === "retain");
+  const outcomes = r.outcomes || [];
+  const changed = outcomes.filter((e) => e.effect !== "retain");
+  const retained = outcomes.filter((e) => e.effect === "retain");
   const established = r.after || [];
-  const outcomeLine = (e) => {
-    const by = e.candidate ? ` — by “${e.candidate_title || e.candidate}”` : "";
-    const where = e.archived_to ? `; the previous version is archived at ${e.archived_to}`
-      : e.withdrawn_to ? `; it is an authority candidate again at ${e.withdrawn_to}` : "";
-    return el("li", { class: "cs-item" }, [
-      el("div", {}, [chip(EFFECT_WORDS[e.effect] || e.effect, e.effect === "withdraw" ? "stale" : "authority"),
-        el("span", { class: "title", text: ` ${e.title}` })]),
-      el("div", { class: "path", text: `${e.document}${by}${where}` }),
+  const appliedOn = r.at ? r.at.slice(0, 10) : "";
+  const summaryLine = [receiptSummary(outcomes), appliedOn ? `applied ${appliedOn}` : ""].filter(Boolean).join(" · ");
+  const outcomeLine = (e, i) => {
+    const by = e.candidate && e.effect !== "govern-alongside" ? `by “${e.candidate_title || e.candidate}”` : "";
+    const details = [
+      ["Governing path", e.document],
+      e.candidate ? ["Candidate", e.candidate] : null,
+      e.archived_to ? ["Previous version archived privately at", e.archived_to] : null,
+      e.withdrawn_to ? ["Now an authority candidate at", e.withdrawn_to] : null,
+      e.scope_before !== undefined && e.effect !== "govern-alongside" ? ["Scope before", e.scope_before || "None stated"] : null,
+      e.scope_after !== undefined ? ["Scope after", e.scope_after || "None stated"] : null,
+    ].filter(Boolean);
+    return el("li", { class: "cs-item cs-receipt-item", "data-path": e.document }, [
+      el("div", { class: "cs-receipt-line" }, [
+        el("span", { class: "title", text: e.title }),
+        chip(EFFECT_WORDS[e.effect] || e.effect, e.effect === "withdraw" ? "stale"
+          : e.effect === "govern-alongside" ? "ok" : "authority"),
+      ]),
+      by ? el("div", { class: "hint", text: by }) : null,
+      csDisclosure(`receipt-detail-${e.document}`, "Technical details", [
+        el("dl", { class: "scope-compare cs-receipt-detail" },
+          details.reduce((out, [k, v]) => out.concat([el("dt", { text: k }), el("dd", { text: v })]), [])),
+      ], { buttonId: `csReceiptDetailToggle-${i}` }),
     ]);
   };
   const reports = r.reports || [];
   const evidence = reports.length
-    ? csDisclosure("receipt-reports", `${countOf(reports.length, ["advisory report", "advisory reports"])}, as checked when applied`,
+    ? csDisclosure("receipt-reports", `${countOf(reports.length, ["advisory report", "advisory reports"])} attached, as checked when applied`,
       [el("div", { class: "report-grid" }, reports.map((x) => reportCard(x, false)))], { buttonId: "csReceiptReportsToggle" })
-    : el("p", { class: "hint", text: "No advisory report was attached." });
-  const copied = (r.prompts || []).length
-    ? el("p", { class: "hint", id: "csReceiptShared", text: "Review material shared: " + r.prompts.map((p) =>
-      `${MODE_NAME[p.mode] || p.mode} ${p.mode === "packet" ? "saved" : "copied"}`).join(", ") + "." })
-    : null;
+    : el("p", { class: "hint", id: "csReceiptNoReport", text: "No advisory report attached." });
+  const shared = (r.prompts || []).map((p) => el("li", {}, [
+    el("strong", { text: p.mode === "packet" ? "Review packet exported" : "Review prompt copied" }),
+    el("span", { class: "hint", text: (p.exported || p.copied) ? ` · ${(p.exported || p.copied).slice(0, 10)}` : "" }),
+  ]));
   return el("section", { class: "review changeset cs-receipt", id: "changeSetPanel" }, [
-    el("header", { class: "cs-head" }, [
+    el("header", { class: "cs-head cs-receipt-head" }, [
+      el("p", { class: "cs-applied", id: "csAppliedStatus", role: "status" }, [
+        el("strong", { text: "Change set applied" })]),
+      el("p", { class: "cs-outcome-summary", id: "csOutcomeSummary", text: summaryLine }),
       el("h3", { class: "cs-title-text", id: "csTitleText", text: d.title }),
-      el("div", { class: "cs-status", id: "csStatus" }, [chip("Applied — receipt", "authority"),
-        chip("Private record — not context", "proposed")]),
+      el("div", { class: "cs-status", id: "csStatus" }, [chip("Private record — not context", "proposed")]),
     ]),
     el("div", { class: "inner" }, [
-      el("div", { class: "cs-result", id: "csResult" }, [
-        el("p", { class: "note", id: "csRecorded", text: `Applied to the Agent Context folder${r.at
-          ? ` on ${r.at.slice(0, 10)}` : ""}, as one action. Agents read the new context now. Git is untouched: `
-          + "commit it when you choose." }),
-      ]),
-      csSection(`Final Outcomes (${changed.length})`, [
+      el("p", { class: "note", id: "csRecorded", text: "Agents read the new context now. Git is untouched: "
+        + "Charter did not operate it, so commit it when you choose." }),
+      csSection(`Changed Documents (${changed.length})`, [
         el("ul", { class: "cs-list", id: "csReceiptOutcomes" }, changed.map(outcomeLine)),
       ], null, "csReceiptFinal"),
-      csSection(`Established Governing Documents (${established.length})`, [
-        el("p", { class: "hint", text: "What governed once this change set was applied." }),
-        csDisclosure("receipt-established", `Show the ${documentsOf(established.length)}`,
-          [el("ul", { class: "set-list", id: "csReceiptEstablished" }, established.map((a) => el("li", {}, [
-            el("span", { text: `${a.title} — ${a.path}` }), a.effect ? chip(a.effect, EFFECT_TONE[a.effect] || null) : null])))],
-          { buttonId: "csReceiptEstablishedToggle" }),
-        retained.length ? csDisclosure("receipt-retained", `Retained, unchanged: ${documentsOf(retained.length)}`,
+      retained.length ? el("section", { class: "cs-section", id: "csReceiptRetainedSection" }, [
+        csDisclosure("receipt-retained", groupLabel("Retained Governing Documents", retained.length),
           [el("ul", { class: "set-list", id: "csReceiptRetained" },
             retained.map((e) => el("li", { text: `${e.title} — ${e.document}` })))],
-          { buttonId: "csReceiptRetainedToggle" }) : null,
-      ], null, "csReceiptEstablishedSection"),
-      csSection("Advisory Review", [
-        evidence, copied,
-      ], null, "csReceiptReview"),
-      r.summary ? csSection("Change Summary", [
-        el("pre", { class: "code", id: "csSummary", text: r.summary }),
+          { buttonId: "csReceiptRetainedToggle" })]) : null,
+      el("section", { class: "cs-section", id: "csReceiptEstablishedSection" }, [
+        csDisclosure("receipt-established", groupLabel("Established Governing Documents", established.length),
+          [el("p", { class: "hint", text: "What governed once this change set was applied." }),
+            el("ul", { class: "set-list", id: "csReceiptEstablished" }, established.map((a) => el("li", {}, [
+              el("span", { text: `${a.title} — ${a.path}` }), a.effect ? chip(a.effect, EFFECT_TONE[a.effect] || null) : null])))],
+          { buttonId: "csReceiptEstablishedToggle" })]),
+      csSection("Advisory Review", [evidence], null, "csReceiptReview"),
+      shared.length ? csSection("Review Material Shared", [
+        el("p", { class: "hint", text: "A record of what was copied or exported for review. It is not advisory evidence." }),
+        el("ul", { class: "set-list", id: "csReceiptShared" }, shared),
+      ], null, "csReceiptSharedSection") : null,
+      r.summary ? el("section", { class: "cs-section", id: "csReceiptSummarySection" }, [
         el("div", { class: "actions" }, [el("button", { class: "btn ghost small", id: "csCopySummary",
           text: "Copy summary", onclick: () => copyText(r.summary, "csSummary") })]),
+        csDisclosure("receipt-summary", "Technical change summary",
+          [el("pre", { class: "code", id: "csSummary", text: r.summary })], { buttonId: "csSummaryToggle" }),
       ]) : null,
     ]),
   ]);
 }
 
 /* The whole governing set before and after, each document with its effect. */
-function governingSetCompare(cs) {
-  const before = el("ul", { class: "set-list" }, (cs.before || []).map((b) => {
-    const effect = (cs.effects || []).find((e) => e.document === b.path);
-    return el("li", {}, [el("span", { text: `${b.title} — ${b.path}` }),
-      effect && effect.effect !== "retain" ? chip(effect.effect, effect.effect === "withdraw" ? "stale" : "authority") : null]);
-  }));
-  const after = el("ul", { class: "set-list" }, (cs.after || []).map((a) =>
-    el("li", {}, [el("span", { text: `${a.title} — ${a.path}` }), chip(a.effect, EFFECT_TONE[a.effect] || null)])));
-  return el("div", { class: "set-compare", id: "setCompare" }, [
-    el("div", {}, [el("h4", { text: `Governing Now (${(cs.before || []).length})` }), before]),
-    el("div", {}, [el("h4", { text: `Governing After (${(cs.after || []).length})` }), after]),
-  ]);
-}
-
 /* --------------------------------------------- Rebuild Agent Context */
 
 /* Offered only when the governing documents are valid and the folder is
@@ -3064,7 +3242,8 @@ function renderSettings() {
     el("p", { class: "hint",
       text: "Used in the generated context map (AGENT-CONTEXT.md) that agents read. "
         + "It does not rename the folder." })]));
-  box.appendChild(el("fieldset", { class: "field" }, [el("legend", { text: "Agent guidance" })].concat(boxes)));
+  box.appendChild(el("fieldset", { class: "field settings-guidance", id: "settingsGuidance" },
+    [el("legend", { text: "Agent guidance" })].concat(boxes)));
   box.appendChild(el("div", { class: "actions" }, [el("button", { class: "btn", id: "btnPreviewSettings",
     text: "Preview changes", onclick: () => {
       const guidance = {};
@@ -3093,17 +3272,32 @@ async function refreshQuiet() {
   await renderAgentProposals();
 }
 
-/* Create candidate's empty first-use state, exactly. */
-function resetIntake() {
-  abandonIntakeWork();
+/* Leaving Create candidate: the chosen file, its conversion, anything still
+   being read or converted, and any open preview of filing it are discarded.
+   The server keeps nothing of an upload: converting writes nothing. */
+function discardIntake() {
+  if (review && review.kind === "add") { review = null; panelOpener = null; $("review").textContent = ""; }
+  resetIntake();
+}
+
+/* The conversion and everything derived from it — the file line, its notes,
+   the title, scope and text, and any open preview of filing it — gone, and
+   only choosing a file shown. */
+function clearConversion() {
+  if (review && review.kind === "add") { review = null; panelOpener = null; $("review").textContent = ""; }
   staged = null;
   ["markdown", "title", "scope"].forEach((id) => { $(id).value = ""; });
   showFrontMatterNote(null);
   $("stagedInfo").textContent = "";
   $("convertNotes").textContent = "";
-  $("file").value = "";
-  $("stepConvert").dataset.done = "false";
   unlockIntake(false);
+}
+
+/* Create candidate's empty first-use state, exactly. */
+function resetIntake() {
+  abandonIntakeWork();
+  clearConversion();
+  $("file").value = "";
 }
 
 /* ------------------------------------------------------------------ wiring */
@@ -3212,7 +3406,7 @@ function renderStart() {
   if (legacy) box.appendChild(legacy);
   const recent = state.recent || [];
   if (!recent.length) return;
-  box.appendChild(el("h3", { text: "Opened on This Computer" }));
+  box.appendChild(el("h3", { text: "Recent" }));
   box.appendChild(el("ul", { class: "recent" }, recent.map((p) => el("li", {}, [
     el("button", { type: "button", class: "linkish", text: p, onclick: () => {
       $("contextPath").value = p; showFieldError("contextError", ""); $("contextPath").focus(); peekFolder();
@@ -3271,15 +3465,19 @@ $("btnCreate").addEventListener("click", (event) => startAction(event.currentTar
   { path: fieldValue("contextPath"), project_name: fieldValue("newProjectName") },
   (data) => toast(`Created the Agent Context “${data.name}” at ${data.created}. Git is untouched.`
     + ((data.follow_up || []).length ? " " + data.follow_up.join(" ") : ""), (data.follow_up || []).length > 0)));
-$("btnSwitch").addEventListener("click", () => { closeDocument(); closeReview(); renderStart(); show("open"); });
+/* Open Agent Context… and the Charter wordmark lead to the same place: the
+   Open or Create Agent Context view. */
+const openContextView = () => { closeDocument(); closeReview(); renderStart(); show("open"); };
+$("btnSwitch").addEventListener("click", openContextView);
+$("wordmark").addEventListener("click", openContextView);
 $("btnViewContext").addEventListener("click", viewContext);
 $("btnRebuildContext").addEventListener("click", startRebuild);
 /* The disclosures written into the page itself; those built later wire their own. */
 document.querySelectorAll(".disclosure-toggle").forEach((b) => b.addEventListener("click", () => toggleDisclosure(b)));
-scopeInfoContent().forEach((p) => $("aboutIntakeScopeBody").appendChild(p));
-document.querySelectorAll(".info-wrap").forEach((w) => wireInfoTip(w));
 
 $("btnPick").addEventListener("click", () => $("file").click());
+/* Choose another file: the picker again; the file chosen replaces the conversion. */
+$("btnChooseAnother").addEventListener("click", () => { $("file").value = ""; $("file").click(); });
 $("file").addEventListener("change", (e) => { if (e.target.files[0]) stageFile(e.target.files[0]); });
 const drop = $("drop");
 ["dragenter", "dragover"].forEach((evt) => drop.addEventListener(evt, (e) => {

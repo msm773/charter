@@ -123,14 +123,14 @@ AGENT_GUIDANCE: Tuple[Dict[str, Any], ...] = (
   none applies, and name any you could not access. Do not claim context you
   did not read, and do not create a file, proposal or commit to record the
   check-in. Continue without waiting for a reply."""},
-    {"id": "proposal_context_impact_check", "label": "Proposal context-impact check",
+    {"id": "proposal_context_impact_check", "label": "Assess proposal impact",
      "default": False,
      "text": """- **Context-impact check before a proposal.** Before proposing a change to
   governing context, retrieve the current governing context. Assess the change
   for duplication, overlap, conflict, unclear relationships to governing
   documents, and decisions a person must make, and put the result in the
   proposal's `expected_context_impact`."""},
-    {"id": "review_newly_discovered_material", "label": "Review newly discovered material",
+    {"id": "review_newly_discovered_material", "label": "Review discovered material",
      "default": False,
      "text": """- **Review newly discovered material.** When your task brings you to material
   that may be relevant but is not governing context, compare it with the
@@ -284,7 +284,7 @@ check Agent Proposals before importing it.
 | `replacements` | `amend`, instead of `proposed_body` | `[{"find": "...", "replace": "..."}]`; each `find` must occur exactly once in the current body |
 | `base_sha256` | `amend`, `retire` | SHA-256 of the target's whole current text, front matter included, as UTF-8 with line endings normalized to LF |
 | `proposed_meta` | optional, for `create` or `amend` | `{"title": "...", "scope": "..."}` for the candidate, and no other keys |
-| `expected_context_impact` | optional | your context-impact check: related governing documents, overlap, conflict, recommended relationship, and unresolved human decision; advisory, shown to the reviewer |
+| `expected_context_impact` | optional | your context-impact check: related governing documents, overlap, conflict, recommended relationship, and unresolved human decision; advisory review material, retained privately with the proposal |
 
 - No other field is accepted: a proposal with any other field is refused.
   Charter assigns the `proposal_id` and returns it.

@@ -7,16 +7,24 @@ after, one typed `change governing context`, and one all-or-nothing write of
 the Agent Context's governing documents, map and metadata. Nothing here stages,
 commits or otherwise operates Git, and nothing is published anywhere.
 
-The plan holds only what the person adds. Each row names one governing
-document and declares retain, revise, replace or withdraw; revise and replace
-name exactly one candidate, chosen by the person — revise is the person's
-declaration that the candidate is a revision of that document, applied exactly
-like replace. A candidate added to govern alongside is a row of its own.
-Candidate membership follows from those rows. Every governing document the
-plan does not name is decided by one explicit choice, Retain all other
-governing documents. Charter never infers, selects or
-pre-selects an outcome, a candidate or a target — from names, versions,
-metadata, Agent Proposals or advisory reports.
+A change set is built from the candidates it includes. For each one the
+person chooses exactly one decision: replace — one governing document they
+select, at that document's governing path — or govern alongside, at the
+candidate's own new path. The plan may also withdraw governing documents; a
+withdrawal uses no candidate. Every governing document no candidate replaces
+and no withdrawal names is retained, unchanged, without a separate decision.
+Revise is candidate authoring, never a decision here: a revision candidate is
+applied through replace like any other, and its lineage may suggest, never
+select, its target. Charter never infers, selects or pre-selects a decision,
+a candidate or a target — from names, versions, metadata, Agent Proposals or
+advisory reports.
+
+A draft recorded in the earlier form (record version 1) declared an outcome
+for every governing document — retain, revise, replace or withdraw — and keeps
+that meaning. Applied and abandoned ones are shown exactly as recorded. An
+active one can be viewed, abandoned or deleted, but is never refreshed,
+previewed, applied or reviewed until the person explicitly converts it
+(`conversion`, `convert`); Charter never converts it automatically.
 
 A draft is private local state, kept for this user on this computer: never in
 the Agent Context, never committed, never served to agents and never
@@ -46,8 +54,13 @@ from . import private_store as ps
 from .docs import Document, parse_front_matter
 
 RETAIN, REVISE, REPLACE, WITHDRAW = "retain", "revise", "replace", "withdraw"
+# The per-document outcomes of the earlier form, kept so its records read as recorded.
 OUTCOMES = (RETAIN, REVISE, REPLACE, WITHDRAW)
 ALONGSIDE = "govern-alongside"
+# A candidate's decision in the current form.
+DECISIONS = (REPLACE, ALONGSIDE)
+
+CURRENT, EARLIER = "current", "earlier"
 
 ACTIVE, APPLIED, ABANDONED = "active", "applied", "abandoned"
 
@@ -59,12 +72,18 @@ BLOCKED = "blocked"
 MAX_PROMPTS = 5
 MAX_REPORTS = 10
 MAX_TEXT = 20_000
-RECORD_VERSION = 1
+RECORD_VERSION = 2
+EARLIER_RECORD_VERSION = 1
 _ID = re.compile(r"^[0-9a-f]{16}$")
 
 UNTITLED = "Untitled change set"
 # Decisions that only wait for the person; any other reason blocks.
-_WAITING_CODES = {"undecided", "candidate-not-chosen", "others-undecided", "nothing-to-apply"}
+_WAITING_CODES = {"decision-not-chosen", "target-not-chosen", "nothing-to-apply"}
+
+EARLIER_FORM = ("This change set was recorded in the earlier form, which declared an outcome for "
+                "every governing document. It can be viewed, abandoned or deleted. To refresh, "
+                "review, preview or apply it, convert it to the current form first: Charter shows "
+                "every change before it converts anything.")
 
 PRIVATE_NOTE = ("Change-set drafts, the reports attached to them and their receipts are private "
                 "local state, kept only on this computer. They are never part of the Agent "
@@ -137,22 +156,30 @@ def _read(ctx: Ctx, draft_id: str) -> Dict[str, Any]:
         raw = hs.read_json(path, None)
     except (hs.HostStateError, OSError, ValueError, RecursionError):
         raw = None
-    if not isinstance(raw, dict) or raw.get("version") != RECORD_VERSION \
-            or not isinstance(raw.get("draft"), dict) or not _well_shaped(raw["draft"]) \
-            or raw["draft"].get("id") != draft_id:
+    version = raw.get("version") if isinstance(raw, dict) else None
+    draft = raw.get("draft") if isinstance(raw, dict) else None
+    if version not in (RECORD_VERSION, EARLIER_RECORD_VERSION) or not isinstance(draft, dict) \
+            or not _well_shaped(draft, version == EARLIER_RECORD_VERSION) \
+            or draft.get("id") != draft_id:
         raise ChangeSetError("This change-set draft could not be read. It is private local state, "
                              "so no approved context is affected; delete it and start again.", 409)
-    return raw["draft"]
+    # Which form the record is in follows from its version alone, never from
+    # what it holds; it is not stored in an earlier-form record.
+    draft["form"] = EARLIER if version == EARLIER_RECORD_VERSION else CURRENT
+    return draft
 
 
-def _well_shaped(draft: Dict[str, Any]) -> bool:
+def earlier(draft: Dict[str, Any]) -> bool:
+    """Whether the draft was recorded in the earlier form."""
+    return draft.get("form") == EARLIER
+
+
+def _well_shaped(draft: Dict[str, Any], earlier_form: bool = False) -> bool:
     """Whether a draft that parsed has the structure every reader relies on, so a
     record that is valid JSON but mis-shaped is refused as unreadable rather than
     raising deep in a consumer."""
     pins = draft.get("pins")
-    if not (isinstance(draft.get("id"), str) and _ID.match(draft["id"])
-            and isinstance(draft.get("outcomes"), dict)
-            and isinstance(draft.get("alongside"), list) and isinstance(pins, dict)
+    if not (isinstance(draft.get("id"), str) and _ID.match(draft["id"]) and isinstance(pins, dict)
             and isinstance(pins.get("candidates"), dict)
             and isinstance(pins.get("governing"), (dict, list))):
         return False
@@ -171,12 +198,27 @@ def _well_shaped(draft: Dict[str, Any]) -> bool:
                 "applied": lambda v: v is None or isinstance(v, dict)}
     if any(key in draft and not ok(draft[key]) for key, ok in optional.items()):
         return False
-    if not all(isinstance(path, str) and isinstance(o, dict) and o.get("outcome", "") in ("",) + OUTCOMES
-               and isinstance(o.get("candidate") or "", str)
-               for path, o in draft["outcomes"].items()):
-        return False
-    if not texts(draft["alongside"]) or not all(isinstance(p, str) and isinstance(s, str)
-                                               for p, s in pins["candidates"].items()):
+    if earlier_form:
+        if not (isinstance(draft.get("outcomes"), dict) and isinstance(draft.get("alongside"), list)):
+            return False
+        if not all(isinstance(path, str) and isinstance(o, dict)
+                   and o.get("outcome", "") in ("",) + OUTCOMES
+                   and isinstance(o.get("candidate") or "", str)
+                   for path, o in draft["outcomes"].items()):
+            return False
+        if not texts(draft["alongside"]):
+            return False
+    else:
+        decisions = draft.get("decisions")
+        if not (texts(draft.get("candidates")) and texts(draft.get("withdrawals"))
+                and isinstance(decisions, dict)):
+            return False
+        if not all(isinstance(c, str) and isinstance(d, dict)
+                   and d.get("decision", "") in ("",) + DECISIONS
+                   and isinstance(d.get("target", ""), str)
+                   for c, d in decisions.items()):
+            return False
+    if not all(isinstance(p, str) and isinstance(s, str) for p, s in pins["candidates"].items()):
         return False
     reports = draft.get("reports", [])
     if not records(reports) or not all(isinstance(r.get("id"), str) and isinstance(r.get("text", ""), str)
@@ -192,15 +234,35 @@ def _well_shaped(draft: Dict[str, Any]) -> bool:
     return True
 
 
+def _record(draft: Dict[str, Any]) -> Dict[str, Any]:
+    """A draft as it is stored: an earlier-form record stays one, exactly in
+    its own shape."""
+    if earlier(draft):
+        return {"version": EARLIER_RECORD_VERSION,
+                "draft": {k: v for k, v in draft.items() if k != "form"}}
+    return {"version": RECORD_VERSION, "draft": dict(draft, form=CURRENT)}
+
+
 def _write(ctx: Ctx, draft: Dict[str, Any]) -> Dict[str, Any]:
     draft["revision"] = int(draft.get("revision") or 0) + 1
     draft["updated"] = _now()
-    hs.write_json_atomic(_file(ctx, draft["id"]), {"version": RECORD_VERSION, "draft": draft})
+    hs.write_json_atomic(_file(ctx, draft["id"]), _record(draft))
     return draft
 
 
+def decision_of(draft: Dict[str, Any], candidate: str) -> Dict[str, str]:
+    """A candidate's decision in a current-form draft: `decision` is replace,
+    govern-alongside or "" (not yet chosen); `target` is the governing document
+    a replace names, or ""."""
+    d = (draft.get("decisions") or {}).get(candidate) or {}
+    decision = d.get("decision", "")
+    return {"decision": decision, "target": d.get("target", "") if decision == REPLACE else ""}
+
+
 def members(draft: Dict[str, Any]) -> List[str]:
-    """The candidates the plan uses, in the order its rows use them."""
+    """The candidates the plan includes, in order."""
+    if not earlier(draft):
+        return list(draft["candidates"])
     out: List[str] = []
     for o in draft["outcomes"].values():
         cand = o.get("candidate") or ""
@@ -213,8 +275,8 @@ def members(draft: Dict[str, Any]) -> List[str]:
 
 
 def _sync_members(draft: Dict[str, Any], now: Optional["Now"]) -> None:
-    """Candidate membership follows the rows: a candidate chosen for a row is
-    pinned as it is now; one no row uses any more is let go."""
+    """Each included candidate is pinned as it is when it joins; one the plan
+    no longer includes is let go."""
     wanted = members(draft)
     pins = draft["pins"]["candidates"]
     for path in wanted:
@@ -225,26 +287,62 @@ def _sync_members(draft: Dict[str, Any], now: Optional["Now"]) -> None:
     draft["candidates"] = wanted
 
 
+def rows(draft: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, str]], List[str]]:
+    """What the plan does to governing documents, keyed by governing path —
+    `{outcome, candidate?}` — and the candidates it governs alongside. For a
+    current-form draft, the replacements its candidates name and its
+    withdrawals; for an earlier-form one, its rows as recorded."""
+    if earlier(draft):
+        return draft["outcomes"], draft["alongside"]
+    outcomes: Dict[str, Dict[str, str]] = {}
+    alongside: List[str] = []
+    for cand in draft["candidates"]:
+        d = decision_of(draft, cand)
+        if d["decision"] == REPLACE and d["target"]:
+            outcomes.setdefault(d["target"], {"outcome": REPLACE, "candidate": cand})
+        elif d["decision"] == ALONGSIDE:
+            alongside.append(cand)
+    for gov in draft["withdrawals"]:
+        outcomes.setdefault(gov, {"outcome": WITHDRAW})
+    return outcomes, alongside
+
+
 def others(draft: Dict[str, Any]) -> List[str]:
-    """The governing documents the plan has no row for."""
-    return sorted(g for g in draft["pins"]["governing"] if g not in draft["outcomes"])
+    """The governing documents the plan neither replaces nor withdraws: in the
+    current form, every one of them is retained."""
+    outcomes, _alongside = rows(draft)
+    return sorted(g for g in draft["pins"]["governing"] if g not in outcomes)
 
 
 def others_retained(draft: Dict[str, Any]) -> bool:
+    """Whether every governing document the plan has no row for is retained:
+    always, in the current form; by the explicit choice, in the earlier one."""
+    if not earlier(draft):
+        return True
     kept = set(draft.get("retained") or [])
     return all(g in kept for g in others(draft))
 
 
 def plan_fingerprint(draft: Dict[str, Any]) -> str:
-    """The plan: its rows, declared outcomes and candidate relationships. Not
-    its title or rationale, and not a candidate's content, which its hash
-    covers."""
-    plan = {
-        "rows": sorted([g, o.get("outcome", ""), o.get("candidate", "") or ""]
-                       for g, o in draft["outcomes"].items()),
-        "alongside": sorted(draft["alongside"]),
-        "retained": sorted(g for g in draft.get("retained") or [] if g not in draft["outcomes"]),
-    }
+    """The plan: every planned governing path, declared outcome and candidate
+    relationship. Not its title or rationale, and not a candidate's content,
+    which its hash covers. A current-form plan is never fingerprinted like an
+    earlier-form one, so converting a draft makes its review evidence stale."""
+    if earlier(draft):
+        plan: Dict[str, Any] = {
+            "rows": sorted([g, o.get("outcome", ""), o.get("candidate", "") or ""]
+                           for g, o in draft["outcomes"].items()),
+            "alongside": sorted(draft["alongside"]),
+            "retained": sorted(g for g in draft.get("retained") or [] if g not in draft["outcomes"]),
+        }
+    else:
+        plan = {
+            "form": CURRENT,
+            "candidates": sorted([c, decision_of(draft, c)["decision"], decision_of(draft, c)["target"]]
+                                 for c in draft["candidates"]),
+            "withdrawals": sorted(draft["withdrawals"]),
+            "retained": others(draft),
+        }
     raw = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -266,9 +364,10 @@ def list_drafts(ctx: Ctx) -> List[Dict[str, Any]]:
         except ChangeSetError as exc:
             out.append({"id": draft_id, "title": "", "unreadable": str(exc), "updated": ""})
             continue
+        changes = (len(d["outcomes"]) + len(d["alongside"]) if earlier(d)
+                   else len(d["candidates"]) + len(d["withdrawals"]))
         item = {"id": d["id"], "title": d.get("title", ""), "state": d.get("state", ACTIVE),
-                "updated": d.get("updated", ""),
-                "changes": len(d["outcomes"]) + len(d["alongside"]),
+                "updated": d.get("updated", ""), "form": d["form"], "changes": changes,
                 "reports": len(d.get("reports") or [])}
         receipt = (d.get("applied") or {}).get("receipt") if d.get("state") == APPLIED else None
         if isinstance(receipt, dict):
@@ -341,67 +440,51 @@ def _title(value: Any) -> str:
     return title
 
 
-def _seed(now: Now, start: Any) -> Tuple[Dict[str, Any], str]:
-    """A one-document start the person chose explicitly — govern a candidate
-    alongside, revise or replace a named governing document with a named
-    candidate, or withdraw a named governing document — as the changes it
-    makes to a new draft, and the name it gives the draft. Nothing is
-    inferred: not the outcome, not the target, and not the candidate."""
+def _seed(now: Now, start: Any) -> Dict[str, Any]:
+    """A one-document start the person chose explicitly — a candidate to
+    include, with its decision not yet made unless they chose one, or a
+    governing document to withdraw — as the changes it makes to a new draft.
+    Nothing is inferred: not the decision, not the target, not the candidate,
+    and not the draft's name."""
     if not isinstance(start, dict) or not start:
-        raise ChangeSetError("`start` names one outcome: a candidate to govern alongside, or a "
-                             "governing document to revise, replace or withdraw.")
+        raise ChangeSetError("`start` names one candidate to include, or one governing document "
+                             "to withdraw.")
     if not now.valid:
         raise ChangeSetError("The Agent Context is not valid and clean now, so no change to its "
                              "governing context can be planned. Correct it first.", 409)
     keys = set(start)
-    if "alongside" in keys and keys & {"document", "outcome", "candidate"}:
-        raise ChangeSetError("`start` is either a candidate to govern alongside or a governing "
-                             "document's outcome, not both.")
-    if keys == {"alongside"}:
-        cand = start["alongside"]
-        if not isinstance(cand, str) or cand not in now.candidates:
-            raise ChangeSetError(f"`{cand}` is not an authority candidate now.")
-        return ({"alongside": [cand]},
-                f"Govern alongside: “{now.candidates[cand].title}”")
-    unknown = keys - {"document", "outcome", "candidate"}
-    if unknown:
-        raise ChangeSetError("`start` has no field " + ", ".join(f"`{k}`" for k in sorted(unknown))
-                             + ".")
-    gov, outcome = start.get("document"), start.get("outcome")
-    if not isinstance(gov, str) or gov not in now.governing:
-        raise ChangeSetError(f"`{gov}` is not a governing document now.")
-    title = now.governing[gov].title
-    if outcome == WITHDRAW:
-        if "candidate" in keys:
-            raise ChangeSetError("Withdrawing a governing document uses no candidate.")
-        return {"outcomes": {gov: {"outcome": WITHDRAW}}}, f"Withdraw “{title}”"
-    if outcome in (REVISE, REPLACE):
-        cand = start.get("candidate")
-        if not isinstance(cand, str) or not cand:
-            raise ChangeSetError(f"To {outcome} “{title}”, choose the candidate that does it.")
-        if cand not in now.candidates:
-            raise ChangeSetError(f"`{cand}` is not an authority candidate now.")
-        verb = "Revise" if outcome == REVISE else "Replace"
-        return ({"outcomes": {gov: {"outcome": outcome, "candidate": cand}}},
-                f"{verb} “{title}” with “{now.candidates[cand].title}”")
-    raise ChangeSetError("A governing document's starting outcome is revise, replace or withdraw.")
+    if keys == {"withdraw"}:
+        gov = start["withdraw"]
+        if not isinstance(gov, str) or gov not in now.governing:
+            raise ChangeSetError(f"`{gov}` is not a governing document now.")
+        return {"withdrawals": [gov]}
+    unknown = keys - {"candidate", "decision", "target"}
+    if unknown or "candidate" not in keys:
+        raise ChangeSetError("`start` is either `candidate` — with an optional `decision` and "
+                             "`target` — or `withdraw`.")
+    cand = start["candidate"]
+    if not isinstance(cand, str) or cand not in now.candidates:
+        raise ChangeSetError(f"`{cand}` is not an authority candidate now.")
+    changes: Dict[str, Any] = {"candidates": [cand]}
+    if "decision" in keys or "target" in keys:
+        changes["decisions"] = {cand: {"decision": start.get("decision", ""),
+                                       "target": start.get("target", "")}}
+    return changes
 
 
 def create(ctx: Ctx, title: Any = "", start: Any = None) -> Dict[str, Any]:
-    """A new plan, named by the person. Empty, or prefilled with the one
-    outcome `start` names; every other governing document is left undecided,
-    never quietly retained."""
+    """A new plan, named only by the person: untitled until they name it,
+    whatever it starts from (UI Standards). Empty, or prefilled with the one
+    candidate or withdrawal `start` names. Every governing document the plan
+    neither replaces nor withdraws is retained."""
     now = Now(ctx)
     changes: Dict[str, Any] = {}
-    default = UNTITLED
     if start is not None:
-        changes, default = _seed(now, start)
-    if len(default) > 200:
-        default = default[:199] + "…"
-    title = _title(title) if isinstance(title, str) and title.strip() else _title(default)
+        changes = _seed(now, start)
+    title = _title(title) if isinstance(title, str) and title.strip() else UNTITLED
     draft = {
         "id": uuid.uuid4().hex[:16], "title": title, "created": _now(), "revision": 0,
-        "state": ACTIVE, "candidates": [], "outcomes": {}, "alongside": [], "retained": [],
+        "state": ACTIVE, "form": CURRENT, "candidates": [], "decisions": {}, "withdrawals": [],
         "rationale": "", "pins": _pins(now, []), "prompts": [], "reports": [],
         "applied": None,
     }
@@ -420,23 +503,42 @@ def _check_revision(draft: Dict[str, Any], revision: Any) -> None:
                              "it, and try again. Nothing was written.", 409)
 
 
+def _require_current(draft: Dict[str, Any]) -> None:
+    """Refused for a draft recorded in the earlier form, until it is converted."""
+    if earlier(draft):
+        raise ChangeSetError(EARLIER_FORM, 409)
+
+
 def update(ctx: Ctx, draft_id: str, revision: Any, changes: Dict[str, Any]) -> Dict[str, Any]:
     """Change the person's own choices. Nothing here ever chooses for them."""
     with _locked(ctx):
         draft = _read(ctx, draft_id)
         _require_active(draft)
+        _require_current(draft)
         _check_revision(draft, revision)
         _change(draft, Now(ctx), changes)
         return _write(ctx, draft)
 
 
+_NOT_A_DECISION = {
+    REVISE: ("Revise is not a change-set decision. Revise… on a governing document makes a "
+             "revision candidate; include it here and choose Replace, with the document it "
+             "replaces."),
+    RETAIN: ("Retain is not a decision: every governing document the plan neither replaces nor "
+             "withdraws is retained."),
+    WITHDRAW: "A withdrawal uses no candidate: add the governing document under `withdrawals`.",
+}
+
+
 def _change(draft: Dict[str, Any], now: Now, changes: Dict[str, Any]) -> None:
-    """Apply the person's choices to a draft in memory, refusing any that are
-    not valid now."""
-    if "candidates" in changes:
-        raise ChangeSetError("A candidate joins a change set when you choose it for a row: to "
-                             "revise or replace a governing document, or to govern "
-                             "alongside.")
+    """Apply the person's choices to a current-form draft in memory, refusing
+    any that are not valid now."""
+    _require_current(draft)
+    for old in ("outcomes", "alongside", "retain_others"):
+        if old in changes:
+            raise ChangeSetError(f"`{old}` belongs to the earlier change-set form. Include "
+                                 "candidates, choose Replace or Govern alongside for each, and "
+                                 "list withdrawals; every other governing document is retained.")
     if "scopes" in changes:
         raise ChangeSetError("A candidate's scope is its own metadata. Change it with Edit on "
                              "the candidate; the change set uses it as it is.")
@@ -444,54 +546,63 @@ def _change(draft: Dict[str, Any], now: Now, changes: Dict[str, Any]) -> None:
         draft["title"] = _title(changes["title"])
     if "rationale" in changes:
         draft["rationale"] = _clean_text(changes["rationale"], "rationale")
-    if "outcomes" in changes:
-        given = changes["outcomes"]
-        if not isinstance(given, dict):
-            raise ChangeSetError("`outcomes` must map governing paths to outcomes.")
-        for gov, o in given.items():
-            if gov not in draft["pins"]["governing"]:
-                raise ChangeSetError(f"`{gov}` is not a governing document in this change set.")
-            if o is None or o == "":
-                # The row leaves the plan; its document is undecided again,
-                # never quietly retained.
-                draft["outcomes"].pop(gov, None)
-                continue
-            if not isinstance(o, dict) or o.get("outcome", "") not in OUTCOMES + ("",):
-                raise ChangeSetError("Each outcome is retain, revise, replace or withdraw.")
-            entry = {"outcome": o.get("outcome", "")}
-            if entry["outcome"] in (REVISE, REPLACE):
-                cand = o.get("candidate") or ""
-                if cand and cand not in now.candidates:
-                    raise ChangeSetError(f"`{cand}` is not an authority candidate now.")
-                entry["candidate"] = cand
-            draft["outcomes"][gov] = entry
-            draft["retained"] = [g for g in draft.get("retained") or [] if g != gov]
-    if "alongside" in changes:
-        given = changes["alongside"]
+    if "candidates" in changes:
+        given = changes["candidates"]
         if not isinstance(given, list) or not all(isinstance(c, str) for c in given):
-            raise ChangeSetError("`alongside` must list authority candidates.")
-        kept = []
+            raise ChangeSetError("`candidates` must list authority candidates.")
+        kept: List[str] = []
         for path in given:
-            if path not in now.candidates and path not in draft["alongside"]:
+            if path not in now.candidates and path not in draft["candidates"]:
                 raise ChangeSetError(f"`{path}` is not an authority candidate now.")
             if path not in kept:
                 kept.append(path)
-        draft["alongside"] = kept
-    if "retain_others" in changes:
-        if not isinstance(changes["retain_others"], bool):
-            raise ChangeSetError("`retain_others` is true or false.")
-        draft["retained"] = others(draft) if changes["retain_others"] else []
+        draft["candidates"] = kept
+        draft["decisions"] = {c: d for c, d in draft["decisions"].items() if c in kept}
+    if "decisions" in changes:
+        given = changes["decisions"]
+        if not isinstance(given, dict):
+            raise ChangeSetError("`decisions` must map included candidates to their decisions.")
+        for cand, d in given.items():
+            if cand not in draft["candidates"]:
+                raise ChangeSetError(f"`{cand}` is not in this change set. Include it first.")
+            if not isinstance(d, dict) or not set(d) <= {"decision", "target"}:
+                raise ChangeSetError("Each decision is `{decision, target}`.")
+            decision, target = d.get("decision", ""), d.get("target", "")
+            if decision in _NOT_A_DECISION:
+                raise ChangeSetError(_NOT_A_DECISION[decision])
+            if decision not in ("",) + DECISIONS:
+                raise ChangeSetError("Each candidate's decision is replace or govern-alongside.")
+            if not isinstance(target, str):
+                raise ChangeSetError("`target` names a governing document.")
+            if decision != REPLACE:
+                target = ""
+            elif target and target not in draft["pins"]["governing"]:
+                raise ChangeSetError(f"`{target}` is not a governing document in this change set.")
+            draft["decisions"][cand] = {"decision": decision, "target": target}
+    if "withdrawals" in changes:
+        given = changes["withdrawals"]
+        if not isinstance(given, list) or not all(isinstance(g, str) for g in given):
+            raise ChangeSetError("`withdrawals` must list governing documents.")
+        kept = []
+        for gov in given:
+            if gov not in draft["pins"]["governing"]:
+                raise ChangeSetError(f"`{gov}` is not a governing document in this change set.")
+            if gov not in kept:
+                kept.append(gov)
+        draft["withdrawals"] = kept
     _sync_members(draft, now)
 
 
 def refresh(ctx: Ctx, draft_id: str) -> Dict[str, Any]:
-    """Pin the draft to the Agent Context now, saying what changed. Outcomes
-    for documents that no longer govern are dropped; a document that started
-    governing is undecided. Attached reports are kept, and checked against the
-    new pins."""
+    """Pin the draft to the Agent Context now, saying what changed. A
+    withdrawal or replacement target that no longer governs leaves the plan; a
+    document that started governing is retained, unless the person then
+    replaces or withdraws it. Attached reports are kept, and checked against
+    the new pins."""
     with _locked(ctx):
         draft = _read(ctx, draft_id)
         _require_active(draft)
+        _require_current(draft)
         now = Now(ctx)
         if not now.valid:
             raise ChangeSetError("The Agent Context is not valid now, so the change set cannot be "
@@ -507,14 +618,17 @@ def refresh(ctx: Ctx, draft_id: str) -> Dict[str, Any]:
         for path in old["governing"]:
             if path not in now.governing:
                 changed.append({"document": path, "change": "no longer governs; it left the plan"})
-                draft["outcomes"].pop(path, None)
-                draft["retained"] = [g for g in draft["retained"] if g != path]
+                draft["withdrawals"] = [g for g in draft["withdrawals"] if g != path]
+                for cand in draft["candidates"]:
+                    if decision_of(draft, cand)["target"] == path:
+                        draft["decisions"][cand] = {"decision": REPLACE, "target": ""}
             elif old["governing"][path] != now.sha(path):
                 changed.append({"document": path, "change": "governing text changed; review its "
-                                                            "outcome"})
+                                                            "place in the plan"})
         for path in now.governing:
             if path not in old["governing"]:
-                changed.append({"document": path, "change": "now governs; not yet decided"})
+                changed.append({"document": path, "change": "now governs; it is retained unless "
+                                                            "you replace or withdraw it"})
         if old.get("context") != now.fingerprint and not changed:
             changed.append({"document": "", "change": "the Agent Context's map or settings "
                                                       "changed; nothing in this change set "
@@ -551,6 +665,77 @@ def delete(ctx: Ctx, draft_id: str) -> None:
         os.remove(path)
 
 
+# --- converting an earlier-form draft -------------------------------------------------------
+
+def conversion(draft: Dict[str, Any]) -> Dict[str, Any]:
+    """What converting an active earlier-form draft would do, every change
+    listed, and the current-form draft it would become. Reads only.
+
+    Coordinated Context Changes: each revise becomes replace of the same
+    governing document by the same candidate; each replace remains replace of
+    the same document by the same candidate; each govern-alongside and
+    withdraw is kept as declared; each retain entry, and each entry without a
+    chosen outcome or candidate, is removed and listed, leaving that document
+    retained."""
+    if not earlier(draft):
+        raise ChangeSetError("This change set is already in the current form.")
+    _require_active(draft)
+    changes: List[Dict[str, Any]] = []
+    candidates: List[str] = []
+    decisions: Dict[str, Dict[str, str]] = {}
+    withdrawals: List[str] = []
+    for gov in sorted(draft["outcomes"]):
+        o = draft["outcomes"][gov]
+        outcome, cand = o.get("outcome", ""), o.get("candidate") or ""
+        entry = {"document": gov, "candidate": cand, "from": outcome}
+        if outcome in (REVISE, REPLACE) and cand and cand not in candidates:
+            candidates.append(cand)
+            decisions[cand] = {"decision": REPLACE, "target": gov}
+            changes.append(dict(entry, to=REPLACE, change="converted" if outcome == REVISE else "kept"))
+        elif outcome in (REVISE, REPLACE) and cand:
+            # One candidate, one decision: a second row naming it cannot be kept.
+            changes.append(dict(entry, to="", change="removed", why="candidate-used-twice"))
+        elif outcome == WITHDRAW:
+            withdrawals.append(gov)
+            changes.append(dict(entry, to=WITHDRAW, change="kept"))
+        elif outcome == RETAIN:
+            changes.append(dict(entry, to="", change="removed", why="retained"))
+        else:
+            changes.append(dict(entry, to="", change="removed",
+                                why="candidate-not-chosen" if outcome else "undecided"))
+    for cand in draft["alongside"]:
+        entry = {"document": "", "candidate": cand, "from": ALONGSIDE}
+        if cand in candidates:
+            changes.append(dict(entry, to="", change="removed", why="candidate-used-twice"))
+            continue
+        candidates.append(cand)
+        decisions[cand] = {"decision": ALONGSIDE, "target": ""}
+        changes.append(dict(entry, to=ALONGSIDE, change="kept"))
+    retained = sorted(g for g in draft.get("retained") or [] if g not in draft["outcomes"])
+    if retained:
+        changes.append({"document": "", "candidate": "", "documents": retained, "from": "retain-others",
+                        "to": "", "change": "removed", "why": "retained"})
+    converted = {k: v for k, v in draft.items() if k not in ("outcomes", "alongside", "retained")}
+    converted.update(form=CURRENT, candidates=candidates, decisions=decisions,
+                     withdrawals=withdrawals, pins=json.loads(json.dumps(draft["pins"])))
+    _sync_members(converted, None)
+    return {"changes": changes, "draft": converted,
+            "plan_fingerprint": plan_fingerprint(converted)}
+
+
+def convert(ctx: Ctx, draft_id: str, revision: Any) -> Dict[str, Any]:
+    """Convert an active earlier-form draft to the current form, exactly as
+    `conversion` lists it, once the person confirms. Changes no governing
+    context. The plan changes, so attached reports and prompt records become
+    stale; they are kept as historical evidence."""
+    with _locked(ctx):
+        draft = _read(ctx, draft_id)
+        _require_active(draft)
+        _check_revision(draft, revision)
+        out = conversion(draft)
+        return {"draft": _write(ctx, out["draft"]), "changes": out["changes"]}
+
+
 def receipt_of(draft: Dict[str, Any], ev: Dict[str, Any], review: Dict[str, Any]) -> Dict[str, Any]:
     """What an applied change set keeps: its final outcomes, the governing set
     before and after, its summary, and its advisory evidence as it stood when
@@ -562,7 +747,7 @@ def receipt_of(draft: Dict[str, Any], ev: Dict[str, Any], review: Dict[str, Any]
         "before": ev["before"], "after": ev["after"], "summary": ev["summary"],
         "plan_fingerprint": plan_fingerprint(draft),
         "reports": [{k: r.get(k) for k in ("id", "label", "attached", "status", "issues", "claims")}
-                    for r in review.get("reports") or []],
+                    for r in attached(review)],
         "prompts": [{k: p[k] for k in ("mode", "copied", "exported") if k in p}
                     for p in draft.get("prompts") or []],
     }
@@ -581,8 +766,7 @@ def record_path(draft_id: str) -> str:
 
 def record_text(draft: Dict[str, Any]) -> str:
     """A draft record's text, exactly as `_write` stores it."""
-    return json.dumps({"version": RECORD_VERSION, "draft": draft}, ensure_ascii=False, indent=1,
-                      sort_keys=True) + "\n"
+    return json.dumps(_record(draft), ensure_ascii=False, indent=1, sort_keys=True) + "\n"
 
 
 def applied_record(draft: Dict[str, Any], receipt: Dict[str, Any], fingerprint: str) -> str:
@@ -623,8 +807,7 @@ def stale_reasons(draft: Dict[str, Any], now: Now) -> List[Dict[str, Any]]:
     for path in draft["candidates"]:
         if path not in now.candidates:
             out.append(_reason("candidate-missing", "This is no longer an authority candidate. "
-                                                    "Choose another candidate for its row, or "
-                                                    "remove the row.", path))
+                                                    "Remove it from this change set.", path))
         elif pins["candidates"].get(path) != now.sha(path):
             out.append(_reason("candidate-changed", "This candidate changed after it was added or "
                                                     "last refreshed.", path, True))
@@ -642,7 +825,9 @@ def stale_reasons(draft: Dict[str, Any], now: Now) -> List[Dict[str, Any]]:
         if path not in pins["governing"]:
             changed_doc = True
             out.append(_reason("new-governing", "This document started governing after the change "
-                                                "set was prepared, and has no outcome.", path, True))
+                                                "set was prepared. Refresh the change set: it is "
+                                                "retained unless you replace or withdraw it.",
+                               path, True))
     if pins.get("context") != now.fingerprint and not changed_doc:
         out.append(_reason("context-changed", "The Agent Context's map or settings changed after "
                                               "this change set was prepared.", "", True))
@@ -650,42 +835,37 @@ def stale_reasons(draft: Dict[str, Any], now: Now) -> List[Dict[str, Any]]:
 
 
 def decision_reasons(draft: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """What the person still has to decide, or has decided inconsistently."""
+    """What the person still has to decide, or has decided inconsistently. An
+    active earlier-form draft has one reason: it must be converted first."""
+    if earlier(draft):
+        if draft.get("state", ACTIVE) != ACTIVE:
+            return []
+        return [_reason("earlier-form", EARLIER_FORM)]
     out: List[Dict[str, Any]] = []
-    uses: Dict[str, List[str]] = {}
-    for gov in sorted(draft["outcomes"]):
-        o = draft["outcomes"][gov]
-        if not o.get("outcome"):
-            out.append(_reason("undecided", "Not yet decided: choose retain, revise, replace or "
-                                            "withdraw.", gov))
-            continue
-        if o["outcome"] in (REVISE, REPLACE):
-            cand = o.get("candidate") or ""
-            if not cand:
-                out.append(_reason("candidate-not-chosen", "Choose the candidate that "
-                                   + ("revises" if o["outcome"] == REVISE else "replaces")
-                                   + " this document.", gov))
-            else:
-                uses.setdefault(cand, []).append(gov)
-    for cand in draft["alongside"]:
-        uses.setdefault(cand, []).append(ALONGSIDE)
-    for cand, used in uses.items():
-        if len(used) > 1:
-            out.append(_reason("candidate-used-twice", "This candidate is used more than once. Each "
-                                                       "candidate has exactly one outcome.", cand))
-    undecided = [g for g in others(draft) if g not in set(draft.get("retained") or [])]
-    if undecided:
-        n = len(undecided)
-        out.append(_reason("others-undecided",
-                           f"{n} other governing document{'s' if n != 1 else ''} not in the plan "
-                           f"{'are' if n != 1 else 'is'} not yet decided: choose Retain all other "
-                           "governing documents, or add "
-                           f"{'them' if n != 1 else 'it'} to the plan."))
-    changes = [o for o in draft["outcomes"].values() if o.get("outcome") in (REVISE, REPLACE, WITHDRAW)]
-    if not changes and not draft["alongside"]:
-        out.append(_reason("nothing-to-apply", "This change set changes nothing yet: add a "
-                                               "governing document to revise, replace or "
-                                               "withdraw, or a candidate to govern alongside."))
+    replaced: Dict[str, List[str]] = {}
+    for cand in draft["candidates"]:
+        d = decision_of(draft, cand)
+        if not d["decision"]:
+            out.append(_reason("decision-not-chosen", "Not yet decided: choose Replace, with the "
+                                                      "governing document it replaces, or Govern "
+                                                      "alongside.", cand))
+        elif d["decision"] == REPLACE and not d["target"]:
+            out.append(_reason("target-not-chosen", "Choose the governing document this candidate "
+                                                    "replaces.", cand))
+        elif d["decision"] == REPLACE:
+            replaced.setdefault(d["target"], []).append(cand)
+    for gov in sorted(replaced):
+        if len(replaced[gov]) > 1:
+            out.append(_reason("target-replaced-twice", "More than one candidate replaces this "
+                                                        "governing document. Each is replaced at "
+                                                        "most once.", gov))
+        if gov in draft["withdrawals"]:
+            out.append(_reason("target-replaced-and-withdrawn", "This governing document is both "
+                                                                "replaced and withdrawn. Choose one.",
+                               gov))
+    if not draft["candidates"] and not draft["withdrawals"]:
+        out.append(_reason("nothing-to-apply", "This change set changes nothing yet: include a "
+                                               "candidate, or withdraw a governing document."))
     return out
 
 
@@ -716,7 +896,7 @@ def summary_text(draft: Dict[str, Any], effects: List[Dict[str, Any]],
     rationale = (draft.get("rationale") or "").strip()
     lines += ["", "Context-impact rationale:", rationale or "None given."]
     lines += ["", "Advisory review:"]
-    reports = (review or {}).get("reports") or []
+    reports = attached(review)
     if not reports:
         lines.append("- No advisory report attached.")
     else:
@@ -740,7 +920,9 @@ def evaluate(ctx: Ctx, draft: Dict[str, Any], now: Optional[Now] = None,
     now = now or Now(ctx)
     if review is None:
         review = review_checks(ctx, draft, now)
-    stale = stale_reasons(draft, now)
+    # An earlier-form draft is never evaluated against the context now: it
+    # is shown as recorded until the person converts it.
+    stale = [] if earlier(draft) else stale_reasons(draft, now)
     decisions = decision_reasons(draft)
     result: Dict[str, Any] = {"stale": bool(stale), "reasons": stale + decisions, "plan": None,
                               "effects": [], "before": [], "after": [], "summary": ""}
@@ -789,8 +971,8 @@ def lifecycle(draft: Dict[str, Any], evaluation: Dict[str, Any]) -> str:
     return BLOCKED
 
 
-def review_stage(draft: Dict[str, Any]) -> str:
-    if draft.get("reports"):
+def review_stage(draft: Dict[str, Any], review: Optional[Dict[str, Any]] = None) -> str:
+    if attached(review) if review is not None else draft.get("reports"):
         return "report attached"
     if draft.get("prompts"):
         last = draft["prompts"][-1]
@@ -802,6 +984,7 @@ def load_for_apply(ctx: Ctx, draft_id: Any, draft_revision: Any) -> Dict[str, An
     """The active draft to apply, refused while stale or incomplete."""
     draft = _read(ctx, draft_id)
     _require_active(draft)
+    _require_current(draft)
     _check_revision(draft, draft_revision)
     now = Now(ctx)
     stale = stale_reasons(draft, now)
@@ -856,21 +1039,44 @@ def review_checks(ctx: Ctx, draft: Dict[str, Any], now: Now) -> Dict[str, Any]:
                 impact.STALE, "The Agent Context is not valid now, so no report can be current.")]}
         else:
             checked = impact.check_report(r.get("text", ""), identity, material, planned)
+        text = r.get("text", "")
+        if not text.strip():
+            # A review added but not yet written: nothing to check, and no evidence.
+            checked = {"status": EMPTY, "claims": None, "issues": []}
         reports.append({"id": r["id"], "label": r.get("label", ""), "attached": r.get("attached", ""),
-                        **checked})
+                        "text": text, **checked, "valid": structurally_valid(checked)})
     return {"identity": identity, "reports": reports}
+
+
+# A review whose text is not yet written.
+EMPTY = "empty"
+
+
+def structurally_valid(checked: Dict[str, Any]) -> bool:
+    """Whether a review's text is a structurally valid report (UI Standards:
+    only such a review counts as an attached advisory report): it parses as a
+    report, with no malformed field. A stale report, or one whose quotes or
+    paths do not match, is still a report, shown with those issues."""
+    return (checked.get("status") not in (impact.MALFORMED, EMPTY)
+            and not any(i.get("category") == impact.MALFORMED for i in checked.get("issues") or []))
+
+
+def attached(review: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The reviews that count as attached advisory reports: structurally valid
+    ones only. Invalid or incomplete text stays in the draft, as written."""
+    return [r for r in (review or {}).get("reports") or [] if r.get("valid")]
 
 
 def plan_lines(draft: Dict[str, Any]) -> List[str]:
     """The complete planned change, one line each, as review material shows it."""
     lines = []
-    for gov in sorted(draft["outcomes"]):
-        o = draft["outcomes"][gov]
-        if o["outcome"] in (REVISE, REPLACE):
-            lines.append(f"{o['outcome']} `{gov}` with candidate `{o['candidate']}`")
+    for cand in draft["candidates"]:
+        d = decision_of(draft, cand)
+        if d["decision"] == REPLACE:
+            lines.append(f"replace `{d['target']}` with candidate `{cand}`")
         else:
-            lines.append(f"{o['outcome']} `{gov}`")
-    lines += [f"govern alongside: `{c}`" for c in draft["alongside"]]
+            lines.append(f"govern alongside: `{cand}`")
+    lines += [f"withdraw `{gov}`" for gov in draft["withdrawals"]]
     rest = others(draft)
     if rest:
         lines.append("retain every other governing document: "
@@ -882,14 +1088,15 @@ def prompt_unavailable(draft: Dict[str, Any], ev: Dict[str, Any],
                        identity: Optional[Dict[str, Any]]) -> str:
     """Why no review material can be prepared now, or "": only a structurally
     complete plan, current with the context, has one."""
+    if earlier(draft):
+        return EARLIER_FORM
     if identity is None:
         return "The Agent Context is not valid now, so there is no current context to review against."
     if ev["stale"]:
         return "Refresh the change set first: review material is prepared from the context as it is now."
-    if any(r["code"] in _WAITING_CODES or r["code"] == "candidate-used-twice"
-           for r in ev["reasons"]):
-        return ("The review is prepared once the plan is complete: every row decided, and every "
-                "other governing document retained.")
+    if any(r["code"] in _WAITING_CODES for r in ev["reasons"]):
+        return ("The review is prepared once the plan is complete: every candidate has its "
+                "decision, and every replacement its governing document.")
     # A plan that is blocked, or that could not be built and validated, has no
     # resulting context to review: material is prepared only for a
     # structurally valid one.
@@ -912,9 +1119,12 @@ def prepare_prompt(ctx: Ctx, draft: Dict[str, Any], now: Now,
     over = prompt["size_chars"] > impact.PRACTICAL_LIMIT_CHARS
     if over:
         prompt = impact.generate_prompt(identity, material, lines, planned, packet=True)
-    if impact.private_leaks(prompt["text"], ctx.secrets()):
-        raise ChangeSetError("The review material would contain a private location, quoted in the "
-                             "material it includes, so it was not prepared.")
+    # Only Charter's own wording is checked: the reviewed documents and
+    # candidates are embedded exactly as they read, whatever they quote.
+    if impact.private_leaks(impact.prompt_framing(identity, material, lines, planned, over),
+                            ctx.secrets()):
+        raise ChangeSetError("The review material would contain a private location in Charter's "
+                             "own wording, so it was not prepared.")
     prompt.update(plan_fingerprint=planned, fingerprint=identity["fingerprint"],
                   includes={"documents": len(identity["documents"]), "candidates": len(material),
                             "governing_text": True},
@@ -931,6 +1141,7 @@ def packet_material(ctx: Ctx, draft_id: str, planned: Any) -> Dict[str, Any]:
     for the plan the person is looking at."""
     draft = _read(ctx, draft_id)
     _require_active(draft)
+    _require_current(draft)
     if planned != plan_fingerprint(draft):
         raise ChangeSetError("The plan changed after you last loaded it. Review the current plan, "
                              "then save its packet.", 409)
@@ -950,6 +1161,7 @@ def _remember(ctx: Ctx, draft_id: str, planned: Any, entry: Dict[str, Any]) -> D
     with _locked(ctx):
         draft = _read(ctx, draft_id)
         _require_active(draft)
+        _require_current(draft)
         if planned != plan_fingerprint(draft):
             raise ChangeSetError("The plan changed after this review material was prepared. Use "
                                  "the current material.", 409)
@@ -981,6 +1193,7 @@ def attach_report(ctx: Ctx, draft_id: str, text: Any, label: Any = "") -> Dict[s
     with _locked(ctx):
         draft = _read(ctx, draft_id)
         _require_active(draft)
+        _require_current(draft)
         reports = draft.get("reports") or []
         if len(reports) >= MAX_REPORTS:
             raise ChangeSetError(f"A change set holds at most {MAX_REPORTS} reports. Remove one first.")
@@ -990,10 +1203,50 @@ def attach_report(ctx: Ctx, draft_id: str, text: Any, label: Any = "") -> Dict[s
         return _write(ctx, draft)
 
 
+def add_review(ctx: Ctx, draft_id: str) -> Dict[str, Any]:
+    """Add Another Review: a new, empty review, its reviewing agent not yet
+    named. It is private draft state and counts as nothing until its text is
+    a structurally valid report."""
+    with _locked(ctx):
+        draft = _read(ctx, draft_id)
+        _require_active(draft)
+        _require_current(draft)
+        reports = draft.get("reports") or []
+        if len(reports) >= MAX_REPORTS:
+            raise ChangeSetError(f"A change set holds at most {MAX_REPORTS} reviews. Remove one first.")
+        reports.append({"id": uuid.uuid4().hex[:12], "label": "", "attached": _now(), "text": ""})
+        draft["reports"] = reports
+        return _write(ctx, draft)
+
+
+def save_review(ctx: Ctx, draft_id: str, report_id: Any, label: Any = None, text: Any = None) -> Dict[str, Any]:
+    """Save one review as it is written — its reviewing agent, its text, or
+    both — exactly as given, valid or not. Nothing else in the draft changes."""
+    if text is not None:
+        if not isinstance(text, str):
+            raise ChangeSetError("A review's text must be text.")
+        if len(text) > impact.MAX_REPORT_CHARS:
+            raise ChangeSetError("This review is too large to keep.")
+    label = None if label is None else _clean_text(label, "reviewing agent", 200)
+    with _locked(ctx):
+        draft = _read(ctx, draft_id)
+        _require_active(draft)
+        _require_current(draft)
+        review = next((r for r in draft.get("reports") or [] if r.get("id") == report_id), None)
+        if review is None:
+            raise ChangeSetError("No such review on this change set.", 404)
+        if label is not None:
+            review["label"] = label
+        if text is not None:
+            review["text"] = text
+        return _write(ctx, draft)
+
+
 def remove_report(ctx: Ctx, draft_id: str, report_id: Any) -> Dict[str, Any]:
     with _locked(ctx):
         draft = _read(ctx, draft_id)
         _require_active(draft)
+        _require_current(draft)
         kept = [r for r in draft.get("reports") or [] if r.get("id") != report_id]
         if len(kept) == len(draft.get("reports") or []):
             raise ChangeSetError("No such report on this change set.", 404)

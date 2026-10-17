@@ -41,6 +41,7 @@ let csNext = null;  // the change-set payload the next change-set call answers w
 let csListAnswer = null;  // the change-set index, when not fixture.cs_list
 let stageAnswer = fixture.stage;  // what converting the next file answers
 let stageDelay = null;  // { gate, answer }: the next conversion answers only once gate resolves
+let importCheckDelay = null;  // a gate: the next import check answers only once it resolves
 const GOVERNING_KINDS = ["grant", "replace", "withdraw", "changeset"];
 const planFor = (body) => {
   if (body.kind === "edit-candidate" && body.request && body.request.candidate === fixture.legacy_path) {
@@ -111,9 +112,9 @@ global.fetch = async (url, options) => {
   if (url === "/api/changesets/list") return answer(csListAnswer || fixture.cs_list);
   if (url === "/api/changeset/apply") return answer({ applied: true, kind: "changeset" });
   if (url === "/api/changeset/create" && body && body.start) {
-    // A change set started from one candidate or document: the real answer to that start.
-    return answer(body.start.alongside ? fixture.cs_start_alongside
-      : body.start.outcome === "withdraw" ? fixture.cs_start_withdraw : fixture.cs_start_revise);
+    // A change set started from one candidate or a withdrawal: the real answer to that start.
+    return answer(body.start.withdraw ? fixture.cs_start_withdraw
+      : body.start.candidate === fixture.candidate ? fixture.cs_start_alongside : fixture.cs_start_candidate);
   }
   if (url === "/api/changeset/get" && body.id === fixture.start_request.draft_id) return answer(fixture.cs_start_applied);
   if (url === "/api/changeset/packet/save") {
@@ -123,7 +124,10 @@ global.fetch = async (url, options) => {
     url === "/api/changeset/refresh" ? { refreshed: [{ document: "authority-candidates/delta.md", change: "candidate text changed; review it" }] } : {}));
   if (url === "/api/proposals/unexpected") return answer(fixture.unexpected_view);
   if (url === "/api/proposals/import/check") {
-    return answer(/base_commit/.test(body.json) ? fixture.import_check_bad : fixture.import_check_ok);
+    const checked = answer(/base_commit/.test(body.json) ? fixture.import_check_bad : fixture.import_check_ok);
+    const gate = importCheckDelay;
+    importCheckDelay = null;
+    return gate ? gate.then(() => checked) : checked;
   }
   if (url === "/api/proposals/import") return answer({ result: "pending", proposal_id: "p-imported" });
   return refuse(404, "no route " + url);
@@ -164,7 +168,10 @@ const $ = (id) => { const n = document.getElementById(id); return n && attached(
 const buttonSaying = (root, label) =>
   root.querySelectorAll("button").find((b) => b.textContent.trim() === label) || null;
 const labelsIn = (root) => root.querySelectorAll("label").map((l) => l.textContent);
+/* The stand-in's selectors take one simple selector per step: no lists or attributes. */
+const fieldsIn = (root) => root.querySelectorAll("input").concat(root.querySelectorAll("textarea"));
 const labelFor = (root, id) => root.querySelectorAll("label").find((l) => l.getAttribute("for") === id);
+const insideOf = (node, root) => { for (let n = node; n; n = n.parentNode) if (n === root) return true; return false; };
 const lastCall = (url) => calls.filter((c) => c.url === url).pop();
 const lastPlan = () => lastCall("/api/plan");
 const requestKeys = () => JSON.stringify(Object.keys(lastPlan().body.request).sort());
@@ -189,9 +196,19 @@ const rule = (source, selector) => {
   const m = source.match(new RegExp("(^|\\n)\\s*(?:[^{}\\n]*,\\s*\\n\\s*)?" + escaped + "\\s*\\{([^}]*)\\}"));
   return m ? m[2] : "";
 };
-const SCOPE_PLACEHOLDER = "Describe what this document governs or applies to";
-const SCOPE_ROUTING = "A short routing summary shown in AGENT-CONTEXT.md; it does not replace this document's rules.";
-const aboutScope = (root) => root.querySelectorAll(".info-toggle").filter((b) => b.getAttribute("aria-label") === "About scope");
+const SCOPE_ROUTING = "A short routing summary shown in AGENT-CONTEXT.md.";
+/* The one compact Scope control every scope-editing form uses: the label
+   Scope, exactly one helper, and no information control or placeholder. */
+const compactScope = (root, inputId, hintId) => {
+  const input = document.getElementById(inputId);
+  const field = input && input.parentNode;
+  const label = field && field.querySelectorAll("label").find((l) => l.getAttribute("for") === inputId);
+  const hints = field ? field.querySelectorAll(".hint") : [];
+  return !!label && label.textContent === "Scope" && hints.length === 1 && hints[0].textContent === SCOPE_ROUTING
+    && hints[0].getAttribute("id") === hintId && input.getAttribute("aria-describedby") === hintId
+    && !(input.getAttribute("placeholder") || "") && !field.querySelectorAll(".info-toggle").length && !field.querySelectorAll(".info-pop").length
+    && !root.querySelectorAll(".info-toggle").some((t) => /scope/i.test(t.getAttribute("aria-label") || ""));
+};
 
 for (const file of ["markdown.js", "app.js"]) {
   vm.runInThisContext(fs.readFileSync(path.join(STATIC, file), "utf8"), { filename: file });
@@ -220,23 +237,11 @@ for (const file of ["markdown.js", "app.js"]) {
   check($("btnBrowse").hidden, "without a folder dialog on this computer, the folder is typed");
   check(!$("projectName") || $("projectName").textContent === "no Agent Context open", "the rail says nothing is open");
 
-  console.log("\nWhat each action does is behind the information control beside the heading");
-  const openInfo = $("aboutOpeningToggle");
-  const openInfoBody = $("aboutOpeningBody");
-  check(openInfo.parentNode.parentNode === startView.querySelector(".view-head")
-    && openInfo.getAttribute("aria-expanded") === "false" && openInfoBody.hidden,
-    "a named button beside the heading, closed to start");
-  openInfo.focus();
-  openInfo.dispatch("focus");
-  check(!openInfoBody.hidden && /dedicated folder/.test(openInfoBody.textContent)
-    && /writes nothing in the folder/.test(openInfoBody.textContent)
-    && /empty folder/.test(openInfoBody.textContent)
-    && /Neither action runs Git/.test(openInfoBody.textContent)
-    && /AGENTS\.md/.test(openInfoBody.textContent),
-    "it explains the folder, both actions, and that Git and agent instruction files are left alone");
-  $("aboutOpening").dispatch("keydown", { key: "Escape" });
-  check(openInfoBody.hidden && document.activeElement === openInfo, "Escape dismisses it");
-  $("aboutOpening").dispatch("focusout", { relatedTarget: null });
+  console.log("\nNo information controls: the README explains what each action does");
+  check(!$("aboutOpening") && !startView.querySelectorAll(".info-toggle").length
+    && !document.querySelectorAll(".info-toggle").length && !document.querySelectorAll(".info-pop").length
+    && !/\.info-(toggle|pop|wrap)/.test(css),
+    "the page carries no information icon, hover panel or their styles anywhere");
 
   console.log("\nOpen Agent Context sends the folder only; a refusal is said beside it");
   type($("contextPath"), "/work/missing");
@@ -303,8 +308,8 @@ for (const file of ["markdown.js", "app.js"]) {
     && !$("btnCreate").getAttribute("aria-describedby"),
     "disabled Open says why, visibly, and is described by that line");
   const recent = $("recentContexts").querySelectorAll("button");
-  check(/Opened on This Computer/.test($("recentContexts").textContent)
-    && recent.some((b) => b.textContent === fixture.folder), "Agent Contexts opened here before are listed");
+  check($("recentContexts").querySelector("h3").textContent === "Recent" && !/Opened on This Computer/.test($("recentContexts").textContent)
+    && recent.some((b) => b.textContent === fixture.folder), "Agent Contexts opened here before are listed under Recent");
   await click(recent.find((b) => b.textContent === fixture.folder));
   check($("contextPath").value === fixture.folder, "and one click fills in the folder");
   currentState = fixture.state_valid;
@@ -312,13 +317,40 @@ for (const file of ["markdown.js", "app.js"]) {
   check(!$("view-governing").hidden && $("barPath").textContent === fixture.state_valid.root,
     "Open shows the Agent Context");
 
+  console.log("\nRecent stays available after an Agent Context is open, without a restart");
+  check(Array.isArray(fixture.state_valid.recent) && fixture.state_valid.recent.includes(fixture.folder),
+    "the console's state for an open Agent Context still carries Recent");
+  await click($("btnSwitch"));
+  check(!$("view-open").hidden && $("recentContexts").querySelector("h3").textContent === "Recent"
+    && $("recentContexts").querySelectorAll("button").some((b) => b.textContent === fixture.folder),
+    "Open Agent Context… shows Recent, though an Agent Context is open");
+  await navTo("governing");
+  await navTo("candidates");
+  await click($("wordmark"));
+  check($("recentContexts").querySelectorAll("button").some((b) => b.textContent === fixture.folder),
+    "and still after navigating away and back");
+  await navTo("governing");
+
+  console.log("\nThe Charter wordmark and Open Agent Context… open the same view");
+  check($("btnSwitch").textContent === "Open Agent Context…" && $("wordmark").tagName === "BUTTON"
+    && $("wordmark").textContent === "Charter" && $("wordmark").parentNode === document.querySelector("nav.rail h1"),
+    "the top-right action is Open Agent Context…, and the wordmark is a button named Charter");
+  await click($("wordmark"));
+  check(!$("view-open").hidden && $("view-governing").hidden && vm.runInThisContext("currentView") === "open",
+    "the wordmark opens the Open or Create Agent Context view");
+  await navTo("governing");
+  await click($("btnSwitch"));
+  check(!$("view-open").hidden && $("view-governing").hidden, "and so does Open Agent Context…");
+  await navTo("governing");
+  check(!$("view-governing").hidden, "the navigation returns to the open Agent Context");
+
   /* ----------------------------------------------------- shell and navigation */
 
   console.log("\nNavigation is the six Agent Context areas");
   check(nav().map((b) => b.dataset.view).join(" ") === "governing candidates proposals changesets connect settings",
-    "Governing Documents, Authority Candidates, Agent Proposals, Change Sets, Connect Agents, Settings");
+    "Governing Context, Authority Candidates, Agent Proposals, Change Sets, Connect Agents, Settings");
   check(nav().map((b) => b.childNodes[0].textContent.trim()).join(" | ")
-      === "Governing Documents | Authority Candidates | Agent Proposals | Change Sets | Connect Agents | Settings"
+      === "Governing Context | Authority Candidates | Agent Proposals | Change Sets | Connect Agents | Settings"
     && $("btnAddDocument").textContent === "Create candidate" && $("view-intake").querySelector("h2").textContent === "Create Candidate"
     && $("btnOpen").textContent === "Open Agent Context" && $("contextMapTitle").textContent === "Context Map",
     "capitalization: navigation and headings in Title Case; buttons stay in sentence case");
@@ -335,21 +367,23 @@ for (const file of ["markdown.js", "app.js"]) {
     "no button operates Git or publishes");
 
   console.log("\nThe header and rail say which Agent Context, and whether agents are served");
-  check($("barPath").textContent === fixture.state_valid.root && $("barState").textContent === "Agents are served"
-    && $("metaRoot").textContent === fixture.state_valid.root && $("metaAgents").textContent === "Served",
-    "its folder, and that agents are served");
+  check($("barPath").textContent === fixture.state_valid.root && $("barState").textContent === "Agent context ready"
+    && $("barState").querySelector(".chip").classList.contains("ok")
+    && $("metaRoot").textContent === fixture.state_valid.root && $("metaAgents").textContent === "Ready",
+    "its folder, and its status label: Agent context ready, in the positive treatment");
   const govCount = fixture.state_valid.documents.filter((d) => d.kind === "governing").length;
   const candCount = fixture.state_valid.documents.filter((d) => d.kind === "candidate").length;
-  const archCount = fixture.state_valid.documents.filter((d) => d.kind === "archived").length;
+  const archivedDocs = fixture.state_valid.documents.filter((d) => d.kind === "archived");
   check($("metaContext").textContent === String(govCount), "the rail counts governing documents only");
-  check($("contextMetaTitle").textContent === "This Agent Context" && !$("gitInfo") && !$("gitInfoToggle")
+  check($("contextMetaTitle").textContent === "Current Context"
+    && /text-transform:\s*uppercase/.test(rule(css, ".rail-meta-title")) && !$("gitInfo") && !$("gitInfoToggle")
     && !$("gitDetailsToggleText") && fixture.state_valid.status.git.state === "not-checkout"
     && !$("metaGitLabel").hidden && $("metaGitLabel").textContent === "Git branch"
     && $("metaBranch").textContent === "Not a Git checkout"
-    && $("metaChangedLabel").hidden && $("metaChanged").hidden && $("gitDetailsToggle").hidden,
-    "outside a Git checkout the rail says Git branch: Not a Git checkout, with no count and no control");
+    && $("metaChangedLabel").hidden && $("metaChanged").hidden && !$("gitDetailsToggle"),
+    "the rail's heading reads CURRENT CONTEXT; outside a Git checkout it says Git branch: Not a Git checkout, with no count and no control");
   check($("contextStatus").hidden && !$("contextStatus").querySelector("#originUnknown")
-    && within($("originUnknown"), $("contextMapSection")) && !$("originUnknown").hidden
+    && insideOf($("originUnknown"), $("contextMapSection")) && !$("originUnknown").hidden
     && $("originUnknown").querySelector("strong").textContent === "Origin unknown."
     && $("originUnknown").textContent === "Origin unknown. These files are valid, but Charter has no local record of how this version was created or changed."
     && !$("originUnknown").getAttribute("role") && !$("originUnknown").querySelector("button"),
@@ -365,8 +399,7 @@ for (const file of ["markdown.js", "app.js"]) {
   check(navItem("candidates").querySelector(".tally").textContent === `(${candCount})`
     && navItem("candidates").querySelector(".sr-only").textContent === `: ${candCount} authority candidates`,
     "Authority candidates");
-  check($("tallyArchive").textContent === `(${archCount})` && $("tallyArchiveLabel").textContent === `: ${archCount} archived document`,
-    "and the private archive, in its disclosure");
+  check(!$("tallyArchive") && !$("tallyArchiveLabel"), "the private archive has no count: it is not shown");
 
   console.log("\nEach area has an address, and Back and Forward follow it");
   const before = addressBook.entries.length;
@@ -381,7 +414,7 @@ for (const file of ["markdown.js", "app.js"]) {
     && addressBook.entries.length === before + 3,
     "each opens alone, at its own address, marked current, one history entry each");
   check(seen.map((s) => s.title).join(" | ")
-    === "Authority Candidates — Charter | Settings — Charter | Governing Documents — Charter",
+    === "Authority Candidates — Charter | Settings — Charter | Governing Context — Charter",
     "the tab title names the area");
   goBack();
   await settle();
@@ -403,20 +436,28 @@ for (const file of ["markdown.js", "app.js"]) {
 
   console.log("\nGoverning documents and candidates cannot be confused");
   const governingView = $("view-governing");
-  check(governingView.querySelector(".view-head h2").textContent === "Governing Documents"
-    && governingView.querySelector(".view-head .info-toggle") === $("aboutStatesToggle"),
-    "the heading has an information control beside it");
+  check(governingView.querySelector(".view-head h2").textContent === "Governing Context"
+    && !governingView.querySelectorAll(".info-toggle").length
+    && $("governingIntro").textContent === "Documents currently governing this Agent Context."
+    && governingView.querySelectorAll(".lede").length === 1,
+    "the area is Governing Context, with its one subtitle and no information control");
   const govRows = $("governingList").querySelectorAll(".doc");
   check(govRows.length === govCount && govRows.every((r) => r.classList.contains("is-authority")
-    && /Governing/.test(r.querySelector(".actions").textContent)
+    && !r.querySelectorAll(".chip").length && !/\bGoverning\b/.test(r.querySelector(".actions").textContent)
     && !/In the Agent Context folder/.test(r.textContent)
     && !/Private local state/.test(r.textContent)),
-    "governing documents carry the Governing chip, without repeating where agents read them");
+    "governing-document cards carry no redundant Governing badge, and do not repeat where agents read them");
+  check(govRows.every((r) => r.querySelector(".path strong").textContent === "Filename: "
+      && (!r.querySelector(".scope") || r.querySelector(".scope strong").textContent === "Scope: ")),
+    "each governing card shows its path and scope after bold Filename: and Scope: labels");
+  check(!/overflow|max-height/.test(rule(css, ".docs")) && !/overflow|max-height/.test(rule(css, ".record-group"))
+    && !/overflow|max-height/.test(rule(css, "main")),
+    "the governing list scrolls with the page: no nested scroll region");
   const alpha = rowOf("governingList", "Alpha");
-  check(buttonSaying(alpha, "Read") && buttonSaying(alpha, "Revise…") && buttonSaying(alpha, "Change in a change set…")
-    && buttonSaying(alpha, "Withdraw in a change set…")
+  check(buttonSaying(alpha, "Read") && buttonSaying(alpha, "Revise…") && buttonSaying(alpha, "Withdraw in a change set…")
+    && !buttonSaying(alpha, "Change in a change set…")
     && !buttonSaying(alpha, "Edit…") && !buttonSaying(alpha, "Retire…") && !buttonSaying(alpha, "Plan a change set…"),
-    "a governing document is read, revised, or changed or withdrawn in a change set — never edited in place or retired");
+    "a governing document is read, revised into a candidate, or withdrawn in a change set — never edited in place or retired");
   check(!document.querySelectorAll("button").some((b) => /Grant authority|Withdraw authority/.test(b.textContent)),
     "no button offers a direct grant or withdrawal");
   check(!$("governingList").textContent.includes("AGENT-CONTEXT.md"), "the map is never listed as a governing document");
@@ -425,17 +466,34 @@ for (const file of ["markdown.js", "app.js"]) {
     === "Candidates stay private until you make them governing.",
     "Authority candidates says, in one sentence, that they stay private until made governing");
   const gamma = rowOf("candidatesList", "Gamma rules");
-  check(gamma && /Authority candidate — not context/.test(gamma.textContent)
-    && /Private local state on this computer — agents never see it\./.test(gamma.textContent),
-    "each candidate is marked not context, and private");
+  check(gamma && !/Authority candidate — not context/.test(gamma.textContent)
+    && !/Private local state/.test(gamma.textContent) && !/Source:/.test(gamma.textContent)
+    && !gamma.querySelector(".chip"),
+    "a candidate card has no generic not-context badge, Source line, or private-local-state line");
+  const gammaTitle = gamma.querySelector(".title-row");
+  check(gammaTitle && gammaTitle.querySelector(".title").textContent === "Gamma rules"
+    && gammaTitle.querySelector(".source-tag").textContent === "Created by person"
+    && gammaTitle.children.length === 2,
+    "it shows its friendly title followed immediately by one compact source tag");
+  check(gamma.querySelector(".path strong").textContent === "Filename: "
+    && /authority-candidates\//.test(gamma.querySelector(".path").textContent)
+    && gamma.querySelector(".scope strong").textContent === "Scope: "
+    && /white-space:\s*nowrap/.test(rule(css, "#candidatesList .doc .scope")),
+    "its logical path follows a bold Filename: label, and its one-line scope a bold Scope: label");
+  check(gamma.querySelector(".path").classList.contains("labelled") && gamma.querySelector(".scope").classList.contains("labelled")
+    && /font-size:\s*\.85rem/.test(rule(css, ".doc .labelled"))
+    && /font-family:\s*inherit/.test(rule(css, ".doc .path.labelled"))
+    && /font-size:\s*inherit/.test(rule(css, ".doc .path.labelled span")),
+    "the Filename: and Scope: rows share one text size, so their bold labels carry the same weight");
   check(buttonSaying(gamma, "Edit…") && buttonSaying(gamma, "Retire…") && buttonSaying(gamma, "Plan a change set…")
     && !buttonSaying(gamma, "Withdraw in a change set…") && !buttonSaying(gamma, "Change in a change set…"),
     "a candidate is edited, retired, or planned into a change set");
 
   /* Governed candidate lineage, source, comparison, and picker labels (human-only). */
   const betaRev = rowOf("candidatesList", "Beta revised");
-  check(betaRev && /Revision of: Beta/.test(betaRev.textContent) && /Source: Revise/.test(betaRev.textContent),
-    "a revision candidate's card shows the governing document it revises and its source");
+  check(betaRev && /Revision of: Beta/.test(betaRev.textContent)
+    && betaRev.querySelector(".source-tag").textContent === "Revision",
+    "a revision candidate's card shows the governing document it revises, tagged Revision");
   const cmpBtn = buttonSaying(betaRev, "Compare with governing…");
   check(!!cmpBtn, "a revision candidate offers Compare with governing");
   await click(cmpBtn);
@@ -449,45 +507,32 @@ for (const file of ["markdown.js", "app.js"]) {
   const synth = { kind: "candidate", path: "authority-candidates/x.md", title: "X", scope: "s",
     revises_path: "authoritative/a.md", revises_title: "Alpha", source_kind: "proposal", co_revisions: 2 };
   const synthCard = serialize(vm.runInThisContext("docRow")(synth));
-  check(/Revision of: Alpha/.test(synthCard) && /Source: Agent Proposal/.test(synthCard)
+  check(/Revision of: Alpha/.test(synthCard) && />Agent Proposal</.test(synthCard)
     && /Another revision candidate exists for this document\. 2 others/.test(synthCard)
     && synthCard.indexOf("Compare revisions") !== -1,
     "a card shows source, revision lineage, a competing-revision count, and Compare revisions");
+  const tagOf = (c) => serialize(vm.runInThisContext("docRow")(Object.assign({ kind: "candidate",
+    path: "authority-candidates/t.md", title: "T" }, c))).match(/class="source-tag">([^<]*)</);
+  check(tagOf({ source_kind: "proposal", source_agent: "Claude" })[1] === "Proposed by: Claude"
+    && tagOf({ source_kind: "proposal", source_agent: "chat-agent (import test)" })[1] === "Proposed by: chat-agent (import test)"
+    && tagOf({ source_kind: "proposal", source_agent: "" })[1] === "Agent Proposal"
+    && tagOf({ source_kind: "create" })[1] === "Created by person"
+    && tagOf({ source_kind: "revise" })[1] === "Revision"
+    && tagOf({ source_kind: "withdrawn" })[1] === "Withdrawn governing document"
+    && !/Source unknown|Human Proposal/.test(serialize(vm.runInThisContext("docRow")({ kind: "candidate",
+      path: "authority-candidates/u.md", title: "U", source_kind: "create" }))),
+    "the source tag names an agent only when one is known, and never invents an identity");
   const pickLabel = vm.runInThisContext("candidateLabel")(
     { title: "X", source_kind: "proposal", revises_title: "Alpha", scope: "short scope" });
   check(/Agent Proposal/.test(pickLabel) && /revises .Alpha./.test(pickLabel) && /short scope/.test(pickLabel),
     "a change-set picker label disambiguates by source, revision relationship and a short summary");
-  check($("archiveBody").hidden && $("archiveToggle").getAttribute("aria-expanded") === "false",
-    "the private archive is behind a closed disclosure");
-  check($("archiveToggle").textContent.replace(/\s+/g, " ").startsWith(`Archived (${archCount})`)
-    && !/History|Replaced and Retired/.test($("archiveToggle").textContent),
-    "the disclosure is labelled Archived, with its count");
-  check(!$("archiveBody").querySelector(".hint") && !/kept privately for history/.test($("archiveBody").textContent),
-    "the archive has no explanatory sentence: its label and each row's chip say what it is");
-  await click($("archiveToggle"));
-  const archived = $("archiveList").querySelector(".doc");
-  const archivedDoc = fixture.state_valid.documents.find((d) => d.kind === "archived");
-  check(!$("archiveBody").hidden && $("archiveToggle").getAttribute("aria-expanded") === "true"
-    && /Archived — not context/.test(archived.textContent)
-    && archived.querySelectorAll("button").map((b) => b.textContent).join() === "Read",
-    "opened, an archived document can only be read");
-  const archivedTitle = archived.querySelector(".archive-line .title");
-  const archivedDate = archived.querySelector(".archive-line .archive-date");
-  check(archivedDoc.updated && archivedTitle && archivedTitle.textContent === archivedDoc.title
-    && archivedDate && archivedDate.textContent === archivedDoc.updated,
-    "an archived row's title and date are separate fields");
-  const archiveLineRule = rule(css, ".archive-line");
-  const archiveDateRule = rule(css, ".archive-line .archive-date");
-  check(/display:\s*flex/.test(archiveLineRule) && /flex-wrap:\s*wrap/.test(archiveLineRule)
-    && /gap:/.test(archiveLineRule) && /color:\s*var\(--ink-faint\)/.test(archiveDateRule),
-    "the date is spaced from the title, muted, and wraps to its own line when narrow");
-  await click(buttonSaying(archived, "Read"));
-  check(!$("docViewer").hidden && $("docViewer").textContent.indexOf(archivedDoc.title) !== -1,
-    "Read opens the archived document");
-  await click(buttonSaying($("docViewer"), "Close"));
-  await click($("archiveToggle"));
-  check($("archiveBody").hidden && $("archiveToggle").getAttribute("aria-expanded") === "false",
-    "and the disclosure closes again");
+  console.log("\nNo archive in normal views: retired and replaced documents stay private");
+  check(archivedDocs.length > 0 && !$("archiveToggle") && !$("archiveList") && !$("archiveBody")
+    && !document.querySelectorAll(".is-retired").length
+    && !document.querySelectorAll(".doc").some((r) => archivedDocs.some((d) => (r.querySelector(".path") || { textContent: "" })
+      .textContent.indexOf(d.path) !== -1))
+    && !/Archived — not context/.test($("view-candidates").textContent),
+    "archived documents exist in private state, but no normal view lists or counts them");
 
   console.log("\nAn empty list shows a 0, and no empty-state text");
   const kept = vm.runInThisContext("state.documents");
@@ -497,9 +542,6 @@ for (const file of ["markdown.js", "app.js"]) {
   check(navItem("candidates").querySelector(".tally").textContent === "(0)" && $("candidatesList").hidden
     && !/No candidates|nothing here/i.test($("view-candidates").textContent),
     "with no candidates, the count is 0 and the list is simply absent");
-  check($("tallyArchive").textContent === "(0)" && $("archiveList").hidden
-    && $("archiveToggle").textContent.replace(/\s+/g, " ").startsWith("Archived (0)"),
-    "with nothing archived, the disclosure reads Archived (0) and its list is absent");
   vm.runInThisContext("state.documents = state.documents.filter((d) => d.kind !== 'governing'); renderKnowledge();");
   check($("governingGroup").hidden && $("governingGroupLabel").textContent === "Governing Documents (0)",
     "with no governing document, its group is not shown");
@@ -568,87 +610,55 @@ for (const file of ["markdown.js", "app.js"]) {
   currentState = Object.assign({}, fixture.state_valid, { change_sets: fixture.cs_mixed_state.change_sets });
   csListAnswer = fixture.cs_mixed_list;
   await navTo("changesets");
-  check($("changeSetList").querySelectorAll(".changeset-row").length === 3
+  check($("changeSetList").querySelectorAll(".changeset-row").length === 1
     && csTally.textContent === "(1)" && $("tallyChangeSetsLabel").textContent === ": 1 active draft",
-    "the index lists all three; the navigation counts 1");
+    "the index lists only the active draft; the navigation counts 1");
 
-  console.log("\nChange Sets index: active drafts primary, applied and abandoned behind a collapsed Change history");
+  console.log("\nChange Sets index: active drafts, and no history in the normal view");
   const topGroups = () => $("changeSetList").children.filter((n) => n.classList.contains("record-group"));
   const summaryOf = (groups) => groups.map((g) => {
     const label = g.querySelector(".record-group-label");
-    return `${label.textContent}:${g.querySelectorAll(".changeset-row").map((r) => r.querySelector(".actions .chip").textContent).join("+")}`;
+    return `${label.textContent}:${g.querySelectorAll(".changeset-row").map((r) => r.querySelector(".title-row .chip").textContent).join("+")}`;
   }).join(" | ");
-  const historyGroups = () => $("csHistoryBody").children.filter((n) => n.classList.contains("record-group"));
   const groupNamed = (groups, name) => groups.find((g) => new RegExp(name).test(g.querySelector(".record-group-label").textContent));
   check(summaryOf(topGroups()) === "Active Drafts (1):active",
-    "Active drafts is the one primary, immediately visible group");
-  const hist = $("csHistoryToggle");
-  check(hist && hist.textContent === "Change History (2)" && hist.getAttribute("aria-expanded") === "false"
-    && $("csHistoryBody").hidden,
-    "applied and abandoned sit together behind a compact, collapsed Change history (2) disclosure");
-  check(summaryOf(historyGroups()) === "Applied Change Sets (1):applied | Abandoned Drafts (1):abandoned",
-    "within history, in order — Applied change sets, then Abandoned drafts — each with its own count");
-  hist.click();
-  check(!$("csHistoryBody").hidden && hist.getAttribute("aria-expanded") === "true"
-    && historyGroups().every((g) => g.tagName === "SECTION" && g.querySelector(".record-group-label").tagName === "H3"
-      && g.getAttribute("aria-labelledby") === g.querySelector(".record-group-label").getAttribute("id")),
-    "a person can expand history to the two groups, each a section named by its own heading");
-  check(!!buttonSaying(groupNamed(historyGroups(), "Applied Change Sets"), "Open"),
-    "an applied change set opens as its immutable receipt from history");
-  check(!!buttonSaying(groupNamed(historyGroups(), "Abandoned Drafts"), "Open"),
-    "and an abandoned draft can still be deliberately opened");
-  check(!$("noChangeSets"), "with records there is no empty-state message");
+    "Active Drafts is the one group: each row's status label follows its title");
+  check(!$("csHistoryToggle") && !$("csHistoryBody") && !/Change History|Applied Change Sets|Discarded Drafts/.test($("changeSetList").textContent)
+    && !$("changeSetList").querySelectorAll(".changeset-row").some((r) => /applied|abandoned|discarded/.test(r.textContent)),
+    "no Change History, applied change-set list or Discarded Drafts group: their records stay private");
+  check($("changeSetList").querySelectorAll(".changeset-row").every((r) => !r.querySelector(".actions .chip")
+      && r.querySelector(".title-row").children[0].classList.contains("title")),
+    "no status label sits beside a row's action button");
   csListAnswer = Object.assign({}, fixture.cs_mixed_list,
     { drafts: fixture.cs_mixed_list.drafts.filter((d) => d.state !== "active") });
   await navTo("candidates");
   await navTo("changesets");
-  check(!topGroups().length && $("csHistoryToggle") && $("csHistoryToggle").textContent === "Change History (2)"
-    && $("csHistoryBody").hidden && !$("noChangeSets") && csTally.textContent === "(0)",
-    "with no active draft, Change history is first: no empty Active group, no empty-state message, a count of 0");
+  check(!topGroups().length && !!$("noChangeSets") && csTally.textContent === "(0)",
+    "with only applied and abandoned records, the normal view shows the empty-state message");
   csListAnswer = fixture.cs_unreadable_list;
   await navTo("candidates");
   await navTo("changesets");
   check(summaryOf(topGroups()) === "Active Drafts (1):active | Unreadable Records (1):unreadable"
-    && $("csHistoryToggle") && $("csHistoryToggle").textContent === "Change History (2)"
+    && !$("csHistoryToggle") && !$("noChangeSets")
     && !!buttonSaying(groupNamed(topGroups(), "Unreadable Records"), "Delete") && csTally.textContent === "(1)",
-    "an unreadable record is listed last, after the active drafts and the change history, still deletable and not counted");
+    "an unreadable record is never hidden: listed after the active drafts, still deletable and not counted");
+  const unreadableOnly = Object.assign({}, fixture.cs_unreadable_list,
+    { drafts: fixture.cs_unreadable_list.drafts.filter((d) => d.unreadable) });
+  csListAnswer = unreadableOnly;
+  await navTo("candidates");
+  await navTo("changesets");
+  check(summaryOf(topGroups()) === "Unreadable Records (1):unreadable" && !$("noChangeSets"),
+    "with only an unreadable record, its group is shown instead of the empty-state message");
   csListAnswer = Object.assign({}, fixture.cs_mixed_list, { drafts: [] });
   await navTo("candidates");
   await navTo("changesets");
-  check(!topGroups().length && !$("csHistoryToggle") && !!$("noChangeSets")
-    && /^No change sets for this Agent Context on this computer\./.test($("noChangeSets").textContent)
-    && csTally.textContent === "(0)",
-    "with no change set at all, the existing empty-state message remains, with no groups or history");
+  check(!topGroups().length && !!$("noChangeSets")
+    && $("noChangeSets").textContent === "No open change sets." && csTally.textContent === "(0)",
+    "with no change set at all, the empty state reads exactly “No open change sets.”");
   csListAnswer = null;
   currentState = fixture.state_valid;
   await navTo("candidates");
   check(csTally.textContent === "(0)", "the count follows the state on every view");
-
-  console.log("\nThe lifecycle is explained once, behind the information control");
-  await navTo("governing");
-  const aboutStates = $("aboutStatesToggle");
-  const aboutBody = $("aboutStatesBody");
-  check(aboutStates.getAttribute("aria-label") === "About governing documents and candidates"
-    && aboutStates.getAttribute("aria-expanded") === "false" && aboutBody.hidden,
-    "a named button, closed to start");
-  aboutStates.click();
-  check(!aboutBody.hidden && /Authority candidate — not context/.test(aboutBody.textContent)
-    && /only way Charter changes what governs/.test(aboutBody.textContent)
-    && /govern alongside, revise or replace[\s\S]*withdrawn/.test(aboutBody.textContent)
-    && /change governing context/.test(aboutBody.textContent)
-    && /changed outside Charter/.test(aboutBody.textContent),
-    "a click opens it: the states, change sets and their outcomes, the typed phrase, and changes made outside");
-  aboutStates.click();
-  check(aboutBody.hidden, "a second click closes it");
-  $("aboutStates").dispatch("mouseenter");
-  check(!aboutBody.hidden, "hovering shows it");
-  $("aboutStates").dispatch("mouseleave");
-  check(aboutBody.hidden, "and leaving hides it");
-  aboutStates.click();
-  document.dispatch("click", { target: $("main") });
-  check(aboutBody.hidden, "a click elsewhere closes it");
-  check(/position:\s*absolute/.test(rule(css, ".info-pop")) && /outline:/.test(rule(css, ".info-toggle:focus-visible")),
-    "it floats over the page, and the control shows keyboard focus");
 
   console.log("\nThe shared section break: a gap, a thin divider and a compact label with a count");
   const groupRule = rule(css, ".record-group");
@@ -656,10 +666,6 @@ for (const file of ["markdown.js", "app.js"]) {
     && /padding-top/.test(groupRule) && /font-size:\s*\.8rem/.test(rule(css, ".record-group-label")),
     "one pattern: a modest gap, a thin divider, and a small label");
   check(/display:\s*none/.test(rule(css, ".record-group[hidden]")), "an empty group is not shown at all");
-  const historyRule = rule(css, ".change-history");
-  check(/margin-top:\s*1(\.\d+)?rem/.test(historyRule) && /border-top:\s*1px solid/.test(historyRule)
-    && /font-size:\s*\.8rem/.test(rule(css, ".change-history > .disclosure-toggle")),
-    "Change history uses the same section break and a compact label as its disclosure");
 
   console.log("\nGoverning documents: the map is a reference block, then the labelled list");
   const mapSiblings = $("contextMapSection").parentNode.children;
@@ -678,10 +684,31 @@ for (const file of ["markdown.js", "app.js"]) {
   const mapBox = $("contextMapSection");
   check(mapBox.parentNode === governingView && $("contextMapKind").textContent === "Generated — not a governing document",
     "it sits with the governing documents, and is not one of them");
-  check(/Matches the governing documents/.test($("contextMapState").textContent) && $("btnRebuildContext").hidden,
-    "valid: it is said to match, and Rebuild is not offered");
-  check(/Agent guidance in the map: Context check-in\. Change it in Settings\./.test($("agentGuidanceSummary").textContent),
-    "the enabled guidance is named, with where to change it");
+  check($("contextMapState").textContent === "Map current" && $("contextMapState").querySelector(".chip").classList.contains("ok")
+    && $("btnRebuildContext").hidden,
+    "valid: its status reads Map current, in the positive treatment, and Rebuild is not offered");
+  const mapLabelFor = (issues) => {
+    vm.runInThisContext("(i) => { state = Object.assign({}, state, { status: Object.assign({}, state.status, { agents_served: false, issues: i }) }); renderContextMap(); }")(issues);
+    return [$("contextMapState").textContent, $("contextMapState").querySelector(".chip").className];
+  };
+  const keptStatus = vm.runInThisContext("state");
+  const notChecked = mapLabelFor([{ level: "error", kind: "document", path: "authoritative/a.md", message: "No title." }]);
+  const strayOnly = mapLabelFor([{ level: "error", kind: "stray", path: "notes.txt", message: "Not part of it." }]);
+  const outOfDate = mapLabelFor([{ level: "error", kind: "generated", path: "AGENT-CONTEXT.md", message: "Stale." }]);
+  vm.runInThisContext("(s) => { state = s; renderContextMap(); }")(keptStatus);
+  check(notChecked[0] === "Map not checked" && /\bwarn\b/.test(notChecked[1])
+    && strayOnly[0] === "Map current" && outOfDate[0] === "Map out of date" && /\bstale\b/.test(outOfDate[1])
+    && /background:/.test(rule(css, ".chip.warn")),
+    "a governing-document problem reads Map not checked (warning); a stray alone leaves the map current; a stale map reads Map out of date");
+  check(!/Agents are served|Agents are refused|Matches the governing documents|Does not match the governing documents/.test(serialize(document.body)),
+    "the old status wording appears nowhere");
+  const mapRow = mapBox.querySelector(".context-map-row");
+  check(mapRow.children[0] === $("contextMapTitle") && mapRow.children[1] === $("contextMapState")
+    && !mapRow.querySelectorAll("button").length && $("btnViewContext").parentNode.classList.contains("context-map-actions")
+    && $("btnViewContext").parentNode !== mapRow,
+    "its status label immediately follows its title, and its actions sit apart, never beside a label");
+  check(!$("agentGuidanceSummary") && !/Agent guidance in the map/.test($("contextMapSection").textContent),
+    "the Context Map carries no editorial line about agent guidance: Settings shows it");
   const beforeView = calls.length;
   await click($("btnViewContext"));
   check(calls.slice(beforeView).length === 1 && JSON.stringify(lastCall("/api/preview").body) === JSON.stringify({ source: "context" }),
@@ -716,9 +743,8 @@ for (const file of ["markdown.js", "app.js"]) {
     "HTML inside a document is shown as text, never run");
   check(/Governing document — current context/.test($("docViewer").querySelector(".reader-banner").textContent),
     "a governing document's banner says it is current context");
-  check(!/follow/i.test($("docViewer").querySelector(".reader-banner").textContent)
-    && !/follow/i.test($("aboutStatesBody").textContent),
-    "neither the banner nor the explanation claims agents follow it: Charter cannot make them");
+  check(!/follow/i.test($("docViewer").querySelector(".reader-banner").textContent),
+    "the banner does not claim agents follow it: Charter cannot make them");
   check($("docViewer").querySelector("article").getAttribute("role") === "dialog"
     && document.activeElement === buttonSaying($("docViewer"), "Close"),
     "it is a dialog, with focus on Close");
@@ -742,120 +768,142 @@ for (const file of ["markdown.js", "app.js"]) {
 
   /* ----------------------------------------------------- authority actions */
 
-  console.log("\nPlan a change set from a candidate: the person chooses what it does");
+  console.log("\nPlan a change set from a candidate: it opens a change set that includes it, undecided");
   const createsBefore = () => calls.filter((c) => c.url === "/api/changeset/create").length;
   const noGoverningApply = () => !calls.some((c) => c.url === "/api/apply" && GOVERNING_KINDS.includes(c.body.kind));
-  await click(buttonSaying(rowOf("candidatesList", "Gamma rules"), "Plan a change set…"));
-  check(/Gamma decisions\./.test($("startCandidateScope").textContent)
-    && !$("review").querySelectorAll("input").some((i) => i.type === "text"),
-    "the candidate's own scope is shown; it is changed with Edit, not here");
-  check(!!labelFor($("review"), "startAlongside") && /Govern alongside/.test(labelFor($("review"), "startAlongside").textContent)
-    && /Revise a governing document with this candidate/.test(labelFor($("review"), "startRevise").textContent)
-    && /Replace a governing document with this candidate/.test(labelFor($("review"), "startReplace").textContent),
-    "it offers govern alongside, revise a governing document, and replace one");
-  check(!$("startAlongside").checked && !$("startRevise").checked && !$("startReplace").checked
-    && $("startTargetDetail").hidden && $("startTarget").value === "",
-    "nothing is chosen for the person");
-  check($("startTarget").options[0].value === ""
-    && $("startTarget").options.slice(1).map((o) => o.value).join()
-      === fixture.state_valid.documents.filter((d) => d.governing).map((d) => d.path).join(),
-    "only governing documents can be revised or replaced");
-  check(/stays undecided until you decide it in the change set/.test($("startUndecided").textContent),
-    "it says every other governing document stays undecided");
-  let made = createsBefore();
-  await click($("btnOpenChangeSet"));
-  check(createsBefore() === made && /Choose what this candidate does/.test(toastNow().textContent),
-    "with nothing chosen, nothing is opened");
-  clearToasts();
-  $("startReplace").checked = true;
-  $("startReplace").dispatch("change");
-  check(!$("startTargetDetail").hidden && $("startScopeCompare").hidden, "choosing replace asks which document");
-  await click($("btnOpenChangeSet"));
-  check(createsBefore() === made && /Choose the governing document to replace/.test(toastNow().textContent),
-    "replacing without a document opens nothing");
-  clearToasts();
-  $("startTarget").value = fixture.governing;
-  $("startTarget").dispatch("change");
-  check(!$("startScopeCompare").hidden && $("startCurrentScope").textContent === "A scope."
-    && $("startScopeOutcome").textContent === "If the change set is applied, AGENT-CONTEXT.md shows: “Gamma decisions.”.",
-    "choosing one shows its current scope beside the result");
-  vm.runInThisContext("closeReview")();
-
-  await click(buttonSaying(rowOf("candidatesList", "Unscoped idea"), "Plan a change set…"));
-  $("startRevise").checked = true;
-  $("startRevise").dispatch("change");
-  $("startTarget").value = fixture.governing;
-  $("startTarget").dispatch("change");
-  check($("startCandidateScope").textContent === "No scope stated"
-    && $("startScopeOutcome").textContent === "The candidate has no scope, so it would inherit “Alpha”'s current scope: “A scope.”.",
-    "a blank candidate scope is shown, explicitly, as inheriting the replaced document's");
-  vm.runInThisContext("closeReview")();
-
-  console.log("\nA candidate made with Revise… lists its origin first, as context only");
   const revised = fixture.state_valid.documents.find((d) => d.title === "Beta revised");
   const plain = fixture.state_valid.documents.find((d) => d.path === fixture.candidate);
   check(revised && revised.revises_path === "authoritative/b.md" && plain.revises_path === ""
     && fixture.state_valid.documents.filter((d) => d.kind === "candidate" && d.revises_path).length === 1,
     "the server says which candidate came from Revise…, and from which governing document");
-  made = createsBefore();
+  let made = createsBefore();
   const plansBeforeRevised = calls.filter((c) => c.url === "/api/plan").length;
   await click(buttonSaying(rowOf("candidatesList", "Beta revised"), "Plan a change set…"));
-  const originOption = $("startTarget").options[1];
-  check(originOption.value === "authoritative/b.md" && /— the document this was revised from$/.test(originOption.textContent)
-    && $("startTarget").options.slice(2).every((o) => !/revised from/.test(o.textContent)),
-    "its origin is listed first, labelled “the document this was revised from”");
-  check(!$("startAlongside").checked && !$("startRevise").checked && !$("startReplace").checked
-    && $("startTarget").value === "" && $("startTargetDetail").hidden,
-    "and nothing is selected: not the outcome, not the document");
-  check(/Nothing is chosen for you/.test($("startTargetHint").textContent),
-    "it says the choice is the person's");
-  check(createsBefore() === made && calls.filter((c) => c.url === "/api/plan").length === plansBeforeRevised,
-    "opening it creates, plans and applies nothing");
-  $("startRevise").checked = true;
-  $("startRevise").dispatch("change");
-  $("startTarget").value = "authoritative/b.md";
-  $("startTarget").dispatch("change");
-  check($("startCurrentScope").textContent === "A scope."
-    && $("startScopeOutcome").textContent === "The candidate has no scope, so it would inherit “Beta”'s current scope: “A scope.”.",
-    "choosing its origin shows scope continuity");
-  await click($("btnOpenChangeSet"));
-  check(JSON.stringify(lastCall("/api/changeset/create").body)
-      === JSON.stringify({ start: { document: "authoritative/b.md", outcome: "revise", candidate: revised.path } }),
-    "Open change set starts exactly the outcome the person chose");
+  check(createsBefore() === made + 1
+    && JSON.stringify(lastCall("/api/changeset/create").body) === JSON.stringify({ start: { candidate: revised.path } }),
+    "it starts a change set that includes that candidate, and nothing more");
   check(!$("changeSetEditor").hidden && $("changeSetIndex").hidden && $("review").childNodes.length === 0
-    && $("csRows").querySelectorAll(".cs-row").length === 1 && $("csOutcome-0").value === "revise",
-    "its editor opens with that one row, in place of the index");
-  check(!!$("csRetainOthers") && !$("csUnretain") && $("csPreview").disabled,
-    "every other governing document is left undecided, so it is not ready to preview yet");
+    && $("csCandidates").querySelectorAll(".cs-row").length === 1
+    && $("csCandidates").querySelector(".cs-row .title").textContent === "Beta revised",
+    "its editor opens with that one candidate, a compact row led by its title, in place of the index");
+  const decision0 = $("csDecision-0");
+  check(decision0.tagName === "SELECT" && decision0.value === ""
+    && decision0.options.map((o) => `${o.value}=${o.textContent}`).join("|")
+      === "=Choose a decision|replace=Replace|govern-alongside=Govern alongside"
+    && decision0.getAttribute("aria-label") === "Decision for “Beta revised”"
+    && !$("csTarget-0") && $("csPreview").disabled,
+    "its decision is one dropdown, starting unselected, offering Replace and Govern alongside; nothing to preview yet");
+  check(!$("csPlan").querySelectorAll("input").some((i) => i.type === "radio")
+    && !$("csPlan").querySelectorAll("option").some((o) => /^(revise|retain)$/.test(o.value))
+    && !/It takes over from one governing document|Everything that governs today keeps governing/.test($("csPlan").textContent)
+    && !/Retain all other governing documents/.test($("changeSetEditor").textContent),
+    "no radio buttons, no permanently visible decision explanations, no Revise or Retain decision");
+  check(labelFor($("csPlan"), "csTitle").textContent === "Name" && !$("csTitleHint")
+    && $("csPlan").querySelectorAll("h4").map((h) => h.textContent).join("|") === "Candidates|Withdrawals|Change Set Summary|Readiness",
+    "the plan reads Name, Candidates, Withdrawals, Change Set Summary and Readiness");
+  check(!$("csRetained") && !/Retained Governing Documents/.test($("changeSetEditor").textContent),
+    "Build Change Set lists no retained documents: they are retained without a decision");
+  check($("csWithdrawalsHint").textContent === "Withdrawn documents become authority candidates."
+    && $("csWithdrawals") === null && !!$("csAddWithdrawal"),
+    "Withdrawals has one line of explanation, and a governing document can be added for withdrawal");
+  const wRow = vm.runInThisContext("changeSetWithdrawals")({ withdrawals: [{ path: "authoritative/a.md", title: "Alpha",
+    governs: false }], governing: [], plan_candidates: [] }, true).querySelector(".cs-row");
+  check(wRow.querySelector(".title-row").children[0].textContent === "Alpha"
+    && wRow.querySelector(".title-row .chip").textContent === "No longer governs"
+    && !wRow.querySelector(".title-row").querySelectorAll("button").length && !!buttonSaying(wRow, "Remove"),
+    "a withdrawal's status label immediately follows its title, apart from its Remove button");
+  check(!$("changeSetEditor").querySelectorAll(".info-toggle").length
+    && !fieldsIn($("changeSetEditor")).some((i) => i.getAttribute("placeholder")),
+    "no information icons in the build screen, and no placeholder text in any field");
+  check(!/position:\s*sticky|overflow|max-height/.test(rule(css, ".cs-review"))
+    && !/overflow|max-height/.test(rule(css, ".cs-item")) && !/max-height|overflow/.test(rule(css, ".report-grid")),
+    "the page scrolls as a whole: no candidate row or review panel scrolls on its own");
   check(!$("confirmPhrase") && calls.filter((c) => c.url === "/api/plan").length === plansBeforeRevised && noGoverningApply(),
     "no phrase is asked for and nothing is previewed or applied until the change set is");
+  csNext = fixture.cs_start_replace_pending;
+  decision0.value = "replace";
+  decision0.dispatch("change");
+  await settle();
+  check(JSON.stringify(lastCall("/api/changeset/update").body.decisions)
+      === JSON.stringify({ [revised.path]: { decision: "replace", target: "" } }),
+    "choosing Replace declares only that, with no document chosen");
+  const target0 = $("csTarget-0");
+  const originOption = target0.options[1];
+  check($("csDecision-0").value === "replace" && target0 && target0.value === ""
+    && target0.options[0].textContent === "Choose the document it replaces"
+    && originOption.value === "authoritative/b.md" && originOption.textContent === "Beta — suggested: the document this was revised from"
+    && target0.options.slice(2).every((o) => !/suggested/.test(o.textContent))
+    && target0.options.slice(1).map((o) => o.value).sort().join()
+      === fixture.state_valid.documents.filter((d) => d.governing).map((d) => d.path).sort().join()
+    && $("csPreview").disabled,
+    "only once Replace is chosen does the target appear, unselected, its origin first as a labelled suggestion");
+  csNext = fixture.cs_start_replaced;
+  $("csTarget-0").value = "authoritative/b.md";
+  $("csTarget-0").dispatch("change");
+  await settle();
+  check(JSON.stringify(lastCall("/api/changeset/update").body.decisions)
+      === JSON.stringify({ [revised.path]: { decision: "replace", target: "authoritative/b.md" } })
+    && $("csTarget-0").value === "authoritative/b.md" && !$("csPreview").disabled,
+    "choosing the document completes the plan, ready to preview");
+  check($("csScopeLine-0").classList.contains("cs-scope-oneline")
+    && /^Scope: Blank — inherits the replaced document's scope$/.test($("csScopeLine-0").textContent)
+    && !$("csScopeToggle-0") && !$("csCandidates").querySelectorAll("dl").length
+    && !/Full scope and comparison/.test($("csCandidates").textContent),
+    "the row shows one line of scope, with no comparison disclosure or table inside it");
+  const viewDetails = $("csViewDetails-0");
+  check(viewDetails.tagName === "BUTTON" && viewDetails.textContent === "View details", "an explicit View details action");
+  await click(viewDetails);
+  check(/^Details: Beta revised$/.test($("review").querySelector("h3").textContent)
+    && /Candidate's scope[\s\S]*Current scope[\s\S]*Scope after/.test($("csDetails").textContent)
+    && /\(inherited\)/.test($("csDetails").textContent) && /Revise/.test($("csDetails").textContent)
+    && !!$("csDetailsRead") && !!$("csDetailsCompare"),
+    "View details opens the complete candidate and its scope comparison, on request");
+  vm.runInThisContext("closeReview")();
   await vm.runInThisContext("closeChangeSet")();
   await navTo("candidates");
 
   console.log("\nA change set started from a candidate is previewed, confirmed and applied as a change set");
   await click(buttonSaying(rowOf("candidatesList", "Gamma rules"), "Plan a change set…"));
-  $("startAlongside").checked = true;
-  $("startAlongside").dispatch("change");
-  check($("startTargetDetail").hidden, "governing alongside needs no document");
-  await click($("btnOpenChangeSet"));
-  check(JSON.stringify(lastCall("/api/changeset/create").body) === JSON.stringify({ start: { alongside: fixture.candidate } })
-    && !$("changeSetEditor").hidden && fixture.cs_start_alongside.alongside.length === 1
-    && fixture.cs_start_alongside.draft.title === "Govern alongside: “Gamma rules”",
-    "govern alongside opens a change set with the candidate alone, named for what it does");
-  // U4: Abandon is irreversible, so it asks for a clear confirmation first;
-  // declining it changes nothing and makes no server call.
+  check(JSON.stringify(lastCall("/api/changeset/create").body) === JSON.stringify({ start: { candidate: fixture.candidate } })
+    && !$("changeSetEditor").hidden && fixture.cs_start_alongside.plan_candidates.length === 1
+    && fixture.cs_start_alongside.draft.untitled && $("csTitle").value === "",
+    "the change set includes the candidate alone, and its Name stays empty — never named for it");
+  csNext = fixture.cs_start_ready;
+  $("csDecision-0").value = "govern-alongside";
+  $("csDecision-0").dispatch("change");
+  await settle();
+  check(JSON.stringify(lastCall("/api/changeset/update").body.decisions)
+      === JSON.stringify({ [fixture.candidate]: { decision: "govern-alongside", target: "" } })
+    && !$("csTarget-0") && /^Scope: /.test($("csScopeLine-0").textContent) && !$("csPreview").disabled,
+    "Govern alongside needs no document, and the plan is ready to preview");
   const priorConfirm = global.confirm;
-  let abandonMsg = null;
-  global.confirm = (m) => { abandonMsg = m; return false; };
-  const abandonsBefore = calls.filter((c) => c.url === "/api/changeset/abandon").length;
-  await click(buttonSaying($("changeSetEditor"), "Abandon"));
-  check(/cannot be undone/.test(abandonMsg || "")
-    && calls.filter((c) => c.url === "/api/changeset/abandon").length === abandonsBefore,
-    "Abandon asks for a clear confirmation and, when declined, abandons nothing");
+  let discardMsg = null;
+  global.confirm = (m) => { discardMsg = m; return false; };
+  const discardsBefore = calls.filter((c) => c.url === "/api/changeset/abandon").length;
+  check(!!$("csDiscard") && $("csDiscard").textContent === "Discard draft"
+    && !buttonSaying($("changeSetEditor"), "Abandon") && !buttonSaying($("changeSetEditor"), "Delete draft"),
+    "the active draft offers Discard draft, with no Abandon or Delete draft beside it");
+  await click($("csDiscard"));
+  check(/^Discard the private draft “.+”\? It will be discarded\./.test(discardMsg || "")
+    && /no candidate or governing context changes\./.test(discardMsg) && !/Change History|Discarded Drafts/.test(discardMsg)
+    && calls.filter((c) => c.url === "/api/changeset/abandon").length === discardsBefore
+    && !$("changeSetEditor").hidden,
+    "Discard draft asks once, saying the private draft will be discarded; declined, nothing happens");
+  let prompts = 0;
+  global.confirm = () => { prompts += 1; return true; };
+  const discarded = JSON.parse(JSON.stringify(fixture.cs_start_ready));
+  discarded.draft.state = "abandoned";
+  csNext = discarded;
+  await click($("csDiscard"));
+  await settle();
+  check(prompts === 1 && calls.filter((c) => c.url === "/api/changeset/abandon").length === discardsBefore + 1
+    && lastCall("/api/changeset/abandon").body.id === fixture.cs_start_ready.draft.id
+    && !$("changeSetIndex").hidden && $("changeSetEditor").hidden
+    && !calls.some((c) => c.url === "/api/changeset/delete") && /^Discarded the private draft/.test(toastNow().textContent),
+    "confirmed once, it discards the draft at once and returns to Change Sets, with no second confirmation or delete");
   global.confirm = priorConfirm;
-  await vm.runInThisContext("closeChangeSet")();
-  await vm.runInThisContext("planFor")("changeset", fixture.start_request,
-    { applyLabel: "Apply change set", applyClass: "btn authority" });
+  clearToasts();
+  await vm.runInThisContext("planFor")("changeset", fixture.start_request, { applyLabel: "Apply" });
 
   console.log("\nPreviews list files first, each collapsed until opened");
   check(JSON.stringify(lastPlan().body) === JSON.stringify({ kind: "changeset", request: fixture.start_request }),
@@ -873,11 +921,11 @@ for (const file of ["markdown.js", "app.js"]) {
   check(expanded($("review")).length === toggles.length, "Expand all opens every file");
   await click(buttonSaying($("review"), "Collapse all"));
   check(expanded($("review")).length === 0, "Collapse all closes them");
-  check($("governingBeforeAfter") && /Governing Now/.test($("governingBeforeAfter").textContent)
-    && /Governing After[\s\S]*Gamma rules/.test($("governingBeforeAfter").textContent),
-    "the governing set is shown before and after");
-  check($("review").textContent.indexOf("Document dates are assigned when this change set is applied.") !== -1,
-    "it says document dates are assigned when the change set is applied");
+  check(!$("governingBeforeAfter") && !$("setCompare") && !/Governing Now|Governing After/.test($("review").textContent),
+    "a change set's preview never shows the governing set before and after");
+  check(!/Document dates are assigned|written as one action|does not stage, commit|receipt is kept privately|confirmed in words/
+      .test($("review").textContent),
+    "and no note that only explains mechanics");
 
   console.log("\nA change set is confirmed in words, once, and applied by its own route");
   check(labelFor($("review"), "confirmPhrase").textContent === "Type “change governing context” once to apply the whole change set",
@@ -893,7 +941,7 @@ for (const file of ["markdown.js", "app.js"]) {
   check($("review").childNodes.length === 0 && toastNow() && /Git is untouched: commit it when you choose/.test(toastNow().textContent)
     && /applied as one action/.test(toastNow().textContent) && !!buttonSaying(toastNow(), "View details"),
     "the preview closes; the message says Git is left to the person, with details");
-  check(!$("changeSetEditor").hidden && /Applied — receipt/.test($("changeSetEditor").textContent),
+  check(!$("changeSetEditor").hidden && $("csAppliedStatus").textContent === "Change set applied",
     "the change set is shown as its receipt");
   check(document.activeElement === $("csTitleText"),
     "applying a change set moves focus to its receipt heading, not <body>");
@@ -906,56 +954,24 @@ for (const file of ["markdown.js", "app.js"]) {
   check(document.activeElement === $("view-changesets").querySelector("h2"),
     "leaving the change-set editor returns focus to the Change Sets heading, not <body>");
 
-  console.log("\nA governing document: withdrawn or changed in a change set; Retire is an ordinary confirmation");
+  console.log("\nA governing document: withdrawn in an ordinary change set; Retire is an ordinary confirmation");
   await navTo("governing");
   made = createsBefore();
   const plansBeforeWithdraw = calls.filter((c) => c.url === "/api/plan").length;
   await click(buttonSaying(rowOf("governingList", "Beta"), "Withdraw in a change set…"));
   check(createsBefore() === made + 1
-    && JSON.stringify(lastCall("/api/changeset/create").body) === JSON.stringify({ start: { document: "authoritative/b.md", outcome: "withdraw" } }),
+    && JSON.stringify(lastCall("/api/changeset/create").body) === JSON.stringify({ start: { withdraw: "authoritative/b.md" } }),
     "Withdraw in a change set… starts a change set withdrawing that document alone");
-  check(!$("changeSetEditor").hidden && $("csOutcome-0").value === "withdraw" && !!$("csRetainOthers") && !$("csUnretain")
-    && !$("confirmPhrase") && calls.filter((c) => c.url === "/api/plan").length === plansBeforeWithdraw && noGoverningApply(),
-    "its editor opens with the others undecided; the phrase comes only at its preview");
+  check(!$("changeSetEditor").hidden && $("csWithdrawals").querySelectorAll(".cs-row").length === 1
+    && /Beta/.test($("csWithdrawals").textContent) && !!$("csAddCandidate") && !$("csCandidates")
+    && !$("csPreview").disabled && !$("csRetained"),
+    "its editor lists the withdrawal in the ordinary sections, others retained without being listed, ready to preview");
+  check(!$("confirmPhrase") && calls.filter((c) => c.url === "/api/plan").length === plansBeforeWithdraw && noGoverningApply(),
+    "the phrase comes only at its preview");
   await vm.runInThisContext("closeChangeSet")();
   await navTo("governing");
-  await click(buttonSaying(rowOf("governingList", "Beta"), "Change in a change set…"));
-  check(!$("docRevise").checked && !$("docReplace").checked && !$("docWithdraw").checked
-    && $("docCandidateDetail").hidden && $("docCandidate").value === "",
-    "changing a governing document starts with nothing chosen");
-  const betaCandidates = $("docCandidate").options.slice(1);
-  check(betaCandidates[0].value === revised.path && /revises “Beta”/.test(betaCandidates[0].textContent)
-    && betaCandidates.length === fixture.state_valid.documents.filter((d) => d.kind === "candidate").length,
-    "any candidate can be chosen; one revised from it is listed first, labelled, not selected");
-  made = createsBefore();
-  $("docRevise").checked = true;
-  $("docRevise").dispatch("change");
-  await click($("btnOpenChangeSet"));
-  check(createsBefore() === made && /Choose the candidate to revise it with/.test(toastNow().textContent),
-    "revising without a candidate opens nothing");
-  clearToasts();
-  $("docCandidate").value = revised.path;
-  await click($("btnOpenChangeSet"));
-  check(JSON.stringify(lastCall("/api/changeset/create").body)
-      === JSON.stringify({ start: { document: "authoritative/b.md", outcome: "revise", candidate: revised.path } })
-    && !$("changeSetEditor").hidden && noGoverningApply(),
-    "it opens a change set with exactly that outcome");
-  await vm.runInThisContext("closeChangeSet")();
-  const keptDocs = vm.runInThisContext("state.documents");
-  global.__keptDocs = keptDocs;
-  vm.runInThisContext("state.documents = state.documents.filter((d) => d.kind !== 'candidate')");
-  await navTo("governing");
-  await click(buttonSaying(rowOf("governingList", "Alpha"), "Change in a change set…"));
-  check($("docRevise").disabled && $("docReplace").disabled && !$("docWithdraw").disabled
-    && /Use Revise… to file one from this document first/.test(labelFor($("review"), "docRevise").textContent)
-    && !!$("docReviseFirst"),
-    "with no candidate, revise and replace point to Revise… first; withdrawing is still possible");
-  await click($("docReviseFirst"));
-  check(lastCall("/api/draft").body.path === fixture.governing && /Revise “Alpha”/.test($("review").textContent)
-    && /until you revise it with the candidate in a change set/.test($("reviseNotice").textContent),
-    "Revise… files a candidate first, and says the document keeps governing until a change set");
-  vm.runInThisContext("closeReview")();
-  vm.runInThisContext("state.documents = __keptDocs; renderShell(); renderKnowledge();");
+  check(!buttonSaying(rowOf("governingList", "Beta"), "Change in a change set…"),
+    "a governing document offers no other change-set start: a change begins from a candidate, made with Revise…");
   await navTo("candidates");
   await click(buttonSaying(rowOf("candidatesList", "Gamma rules"), "Retire…"));
   check(lastPlan().body.kind === "retire" && requestKeys() === JSON.stringify(["candidate"]) && !$("confirmPhrase"),
@@ -970,15 +986,8 @@ for (const file of ["markdown.js", "app.js"]) {
     && JSON.stringify(labelsIn($("review")).map((l) => l.split(" —")[0])) === JSON.stringify(["Title", "Scope", "Text"]),
     "it starts from the candidate's own title, scope and text");
   check(/changes nothing agents read/.test($("review").textContent), "and says it changes nothing agents read");
-  check(aboutScope($("review")).length === 1 && $("review").textContent.indexOf(SCOPE_ROUTING) !== -1
-    && $("formField-scope").getAttribute("aria-describedby") === "formHint-scope",
-    "its scope field says what scope is for, with About scope beside it");
-  const scopeTip = aboutScope($("review"))[0];
-  scopeTip.click();
-  check(/does not replace, summarize or override/.test(document.getElementById(scopeTip.getAttribute("aria-controls")).textContent)
-    && /Charter does not write, judge or approve it/.test(document.getElementById(scopeTip.getAttribute("aria-controls")).textContent),
-    "About scope explains routing, and that the wording is the person's");
-  scopeTip.click();
+  check(compactScope($("review"), "formField-scope", "formHint-scope"),
+    "Edit…'s scope field is the compact Scope control: its label, one helper, no information icon or placeholder");
   await click(buttonSaying($("review"), "Preview the change"));
   check(lastPlan().body.kind === "edit-candidate" && requestKeys() === JSON.stringify(["body", "candidate", "scope", "title"]),
     "it previews a change to the candidate only");
@@ -997,6 +1006,8 @@ for (const file of ["markdown.js", "app.js"]) {
     && $("reviseNotice").textContent.indexOf(`keeps governing at ${fixture.governing}, unchanged`) !== -1
     && calls.filter((c) => c.url === "/api/plan").length === plansBeforeRevise,
     "it says the document keeps governing, and plans nothing by itself");
+  check(compactScope($("review"), "formField-scope", "formHint-scope"),
+    "Revise…'s scope field is the compact Scope control: its label, one helper, no information icon or placeholder");
   $("formField-scope").value = "Bookings and holds";
   await click(buttonSaying($("review"), "Preview the candidate"));
   check(lastPlan().body.kind === "revise" && requestKeys() === JSON.stringify(["body", "path", "scope", "title"])
@@ -1027,10 +1038,9 @@ for (const file of ["markdown.js", "app.js"]) {
   await settle();
   check(!$("view-intake").hidden && navItem("candidates").getAttribute("aria-current") === "true",
     "and Forward to Create candidate again, Authority candidates still current");
-  check(/kept in private local state — not context/.test($("intakeLede").textContent)
-    && /governs nothing until a change set you apply makes it govern/.test($("intakeLede").textContent)
-    && /not context/.test($("candidateNote").textContent),
-    "it says the document becomes a private candidate, not context");
+  check(!$("intakeLede") && !$("view-intake").querySelector(".lede") && !$("candidateNote")
+    && !/private local state/i.test($("view-intake").textContent),
+    "it has no long introduction and no repeated private-local-state wording");
   const renderIntake = vm.runInThisContext("renderIntakeForm");
   const realState = vm.runInThisContext("state");
   vm.runInThisContext("(s) => { state = s; }")(Object.assign({}, realState, { pdf_support: false }));
@@ -1045,20 +1055,36 @@ for (const file of ["markdown.js", "app.js"]) {
   vm.runInThisContext("(s) => { state = s; }")(realState);
   renderIntake();
 
-  console.log("\nLocked steps cannot be reached until a file is chosen");
-  const lockedBodies = ["stepConvertBody", "stepNameBody"].map($);
-  check(lockedBodies.every((b) => b.getAttribute("inert") !== null)
-    && ["markdown", "title", "scope", "btnPreviewIntake"].every((id) => lockedBodies.some((b) => b.querySelector("#" + id) === $(id))),
-    "steps 2 and 3, and every field in them, are inert");
-  check(["stepConvert", "stepName"].every((id) => $(id).querySelector(".step-locked-note").textContent === "Choose a file in step 1 first."),
-    "each says what it needs first");
+  console.log("\nCreate Candidate: choosing a file, then one calm form like Edit…");
+  check(!$("stepFile").hidden && $("stepConvert").hidden && !$("stepName")
+    && $("stepFile").querySelectorAll("button").map((b) => b.textContent).join() === "Choose a file"
+    && !!$("drop") && !$("stepFile").querySelector("h3")
+    && !$("view-intake").querySelectorAll(".step").length && !/data-step|Choose a file in step 1 first/.test(serialize($("view-intake")))
+    && /display:\s*none/.test(rule(css, ".intake-pick[hidden], .intake-form[hidden]")),
+    "before a file is chosen, only the drop area and Choose a file: no editor, other section, step number or waiting note");
+  check(!fieldsIn($("view-intake")).some((n) => n.getAttribute("placeholder")),
+    "and no placeholder text anywhere in the form");
   await vm.runInThisContext("stageFile")({ name: "site-notes.md" });
   await settle();
-  check($("title").value === fixture.stage.suggested_title && $("markdown").value === fixture.stage.markdown,
-    "the converted text and title are offered");
-  check($("scope").value === "" && $("scope").getAttribute("placeholder") === SCOPE_PLACEHOLDER
-    && $("scopeHint").textContent === SCOPE_ROUTING, "the scope field is empty, with an instruction");
-  check(lockedBodies.every((b) => b.getAttribute("inert") === null), "the later steps unlock");
+  const intakeForm = $("stepConvert");
+  check(!intakeForm.hidden && $("stepFile").hidden && intakeForm.querySelectorAll("h3").length === 1
+    && intakeForm.querySelector("h3").textContent === "Review Converted Document" && !intakeForm.querySelectorAll(".step").length,
+    "once the file is converted, one form under Review Converted Document takes the drop area's place, with no numbered steps");
+  check(JSON.stringify(intakeForm.children.map((n) => n.tagName === "H3" ? "heading"
+      : n.classList.contains("intake-file") ? "file" : n.getAttribute("id") === "convertNotes" ? "notes"
+      : n.getAttribute("id") === "frontMatterNote" ? "front-matter"
+      : n.classList.contains("actions") ? n.querySelector("button").textContent
+      : n.querySelector("label").textContent))
+      === JSON.stringify(["heading", "file", "notes", "front-matter", "Title", "Scope", "Text", "Preview changes"]),
+    "in order: the file, its notes, Title, Scope, Text, and Preview changes — laid out like Edit…");
+  check($("stagedInfo").textContent === `${fixture.stage.filename} — ${fixture.stage.kind}, ${(fixture.stage.bytes / 1024).toFixed(1)} kB`
+    && $("stagedInfo").parentNode.querySelector("button").textContent === "Choose another file",
+    "the chosen file's name, kind and size on one line, with Choose another file");
+  check($("markdown").value === fixture.stage.markdown && !$("markdown").disabled && labelFor(intakeForm, "markdown").textContent === "Text"
+    && $("title").value === fixture.stage.suggested_title && $("btnCancelIntake").parentNode === $("view-intake").querySelector(".view-head"),
+    "Text holds the editable converted document; Cancel stays in the page header");
+  check($("scope").value === "" && compactScope($("view-intake"), "scope", "scopeHint"),
+    "Create Candidate's scope field is the compact Scope control: its label, one helper, no information icon or placeholder");
   await click($("btnPreviewIntake"));
   check(lastPlan().body.kind === "add" && requestKeys() === JSON.stringify(["body", "scope", "source", "title"])
     && lastPlan().body.request.scope === "" && /site-notes\.md \(sha256 /.test(lastPlan().body.request.source),
@@ -1082,7 +1108,7 @@ for (const file of ["markdown.js", "app.js"]) {
   check(lastCall("/api/apply").body.kind === "add" && lastCall("/api/apply").body.confirm === true,
     "filing applies it with an ordinary confirmation");
   check(vm.runInThisContext("staged") === null && $("title").value === "" && $("markdown").value === ""
-    && $("stepConvert").classList.contains("locked"), "Create candidate is empty and locked again");
+    && $("stepConvert").hidden && !$("stepFile").hidden, "Create candidate is empty again, its later stages hidden");
   check(!$("view-candidates").hidden && location.hash === "#candidates"
     && document.activeElement === $("view-candidates").querySelector("h2"),
     "it returns to Authority candidates, focus on its heading");
@@ -1104,7 +1130,7 @@ for (const file of ["markdown.js", "app.js"]) {
   check(cancelIntake && cancelIntake.tagName === "BUTTON" && cancelIntake.getAttribute("type") === "button"
     && cancelIntake.textContent === "Cancel" && cancelIntake.parentNode === intakeHead
     && intakeHead.children.indexOf(cancelIntake) === intakeHead.children.indexOf(intakeHead.querySelector("h2")) + 1,
-    "Cancel is a native button beside the heading, never in a locked step");
+    "Cancel is a native button beside the heading, never inside a stage");
   await vm.runInThisContext("stageFile")({ name: "site-notes.md" });
   await settle();
   $("title").value = "Never filed";
@@ -1116,7 +1142,7 @@ for (const file of ["markdown.js", "app.js"]) {
   check(calls.filter((c) => c.url === "/api/apply").length === writesBeforeCancel && !$("review").firstChild,
     "Cancel files nothing, and the preview of filing it is gone");
   check(vm.runInThisContext("staged") === null && $("title").value === "" && $("markdown").value === ""
-    && $("stepConvert").classList.contains("locked"), "Create candidate is empty and locked again");
+    && $("stepConvert").hidden && !$("stepFile").hidden, "Create candidate is empty again, its later stages hidden");
   check(!$("view-candidates").hidden && location.hash === "#candidates" && addressBook.index < intakeEntry
     && document.activeElement === $("view-candidates").querySelector("h2"),
     "it returns to Authority candidates, focus on its heading");
@@ -1156,12 +1182,87 @@ for (const file of ["markdown.js", "app.js"]) {
   stageAnswer = fixture.stage;
   await navTo("candidates");
 
+  console.log("\nLeaving Create Candidate after a file is chosen discards the whole session");
+  await click($("btnAddDocument"));
+  await vm.runInThisContext("stageFile")({ name: "site-notes.md" });
+  await settle();
+  $("title").value = "Half done";
+  $("scope").value = "Half a scope";
+  $("markdown").value = "Edited text\n";
+  await click($("btnPreviewIntake"));
+  check(!!buttonSaying($("review"), "File as candidate") && !$("stepConvert").hidden,
+    "with a file converted, edited, and its filing previewed");
+  const appliesBeforeLeaving = calls.filter((c) => c.url === "/api/apply").length;
+  await navTo("governing");
+  check(vm.runInThisContext("staged") === null && !$("review").firstChild
+    && calls.filter((c) => c.url === "/api/apply").length === appliesBeforeLeaving,
+    "leaving discards the upload, its conversion and the preview, and files nothing");
+  await click(buttonSaying($("view-governing"), "Create candidate") || $("btnAddDocument"));
+  check(!$("view-intake").hidden && vm.runInThisContext("staged") === null && $("stepConvert").hidden
+    && !$("stepFile").hidden && $("markdown").value === "" && $("title").value === "" && $("scope").value === ""
+    && $("stagedInfo").textContent === "" && $("convertNotes").textContent === "" && $("file").value === ""
+    && $("frontMatterNote").hidden,
+    "opening Create Candidate again starts completely fresh");
+  stageAnswer = fixture.stage_front_matter;
+  await vm.runInThisContext("stageFile")({ name: "supplier-policy.md" });
+  await settle();
+  check(!$("frontMatterNote").hidden, "with a front-matter note showing");
+  goBack();
+  await settle();
+  check(!$("view-intake").hidden ? false : vm.runInThisContext("staged") === null && $("frontMatterNote").hidden
+    && $("stepConvert").hidden, "leaving by Back discards it too");
+  stageAnswer = fixture.stage;
+  await navTo("candidates");
+  let releaseLeft;
+  stageDelay = { gate: new Promise((r) => { releaseLeft = r; }), answer: fixture.stage };
+  await click($("btnAddDocument"));
+  await vm.runInThisContext("stageFile")({ name: "slow.md" });
+  await settle();
+  await navTo("governing");
+  releaseLeft();
+  await settle();
+  await click($("btnAddDocument"));
+  check(vm.runInThisContext("staged") === null && $("markdown").value === "" && $("stepConvert").hidden,
+    "a conversion still on its way when the person leaves never fills the next, fresh form");
+  await navTo("candidates");
+
+  console.log("\nChoose another file replaces the conversion and everything derived from it");
+  await click($("btnAddDocument"));
+  stageAnswer = fixture.stage_front_matter;
+  await vm.runInThisContext("stageFile")({ name: "supplier-policy.md" });
+  await settle();
+  $("title").value = "Edited title";
+  $("markdown").value = "Edited text\n";
+  await click($("btnPreviewIntake"));
+  check(!$("frontMatterNote").hidden && !!buttonSaying($("review"), "File as candidate") && $("convertNotes").textContent.length > 0,
+    "with a converted file, its notes, edits and a preview of filing it");
+  let pickerOpened = false;
+  $("file").addEventListener("click", () => { pickerOpened = true; });
+  await click($("btnChooseAnother"));
+  check(pickerOpened && !$("stepConvert").hidden, "Choose another file opens the file picker, changing nothing yet");
+  let releaseAnother;
+  stageDelay = { gate: new Promise((r) => { releaseAnother = r; }), answer: fixture.stage };
+  await vm.runInThisContext("stageFile")({ name: "site-notes.md" });
+  await settle();
+  check(vm.runInThisContext("staged") === null && $("title").value === "" && $("markdown").value === ""
+    && $("frontMatterNote").hidden && $("convertNotes").textContent === "" && $("stagedInfo").textContent === ""
+    && !$("review").firstChild && $("stepConvert").hidden && !$("stepFile").hidden,
+    "once another file is chosen, the earlier conversion, its notes, the edits and the preview are gone at once");
+  releaseAnother();
+  await settle();
+  check(vm.runInThisContext("staged").filename === fixture.stage.filename && $("title").value === fixture.stage.suggested_title
+    && $("markdown").value === fixture.stage.markdown && $("frontMatterNote").hidden
+    && $("stagedInfo").textContent.indexOf(fixture.stage.filename) === 0 && !$("stepConvert").hidden,
+    "and the new file's conversion fills the form, with nothing left from the first");
+  stageAnswer = fixture.stage;
+  await navTo("candidates");
+
   console.log("\nA conversion that answers late never fills a form it no longer belongs to");
   const late = Object.assign({}, fixture.stage, { filename: "late.md", markdown: "LATE TEXT\n", suggested_title: "Late" });
   const hold = () => { let release; const gate = new Promise((r) => { release = r; }); stageDelay = { gate, answer: late }; return release; };
   const staged = () => vm.runInThisContext("staged");
   const intakeEmpty = () => staged() === null && $("markdown").value === "" && $("title").value === ""
-    && $("stepConvertBody").getAttribute("inert") !== null;
+    && $("stepConvert").hidden && !$("stepFile").hidden;
   clearToasts();
   await click($("btnAddDocument"));
   let release = hold();
@@ -1221,7 +1322,7 @@ for (const file of ["markdown.js", "app.js"]) {
     "and the preview's diff shows the old block being removed");
   vm.runInThisContext("closeReview")();
 
-  console.log("\nNavigating shows fresh data, and keeps unfinished work");
+  console.log("\nNavigating shows fresh data; Create candidate never keeps a half-done session");
   await click($("btnAddDocument"));
   $("title").value = "Half-typed title";
   currentState = Object.assign({}, fixture.state_valid, { documents: fixture.state_valid.documents.concat([
@@ -1234,7 +1335,8 @@ for (const file of ["markdown.js", "app.js"]) {
     && navItem("candidates").querySelector(".tally").textContent === `(${candCount + 1})`,
     "a navigation reads the state now, and lists what changed — writing nothing");
   await click($("btnAddDocument"));
-  check($("title").value === "Half-typed title", "going back to Create candidate finds the half-typed title");
+  check($("title").value === "" && $("stepConvert").hidden,
+    "going back to Create candidate starts fresh: the half-typed title is gone");
   $("title").value = "";
   currentState = fixture.state_valid;
 
@@ -1242,7 +1344,7 @@ for (const file of ["markdown.js", "app.js"]) {
   check(!$("btnRefresh") && !$("refreshStatus")
     && !document.querySelectorAll("button").some((b) => /Check again|Checking/.test(b.textContent))
     && !$("btnSwitch").hidden,
-    "the top bar has no Check again button and no “Checked” status; Open another Agent Context remains");
+    "the top bar has no Check again button and no “Checked” status; Open Agent Context… remains");
   $("title").value = "Still typing";
   await reload();
   check($("title").value === "Still typing", "reading the folder again keeps what was being typed");
@@ -1253,20 +1355,20 @@ for (const file of ["markdown.js", "app.js"]) {
 
   console.log("\nAn ordinary edit: agents refused, the reason, and Rebuild");
   await show("state_invalid");
-  check($("barState").textContent === "Agents are refused" && $("metaAgents").textContent === "Refused",
-    "the header and rail say agents are refused");
+  check($("barState").textContent === "Agent context unavailable" && $("barState").querySelector(".chip").classList.contains("stale")
+    && $("metaAgents").textContent === "Unavailable",
+    "the header and rail say Agent context unavailable, in the error treatment");
   check($("refusedCard") && /Rebuild Agent Context/.test($("refusedCard").querySelector("h3").textContent)
     && $("refusedCard").querySelectorAll(".issues li").length > 0, "the status says why, and what to do next");
   check($("btnRebuildFromStatus") && !$("btnRebuildContext").hidden, "Rebuild Agent Context is offered");
   check($("outsideNotice") && /authoritative\/a\.md/.test($("outsideNotice").textContent) && !$("btnAcknowledge"),
     "the document changed outside Charter is named; it cannot be marked seen while refused");
-  check(/Does not match the governing documents/.test($("contextMapState").textContent), "the map is said not to match");
+  check($("contextMapState").textContent === "Map out of date" && $("contextMapState").querySelector(".chip").classList.contains("stale"),
+    "the map's status reads Map out of date, in the error treatment");
   const withdraw = buttonSaying(rowOf("governingList", "Beta"), "Withdraw in a change set…");
-  const changeIt = buttonSaying(rowOf("governingList", "Beta"), "Change in a change set…");
-  check(withdraw.disabled && changeIt.disabled && !withdraw.getAttribute("title")
+  check(withdraw.disabled && !withdraw.getAttribute("title")
     && !$("governingUnavailable").hidden && /valid and clean/.test($("governingUnavailable").textContent)
-    && withdraw.getAttribute("aria-describedby") === "governingUnavailable"
-    && changeIt.getAttribute("aria-describedby") === "governingUnavailable",
+    && withdraw.getAttribute("aria-describedby") === "governingUnavailable",
     "governing changes are unavailable, and say why in one visible line that describes each, not a tooltip");
   const firstCandidate = $("candidatesList").querySelectorAll(".doc")[0];
   const planIt = firstCandidate && buttonSaying(firstCandidate, "Plan a change set…");
@@ -1288,7 +1390,7 @@ for (const file of ["markdown.js", "app.js"]) {
 
   console.log("\nAfter Rebuild: served, and still shown as changed outside");
   await show("state_rebuilt");
-  check($("barState").textContent === "Agents are served" && /Rebuild Agent Context regenerated/.test($("outsideNotice").textContent)
+  check($("barState").textContent === "Agent context ready" && /Rebuild Agent Context regenerated/.test($("outsideNotice").textContent)
     && /authoritative\/a\.md/.test($("outsideNotice").textContent), "served, and the outside change is still named");
   check($("governingUnavailable").hidden && $("candidatesUnavailable").hidden
     && !buttonSaying(rowOf("governingList", "Beta"), "Withdraw in a change set…").getAttribute("aria-describedby"),
@@ -1325,6 +1427,27 @@ for (const file of ["markdown.js", "app.js"]) {
   check(!$("btnApply").disabled, "then Rebuild can apply");
   vm.runInThisContext("closeReview")();
 
+  console.log("\nSettings: a subtitle under the heading, and two-line guidance options");
+  await show("state_valid");
+  await navTo("settings");
+  const settingsView = $("view-settings");
+  check($("settingsIntro").textContent === "Settings are reflected in AGENT-CONTEXT.md, which agents read."
+    && settingsView.children[settingsView.children.indexOf(settingsView.querySelector(".view-head")) + 1] === $("settingsIntro")
+    && settingsView.children.indexOf($("settingsIntro")) < settingsView.children.indexOf($("settingsForm")),
+    "the subtitle sits directly under Settings, before the Project name field");
+  const guidance = $("settingsGuidance").querySelectorAll("label.choice");
+  check(guidance.map((l) => l.querySelector("strong").textContent).join(" | ")
+      === "Context check-in | Assess proposal impact | Review discovered material"
+    && guidance.map((l) => l.querySelector(".hint").textContent).join(" | ") === [
+      "After reading the context map and relevant governing documents, the agent sends a brief check-in naming the documents it read.",
+      "Before proposing a change, the agent checks for duplication, overlap, conflicts, and unresolved decisions.",
+      "The agent compares relevant non-governing material with the governing documents and raises material concerns for human review."].join(" | "),
+    "each option has its short label and its sentence");
+  check(guidance.every((l) => l.children[0].tagName === "INPUT" && l.children[1].children[0].tagName === "STRONG"
+      && l.children[1].children[1].classList.contains("hint"))
+    && /display:\s*grid/.test(rule(css, ".settings-guidance .choice")) && /display:\s*grid/.test(rule(css, ".settings-guidance .choice > span")),
+    "two lines each: the checkbox and label, then a quieter sentence beneath the label");
+
   console.log("\nSettings: previewed, never the typed phrase");
   await show("state_valid");
   await navTo("settings");
@@ -1340,61 +1463,32 @@ for (const file of ["markdown.js", "app.js"]) {
   await show("state_invalid");
   check($("settingsUnavailable") && !$("btnPreviewSettings"), "while the context is not valid, settings say why they wait");
 
-  console.log("\nGit: a compact read-only summary, the files on request");
+  console.log("\nGit: a compact read-only summary, the branch and a count, and no file list");
   await show("state_git");
-  const gitToggle = $("gitDetailsToggle");
   check(!$("metaBranch").hidden && $("metaGitLabel").textContent === "Git branch" && $("metaBranch").textContent === "feature/scope"
     && !$("metaChanged").hidden && $("metaChangedLabel").textContent === "Context files changed"
-    && $("metaChangedCount").textContent === "1" && $("gitDetailsPanel").hidden
-    && $("contextMeta").querySelectorAll("li").every((li) => li.parentNode === $("gitChanged")),
-    "in a Git checkout the rail shows the branch and the count; the file list stays closed");
-  check(!gitToggle.hidden && gitToggle.getAttribute("type") === "button"
-    && gitToggle.getAttribute("aria-expanded") === "false" && gitToggle.getAttribute("aria-controls") === "gitDetailsPanel"
-    && gitToggle.getAttribute("aria-label") === "Show the changed context file"
-    && $("gitDetailsPanel").getAttribute("aria-labelledby") === "metaChangedLabel"
-    && !$("contextMeta").querySelectorAll("button").some((b) => b !== gitToggle),
-    "beside the count, one labelled control for the files — and no other Git control");
-  gitToggle.focus();
-  await click(gitToggle);
-  check(!$("gitDetailsPanel").hidden && gitToggle.getAttribute("aria-expanded") === "true"
-    && $("gitChanged").querySelectorAll("li").length === 1 && /context\/authoritative\/a\.md/.test($("gitChanged").textContent)
-    && $("gitChanged").getAttribute("tabindex") === "0"
-    && !/does not stage|commit when|diff/i.test($("gitDetailsPanel").textContent)
-    && !$("gitDetailsPanel").querySelectorAll("button").length,
-    "activating it lists the changed context files — read-only: no diffs, no Git controls, no tutorial");
-  document.dispatch("keydown", { key: "Escape" });
-  check($("gitDetailsPanel").hidden && gitToggle.getAttribute("aria-expanded") === "false"
-    && document.activeElement === gitToggle, "Escape closes it, and focus returns to the control");
-  await click(gitToggle);
-  document.dispatch("click", { target: $("main") });
-  check($("gitDetailsPanel").hidden, "a click elsewhere closes it");
-  await click(gitToggle);
-  $("gitDetails").dispatch("focusout", { relatedTarget: $("btnSwitch") });
-  check($("gitDetailsPanel").hidden, "moving focus out of it closes it");
-  await click(gitToggle);
-  $("gitDetails").dispatch("focusout", { relatedTarget: $("gitChanged") });
-  check(!$("gitDetailsPanel").hidden, "moving focus within it, to the file list, keeps it open");
-  await click(gitToggle);
-  check($("gitDetailsPanel").hidden, "and the control itself closes it again");
-
+    && $("metaChangedCount").textContent === "1" && $("metaChanged").textContent === "1",
+    "in a Git checkout the sidebar shows the branch and the number of changed context files");
+  check(!$("gitDetailsToggle") && !$("gitDetailsPanel") && !$("gitChanged")
+    && !$("contextMeta").querySelectorAll("button").length && !$("contextMeta").querySelectorAll("li").length
+    && !/authoritative\/a\.md/.test($("contextMeta").textContent),
+    "it offers no control that expands a list of those files, and names none of them");
   const many = JSON.parse(JSON.stringify(fixture.state_git));
   many.status.git.changed = ["context/a.md", "context/b.md", "context/c.md"];
   currentState = many;
   await reload();
-  check($("metaChangedCount").textContent === "3" && gitToggle.getAttribute("aria-label") === "Show the 3 changed context files"
-    && $("gitChanged").querySelectorAll("li").length === 3, "the control names how many files it shows");
-
+  check($("metaChangedCount").textContent === "3" && !$("contextMeta").querySelectorAll("button").length,
+    "three changed files: the count, still with no file list");
   await show("state_git_clean");
-  check($("metaBranch").textContent === "main" && $("metaChangedCount").textContent === "0"
-    && gitToggle.hidden && $("gitDetailsPanel").hidden && !$("gitChanged").querySelectorAll("li").length,
-    "a checkout with no changed context files: 0, and no control");
+  check($("metaBranch").textContent === "main" && $("metaChangedCount").textContent === "0",
+    "a checkout with no changed context files: 0");
   await show("state_git_unreadable");
   check($("metaChangedCount").textContent === "Could not be read" && $("metaBranch").textContent === "main"
-    && gitToggle.hidden && !/\b0\b/.test($("metaChanged").textContent),
-    "when Git status could not be read, it says so — never 0, and no control");
+    && !/\b0\b/.test($("metaChanged").textContent),
+    "when Git status could not be read, it says so — never 0");
   await show("state_git_unavailable");
-  check($("metaBranch").textContent === "Git unavailable" && $("metaChanged").hidden && $("metaChangedLabel").hidden
-    && gitToggle.hidden, "when Git cannot be run: Git unavailable, and no count");
+  check($("metaBranch").textContent === "Git unavailable" && $("metaChanged").hidden && $("metaChangedLabel").hidden,
+    "when Git cannot be run: Git unavailable, and no count");
 
   console.log("\nAn interrupted write rolled back on opening is said once");
   await show("state_recovered");
@@ -1434,13 +1528,12 @@ for (const file of ["markdown.js", "app.js"]) {
     "the navigation counts waiting proposals, stale ones in words too");
   await navTo("proposals");
   check(lastCall("/api/proposals") && !$("view-proposals").hidden, "opening the area reads the proposals now");
-  check(/never changes governing context/.test($("aboutProposalsBody").textContent)
-    && /charter propose --context \./.test($("aboutProposalsBody").textContent),
-    "its information control says how agents file, and that accepting never changes what governs");
+  check(!$("aboutProposals") && !$("aboutProposalsToggle") && !$("view-proposals").querySelector(".info-toggle"),
+    "its header carries no information icon or explanatory panel");
   check($("view-proposals").querySelector(".lede").textContent
-    === "Review proposals from agents. Once you accept one, it becomes an authority candidate."
-    && !!$("btnImportProposal"),
-    "its introduction says accepting one makes an authority candidate, beside Import proposal");
+    === "Accepted proposals become authority candidates."
+    && $("view-proposals").querySelectorAll(".lede").length === 1 && !!$("btnImportProposal"),
+    "its subtitle reads exactly “Accepted proposals become authority candidates.”, beside Import agent proposal…");
   const keptPending = fixture.proposals.pending;
   fixture.proposals.pending = [];
   await vm.runInThisContext("renderAgentProposals")();
@@ -1450,30 +1543,66 @@ for (const file of ["markdown.js", "app.js"]) {
   fixture.proposals.pending = keptPending;
   await vm.runInThisContext("renderAgentProposals")();
   const cards = $("pendingProposals").querySelectorAll(".proposal");
-  const fresh = cards.find((c) => c.getAttribute("data-id") === fixture.proposal_pending);
-  const staleCard = cards.find((c) => c.getAttribute("data-id") === fixture.proposal_stale);
-  check(cards.length === fixture.proposals.pending.length && fresh && staleCard, "each pending proposal has a card");
-  check(/Create/.test(fresh.querySelector("header").textContent)
-    && fresh.querySelector(".proposal-target").textContent === "authority-candidates/release-rule.md"
-    && /from codex \(self-reported\)/.test(fresh.querySelector(".proposal-meta").textContent)
-    && /Releases need a written rule\./.test(fresh.querySelector(".proposal-reason").textContent),
-    "a card says what it proposes, for which target, from whom by its own account, and why");
-  const impactToggle = fresh.querySelector(".disclosure-toggle");
-  check(impactToggle && /the agent's assessment, advisory/.test(impactToggle.textContent)
-    && impactToggle.getAttribute("aria-expanded") === "false",
-    "the expected context impact is the agent's advisory claim, closed until asked for");
-  check(staleCard.classList.contains("is-stale") && /Stale/.test(staleCard.querySelector("header").textContent)
-    && /cannot be accepted as written/.test(staleCard.textContent)
-    && buttonSaying(staleCard, "Review and accept…").disabled && !buttonSaying(staleCard, "Reject…").disabled,
-    "a stale proposal says why, cannot be accepted, and can still be rejected");
+  const cardOf = (id) => document.querySelectorAll(".proposal").find((c) => c.getAttribute("data-id") === id);
+  const fresh = cardOf(fixture.proposal_pending);
+  const staleCard = cardOf(fixture.proposal_stale);
+  const titled = cardOf(fixture.proposal_titled);
+  const untitled = cardOf(fixture.proposal_untitled);
+  const imported = cardOf(fixture.proposal_imported);
+  const importedCreate = cardOf(fixture.proposal_imported_create);
+  const titleOf = (c) => c.querySelector("h4.proposal-title").textContent;
+  check(cards.length === fixture.proposals.pending.length && fresh && staleCard && untitled && importedCreate,
+    "each pending and imported proposal has a card");
+  check(titleOf(titled) === "Release checklist" && titled.getAttribute("aria-labelledby") === titled.querySelector("h4").getAttribute("id")
+    && !/Proposed title/.test(titled.textContent),
+    "a create leads with the title it supplies, with no operation word or Proposed title badge");
+  check(titleOf(fresh) === "Release rule" && !fresh.querySelector("h4 code") && !/Logical path/.test(fresh.textContent),
+    "a directly filed create with no supplied title is titled by its body's first heading");
+  check(titleOf(importedCreate) === "Imported rule" && !/Logical path/.test(importedCreate.textContent),
+    "so is an imported create");
+  check(titleOf(untitled) === "authority-candidates/untitled-rule.md" && !!untitled.querySelector("h4 code.proposal-target")
+    && /Logical path — no title found/.test(untitled.querySelector("header").textContent),
+    "only with no title and no heading does a card lead with the logical path, labelled as a path");
+  check(titleOf(imported) === "Beta" && titleOf(staleCard) === "Unscoped idea",
+    "an amendment leads with the current title of the governing document or candidate it targets");
+  const allCards = document.querySelectorAll(".proposal");
+  check(allCards.every((c) => !/^(Create|Amend|Retire)\b/.test(titleOf(c)) && !c.querySelector(".proposal-op")),
+    "no card leads with an operation word");
+  check(allCards.every((c) => !/\bp-\d{8}-[0-9a-f]+/.test(c.textContent)),
+    "no card shows an internal p-… identifier");
+  check(fresh.querySelector(".proposal-meta").textContent.replace(/\s+/g, " ").trim()
+      === `Submitted by: codex · Received: ${vm.runInThisContext("relativeTime")(fixture.proposals.pending.find((p) => p.proposal_id === fixture.proposal_pending).received)}`
+    && fresh.querySelector(".proposal-meta").querySelectorAll("strong").map((s) => s.textContent).join("|") === "Submitted by:|Received:"
+    && fresh.querySelector("header").textContent.indexOf("codex") === -1,
+    "one metadata line: Submitted by and Received, below the title, never in it");
+  check(/^Submitted by: chat-agent, imported by you · Received: /.test(imported.querySelector(".proposal-meta").textContent.replace(/\s+/g, " ").trim()),
+    "an imported proposal says it was imported by you");
+  check(!/self-reported|Target:/.test(allCards.map((c) => c.textContent).join(" ")),
+    "the metadata line is clean: no self-reported note, no target line");
+  const preview = $(`proposalReason-${fixture.proposal_titled}`);
+  check(preview.classList.contains("proposal-reason-preview") && preview.textContent === "Purpose: " + fixture.proposal_titled_reason
+    && /white-space:\s*nowrap/.test(rule(css, ".proposal-reason-preview"))
+    && /text-overflow:\s*ellipsis/.test(rule(css, ".proposal-reason-preview"))
+    && /overflow:\s*hidden/.test(rule(css, ".proposal-reason-preview")),
+    "the purpose is a one-line preview on screen, at any width, its whole text there for a screen reader");
+  check(!/padding/.test(rule(css, ".proposal > header")) && /margin:\s*0;/.test(rule(css, ".proposal-reason-preview"))
+    && /gap:\s*\.3rem/.test(rule(css, ".proposal")),
+    "a card is compact: no leading space before its title, and tight spacing between its lines");
+  check(allCards.every((c) => !c.querySelectorAll(".disclosure-toggle").length && !c.querySelector("pre")
+      && c.querySelector(".proposal-open-row").querySelectorAll("button").map((b) => b.textContent).join() === "Review proposal…,Reject proposal"
+      && c.querySelector(".proposal-detail").hidden),
+    "a list card stays compact: its review collapsed, and two actions, Review proposal… and Reject proposal");
+  check(staleCard.classList.contains("is-stale") && /Stale/.test(staleCard.querySelector("header").textContent),
+    "a stale proposal is marked stale in the list");
   check(!$("proposalsImportedGroup").hidden
-    && $("importedProposals").querySelectorAll(".proposal").length === fixture.proposals.imported.length
-    && /imported/.test($("importedProposals").querySelector(".proposal-meta").textContent),
+    && $("importedProposals").querySelectorAll(".proposal").length === fixture.proposals.imported.length,
     "imported proposals are listed apart");
   const odd = $("unexpectedRecords").querySelector(".unexpected-record");
   check(!$("proposalsUnexpectedGroup").hidden && odd && /dropped-in\.json/.test(odd.textContent)
-    && /Unexpected — not a proposal/.test(odd.textContent) && !buttonSaying(odd, "Review and accept…"),
-    "an unexpected local record is shown apart, never as a proposal, and cannot be accepted");
+    && /Unexpected — not a proposal/.test(odd.textContent) && !buttonSaying(odd, "Review proposal…")
+    && odd.querySelector(".title-row .chip").textContent === "Unexpected — not a proposal"
+    && !odd.querySelector(".actions .chip"),
+    "an unexpected local record is shown apart, never as a proposal, and cannot be reviewed as one");
   await click(buttonSaying(odd, "View contents"));
   check(lastCall("/api/proposals/unexpected").body.name === "dropped-in.json"
     && $("unexpectedText").textContent === fixture.unexpected_view.text
@@ -1481,54 +1610,278 @@ for (const file of ["markdown.js", "app.js"]) {
     "its contents can be viewed, as text, changing nothing");
   vm.runInThisContext("closeReview")();
 
-  console.log("\nAccepting: previewed, ordinary confirmation, a candidate only");
-  await click(buttonSaying(fresh, "Review and accept…"));
-  check(JSON.stringify(lastPlan().body) === JSON.stringify({ kind: "accept-proposal",
-    request: { proposal_id: fixture.proposal_pending } }), "it previews accepting exactly this proposal");
-  check(/never changes governing context/.test($("review").textContent) && !$("confirmPhrase")
-    && $("review").querySelectorAll(".file-toggle .why").every((n) => n.textContent === "Private local state — not agent-visible"),
-    "the preview says it changes no governing context, every write is private, and no phrase is asked");
-  const acceptedRow = $("review").querySelectorAll(".file-item")
+  check(/font-weight:\s*700/.test(rule(css, ".proposal-meta strong")) && /color:\s*var\(--ink\)/.test(rule(css, ".proposal-meta strong"))
+    && /display:\s*flex/.test(rule(css, ".proposal .proposal-open-row")) && /flex-direction:\s*row/.test(rule(css, ".proposal .proposal-open-row"))
+    && /flex-wrap:\s*wrap/.test(rule(css, ".proposal .proposal-open-row")),
+    "Submitted by: and Received: are visibly bold, and a card's actions share one row, wrapping only when too narrow");
+  check(document.querySelectorAll(".proposal").every((c) => {
+      const row = c.querySelector(".proposal-open-row");
+      const buttons = row.querySelectorAll("button");
+      return buttons.length === 2 && buttons.every((btn) => btn.parentNode === row)
+        && !buttons[1].classList.contains("proposal-reject") && buttons[1].classList.contains("proposal-reject-open");
+    }) && /display:\s*grid/.test(rule(css, ".proposal-reject")),
+    "Review proposal… and Reject proposal sit side by side in the one row; the button no longer takes the rejection form's block layout");
+  check(!$("proposalsImportedGroup").querySelector(".hint") && $("proposalsImportedTitle").textContent === "Imported by You",
+    "Imported by You is its heading alone, with no explanatory sentence");
+  check(/background:\s*#fff/.test(rule(css, ".btn")) && /border:\s*1px solid var\(--rule-strong\)/.test(rule(css, ".btn"))
+    && !/background:\s*var\(--ink\)/.test(rule(css, ".btn"))
+    && !/\.btn\.(danger|authority|primary)\b/.test(css) && !/\.btn\.ghost/.test(css)
+    && /opacity:\s*\.45/.test(rule(css, ".btn:disabled")),
+    "one shared button treatment: white, ink text, a light outline — no filled, danger, authority or alternate ghost variant; disabled stays distinct");
+  const appSource = fs.readFileSync(path.join(STATIC, "app.js"), "utf8");
+  check(!/"btn (danger|authority)"|btn primary|class: "close"|"linkish toast/.test(appSource) && !/applyClass/.test(appSource),
+    "no action button is given a separately coloured class: Apply, Accept, Reject, Retire, Close and toast actions included");
+  check(document.querySelectorAll(".proposal button").every((x) => x.classList.contains("btn")
+      && !x.classList.contains("danger") && !x.classList.contains("authority")),
+    "Review proposal… and Reject proposal use the shared treatment");
+
+  console.log("\nReview proposal…: the same card, expanded in place");
+  const titledDetail = titled.querySelector(".proposal-detail");
+  await click(buttonSaying(titled, "Review proposal…"));
+  check(!titledDetail.hidden && titled.classList.contains("is-expanded") && !$("review").firstChild
+    && !$("proposalReview") && !$("reviewPanel"),
+    "Review proposal… expands the card itself; no separate review panel opens");
+  check(/white-space:\s*pre-wrap/.test(rule(css, ".proposal.is-expanded .proposal-reason-preview"))
+    && preview.textContent === "Purpose: " + fixture.proposal_titled_reason,
+    "expanded, the card's own Purpose shows the complete purpose, word for word");
+  /* What the expanded detail shows on screen: each file's diff stays collapsed
+     inside its own row until the person opens it. */
+  const shownText = (root) => root.querySelectorAll(".file-detail").reduce(
+    (text, region) => text.replace(region.textContent, ""), root.textContent);
+  check(titledDetail.querySelectorAll(".file-detail").every((r) => r.hidden),
+    "each changed file's diff starts collapsed in its own row");
+  check(titled.querySelectorAll("h4").length === 1 && !titled.querySelectorAll("h5").length && titled.querySelectorAll(".proposal-meta").length === 1
+    && shownText(titledDetail).indexOf(fixture.proposal_titled_reason) === -1
+    && shownText(titledDetail).indexOf("Release checklist") === -1 && !/Submitted by|Purpose/.test(shownText(titledDetail)),
+    "the card's heading, metadata line and Purpose are the only summary: none is repeated below");
+  check(JSON.stringify(lastPlan().body) === JSON.stringify({ kind: "accept-proposal", request: { proposal_id: fixture.proposal_titled } })
+    && !!titledDetail.querySelector(".file-list") && !titledDetail.querySelector(".proposal-candidate") && !titledDetail.querySelector(".md")
+    && !/Tag every release\./.test(shownText(titledDetail)),
+    "it shows each changed file's row, without rendering the candidate's title and body again");
+  check(!/Expected Context Impact|advisory, not verified|does not govern|Target:|recommended_relationship/.test(titledDetail.textContent)
+    && !titledDetail.querySelectorAll(".file-path").some((n) => /^Agent Proposal /.test(n.textContent)),
+    "no impact, explainer banner, or the proposal's own private record");
+  const decisions = titledDetail.querySelector(".proposal-decisions");
+  check(decisions && decisions === titledDetail.children[titledDetail.children.length - 1]
+    && decisions.querySelectorAll("button").map((b) => b.textContent).join("|") === "Accept as candidate|Reject proposal|Close review"
+    && !$("btnAcceptProposal").disabled,
+    "Accept as candidate and Reject proposal sit together at the end of the expanded card");
+  const acceptedRow = titledDetail.querySelectorAll(".file-item")
     .find((li) => li.querySelector(".file-path").textContent === fixture.accepted_path);
   await click(buttonSaying(acceptedRow, "Read"));
   check(/As this preview would leave it/.test($("docViewer").querySelector(".reader-banner").textContent)
-    && /Tag every release\./.test($("docViewer").textContent), "the candidate it would file can be read first");
+    && /Tag every release\./.test($("docViewer").textContent), "the file's Read opens the candidate as it would be");
   await click(buttonSaying($("docViewer"), "Close"));
-  await click(buttonSaying($("review"), "Accept as candidate"));
-  check(lastCall("/api/apply").body.kind === "accept-proposal" && lastCall("/api/apply").body.confirm === true,
-    "accepting applies with an ordinary confirmation");
-  check(/Only an authority candidate changed — not context\./.test(toastNow().textContent)
-    && !!buttonSaying(toastNow(), "Go to Authority Candidates"),
-    "the message says only a candidate changed, with the way to it");
+  await click(buttonSaying(titled, "Close review"));
+  check(titledDetail.hidden && !titledDetail.firstChild && !titled.classList.contains("is-expanded")
+    && !!buttonSaying(titled, "Review proposal…") && !$("btnAcceptProposal"),
+    "Close review collapses the card and clears what the review prepared");
+  await click(buttonSaying(titled, "Review proposal…"));
+  await click(buttonSaying(fresh, "Review proposal…"));
+  check(titledDetail.hidden && !fresh.querySelector(".proposal-detail").hidden
+    && document.querySelectorAll(".proposal.is-expanded").length === 1,
+    "reviewing another proposal collapses the first: one review at a time");
+
+  console.log("\nLeaving Agent Proposals collapses the review and clears its state");
+  let releasePlan;
+  const planGate = new Promise((r) => { releasePlan = r; });
+  const realFetch = global.fetch;
+  global.fetch = async (url, options) => (url === "/api/plan" ? planGate.then(() => realFetch(url, options)) : realFetch(url, options));
+  await click(buttonSaying(staleCard, "Close review") || buttonSaying(fresh, "Close review"));
+  await click(buttonSaying(titled, "Review proposal…"));
+  await navTo("governing");
+  releasePlan();
+  await settle();
+  global.fetch = realFetch;
+  check(!document.querySelectorAll(".proposal.is-expanded").length && titledDetail.hidden && !titledDetail.firstChild
+    && !$("btnAcceptProposal"),
+    "leaving collapses it, and a preview still on its way is dropped");
+  await navTo("proposals");
+  check(!document.querySelectorAll(".proposal.is-expanded").length
+    && document.querySelectorAll(".proposal").every((c) => c.querySelector(".proposal-detail").hidden),
+    "back in Agent Proposals, every card is compact");
+
+  console.log("\nAccepting: one final action, a candidate only");
+  const freshNow = cardOf(fixture.proposal_pending);
+  await click(buttonSaying(freshNow, "Review proposal…"));
+  const plansBeforeAccept = calls.filter((c) => c.url === "/api/plan").length;
+  await click($("btnAcceptProposal"));
+  check(calls.filter((c) => c.url === "/api/plan").length === plansBeforeAccept
+    && lastCall("/api/apply").body.kind === "accept-proposal" && lastCall("/api/apply").body.confirm === true
+    && lastCall("/api/apply").body.plan_id === fixture.plans["accept-proposal"].plan_id
+    && JSON.stringify(lastCall("/api/apply").body.request) === JSON.stringify({ proposal_id: fixture.proposal_pending }),
+    "Accept as candidate applies the plan already shown: no second preview, apply screen, or Accept click");
+  check(!document.querySelectorAll(".proposal.is-expanded").length && !$("btnAcceptProposal"),
+    "the expanded review closes once the proposal is accepted");
+  check(/^Accept as candidate: “[^”]+” becomes a private authority candidate\.$/.test(fixture.plans["accept-proposal"].summary)
+    && !/file “/i.test(fixture.plans["accept-proposal"].summary) && !/does not govern/.test(fixture.plans["accept-proposal"].summary),
+    "the acceptance summary names the candidate by friendly title, never “file <name>”");
+  check(toastNow().textContent === "Proposal accepted." && !toastNow().querySelectorAll("button").length
+    && !toastNow().querySelectorAll("a").length && toastNow().getAttribute("role") === "status",
+    "the notice says exactly “Proposal accepted.”: no button, link, document name or other detail");
   clearToasts();
 
-  console.log("\nRejecting records why");
-  await click(buttonSaying($("pendingProposals").querySelectorAll(".proposal")[0], "Reject…"));
-  $("formField-reason").value = "Not now.";
-  await click(buttonSaying($("review"), "Preview the rejection"));
+  console.log("\nRejecting: in the same card, with a reason");
+  const staleNow = cardOf(fixture.proposal_stale);
+  await click(buttonSaying(staleNow, "Review proposal…"));
+  check($("btnAcceptProposal").disabled && !$("btnRejectProposal").disabled
+    && /cannot be accepted as written/.test($("proposalReviewStale").textContent)
+    && $(`proposalReason-${fixture.proposal_stale}`).textContent === "Purpose: Refine the idea.",
+    "a stale proposal says why, cannot be accepted, and can still be rejected — its purpose shown in full first");
+  await click($("btnRejectProposal"));
+  check(!!$("proposalRejectReason") && insideOf($("proposalRejectReason"), staleNow) && !$("review").firstChild
+    && labelFor(staleNow, "proposalRejectReason").textContent === "Reason (optional)",
+    "Reject proposal asks why, inside the same card");
+  $("proposalRejectReason").value = "Not now.";
+  await click($("btnConfirmReject"));
   check(lastPlan().body.kind === "reject-proposal" && lastPlan().body.request.reason === "Not now."
-    && buttonSaying($("review"), "Reject proposal").className.indexOf("danger") !== -1 && !$("confirmPhrase"),
-    "rejecting previews the decision with its reason, confirmed ordinarily");
-  vm.runInThisContext("closeReview")();
-
-  console.log("\nImporting a proposal an agent returned");
-  await click($("btnImportProposal"));
-  check($("importJson") && /checked exactly as `charter propose` checks it/.test($("review").textContent),
-    "Import proposal asks for the JSON, and says it is checked as the command checks it");
-  $("importJson").value = JSON.stringify(Object.assign(JSON.parse(fixture.import_returned), { base_commit: "abc123" }));
-  await click($("btnCheckImport"));
-  check($("importProblems") && /base_commit/.test($("importProblems").textContent) && !$("btnFileImport"),
-    "a field that is not allowed is named, and nothing can be filed");
-  $("importJson").value = fixture.import_returned;
-  await click($("btnCheckImport"));
-  check(/chat-agent \(self-reported\)/.test($("importSummary").textContent) && $("btnFileImport"),
-    "a proposal that passes is summarized, ready to file");
-  check(!calls.some((c) => c.url === "/api/proposals/import"), "checking files nothing");
-  await click($("btnFileImport"));
-  check(lastCall("/api/proposals/import").body.confirm === true
-    && /as an imported proposal, for review\. It is not context\./.test(toastNow().textContent),
-    "filing it is the person's confirmed action, and it is not context");
+    && lastPlan().body.request.proposal_id === fixture.proposal_stale
+    && lastCall("/api/apply").body.kind === "reject-proposal" && lastCall("/api/apply").body.confirm === true
+    && !$("confirmPhrase"),
+    "confirming rejects it with that reason, recorded ordinarily");
   clearToasts();
+
+  console.log("\nReject proposal, straight from the compact card");
+  await navTo("governing");
+  await navTo("proposals");
+  const directCard = cardOf(fixture.proposal_titled);
+  const directDetail = directCard.querySelector(".proposal-detail");
+  const plansBeforeDirect = calls.filter((c) => c.url === "/api/plan").length;
+  await click(buttonSaying(directCard, "Reject proposal"));
+  check(!directDetail.hidden && !!$("proposalRejectReason") && insideOf($("proposalRejectReason"), directCard)
+    && labelFor(directCard, "proposalRejectReason").textContent === "Reason (optional)"
+    && !directCard.classList.contains("is-expanded") && directCard.classList.contains("is-rejecting")
+    && !directDetail.querySelector(".file-list") && !$("btnAcceptProposal") && !$("review").firstChild
+    && calls.filter((c) => c.url === "/api/plan").length === plansBeforeDirect,
+    "it asks for a concise reason inside the card, without opening the review or previewing acceptance");
+  check(directCard.querySelector(".proposal-open-row").hidden
+    && directDetail.querySelectorAll("button").map((b) => b.textContent).join("|") === "Reject proposal|Cancel",
+    "while the reason is asked for, the card offers only Reject proposal and Cancel");
+  await click($("btnCancelReject"));
+  check(directDetail.hidden && !directDetail.firstChild && !directCard.classList.contains("is-rejecting")
+    && !directCard.querySelector(".proposal-open-row").hidden && !calls.some((c) => c.url === "/api/plan"
+      && c.body.kind === "reject-proposal" && c.body.request.proposal_id === fixture.proposal_titled),
+    "Cancel leaves the card compact again, having rejected nothing");
+  await click(buttonSaying(directCard, "Reject proposal"));
+  $("proposalRejectReason").value = "Typed, then left";
+  await navTo("governing");
+  await navTo("proposals");
+  const directAgain = cardOf(fixture.proposal_titled);
+  check(directAgain.querySelector(".proposal-detail").hidden && !$("proposalRejectReason")
+    && !document.querySelectorAll(".proposal.is-rejecting").length,
+    "leaving Agent Proposals discards a reason being typed");
+  await click(buttonSaying(directAgain, "Reject proposal"));
+  await click(buttonSaying(cardOf(fixture.proposal_untitled), "Review proposal…"));
+  check(!directAgain.classList.contains("is-rejecting") && document.querySelectorAll(".proposal.is-expanded").length === 1,
+    "opening another card's review closes the rejection: one card at a time");
+  await click(buttonSaying(cardOf(fixture.proposal_untitled), "Close review"));
+  await click(buttonSaying(directAgain, "Reject proposal"));
+  $("proposalRejectReason").value = "  ";
+  await click($("btnConfirmReject"));
+  check(lastPlan().body.kind === "reject-proposal" && lastPlan().body.request.proposal_id === fixture.proposal_titled
+    && !("reason" in lastPlan().body.request) && lastCall("/api/apply").body.kind === "reject-proposal"
+    && !document.querySelectorAll(".toast.error").length,
+    "with no reason, it is still rejected, and no error asks for one");
+  clearToasts();
+  await navTo("governing");
+  await navTo("proposals");
+  const directThird = cardOf(fixture.proposal_titled);
+  await click(buttonSaying(directThird, "Reject proposal"));
+  $("proposalRejectReason").value = "Not needed.";
+  await click($("btnConfirmReject"));
+  check(lastPlan().body.kind === "reject-proposal" && lastPlan().body.request.reason === "Not needed."
+    && lastPlan().body.request.proposal_id === fixture.proposal_titled
+    && lastCall("/api/apply").body.kind === "reject-proposal" && lastCall("/api/apply").body.confirm === true,
+    "confirming rejects it with that reason, recorded ordinarily");
+  clearToasts();
+
+  console.log("\nImport Agent Proposal: the fallback for an agent that could not file its own JSON");
+  check($("btnImportProposal").textContent === "Import agent proposal…", "the action is Import agent proposal…");
+  await click($("btnImportProposal"));
+  check($("review").querySelector("h3").textContent === "Import Agent Proposal"
+    && labelFor($("review"), "importJson").textContent === "Agent proposal JSON"
+    && $("btnCheckImport").textContent === "Check proposal",
+    "its panel is Import Agent Proposal, with the field Agent proposal JSON and the action Check proposal");
+  check($("importInstruction").textContent === "Paste an agent proposal as JSON below. Use Create candidate for "
+      + "material you want to add yourself. The JSON must follow Charter’s proposal format; Charter checks it "
+      + "before anything is filed."
+    && $("importInstruction").querySelector("strong").textContent === "Create candidate"
+    && $("review").querySelectorAll(".note").length === 1,
+    "its one instruction says proposals are agents' material, and sends people to Create candidate for their own");
+  check($("btnFileImport").textContent === "Import" && $("btnFileImport").disabled
+    && $("btnCheckImport").parentNode === $("btnFileImport").parentNode
+    && $("btnFileImport").parentNode.children.indexOf($("btnFileImport"))
+      === $("btnCheckImport").parentNode.children.indexOf($("btnCheckImport")) + 1,
+    "Check proposal and a disabled Import sit side by side");
+  check(!buttonSaying($("review").querySelector("header"), "Close")
+    && $("btnCheckImport").parentNode.querySelectorAll("button").map((b) => b.textContent).join("|") === "Check proposal|Import|Cancel",
+    "no header Close: Check proposal, Import and Cancel sit together");
+  type($("importJson"), JSON.stringify(Object.assign(JSON.parse(fixture.import_returned), { base_commit: "abc123" })));
+  await click($("btnCheckImport"));
+  check($("importError") && $("importError").classList.contains("error") && $("importError").getAttribute("role") === "alert"
+    && /base_commit/.test($("importError").textContent) && $("importResult").children.length === 1
+    && $("btnFileImport").disabled && /color:\s*var\(--brick\)/.test(rule(css, ".note.error")),
+    "a failed check shows only one concise red error saying why, and Import stays disabled");
+  type($("importJson"), fixture.import_returned);
+  check(!$("importError") && $("btnFileImport").disabled, "editing the JSON clears the error");
+  await click($("btnCheckImport"));
+  check(!$("btnFileImport").disabled && !$("importResult").firstChild && !$("importSummary")
+    && !/chat-agent|Another clarification|passed|valid/i.test($("importResult").textContent),
+    "a passing check shows nothing at all: it only enables Import");
+  check(!calls.some((c) => c.url === "/api/proposals/import"), "checking files nothing");
+  type($("importJson"), fixture.import_returned + " ");
+  check($("btnFileImport").disabled, "any edit to the JSON disables Import again");
+  $("btnFileImport").click();
+  await settle();
+  check(!calls.some((c) => c.url === "/api/proposals/import"), "and a disabled Import files nothing");
+  type($("importJson"), fixture.import_returned);
+  check($("btnFileImport").disabled, "even restoring the same text needs a fresh check");
+  await click($("btnCheckImport"));
+  await click($("btnFileImport"));
+  check(lastCall("/api/proposals/import").body.json === fixture.import_returned
+    && lastCall("/api/proposals/import").body.confirm === true
+    && /Imported the agent proposal, for review\. It is not context\./.test(toastNow().textContent)
+    && !/\bp-[\w-]+/.test(toastNow().textContent),
+    "Import files exactly the checked JSON, as the person's own action, and says so without an internal id");
+  clearToasts();
+
+  console.log("\nCancel clears and closes Import Agent Proposal");
+  await click($("btnImportProposal"));
+  type($("importJson"), JSON.stringify(Object.assign(JSON.parse(fixture.import_returned), { base_commit: "abc123" })));
+  await click($("btnCheckImport"));
+  await click($("btnCancelImport"));
+  check(!$("importJson") && !$("importError") && !$("review").firstChild && !$("view-proposals").hidden,
+    "Cancel closes the panel and drops what was pasted and checked, staying in Agent Proposals");
+  await click($("btnImportProposal"));
+  check($("importJson").value === "" && !$("importError") && $("btnFileImport").disabled, "reopened, it starts empty");
+  await click($("btnCancelImport"));
+
+  console.log("\nLeaving Agent Proposals closes Import Agent Proposal, and clears it");
+  await click($("btnImportProposal"));
+  type($("importJson"), JSON.stringify(Object.assign(JSON.parse(fixture.import_returned), { base_commit: "abc123" })));
+  await click($("btnCheckImport"));
+  check(!!$("importError"), "with JSON pasted and checked");
+  await navTo("candidates");
+  check(!$("importJson") && !$("importResult") && !$("review").firstChild && !$("view-candidates").hidden,
+    "on another area, the panel, its pasted JSON and its check result are gone");
+  for (const view of ["governing", "changesets", "connect", "settings"]) {
+    await navTo(view);
+    check(!$("importJson") && !$("review").firstChild, `and it never appears in ${view}`);
+  }
+  await navTo("proposals");
+  check(!$("importJson") && !$("review").firstChild, "back in Agent Proposals, it is not open");
+  await click($("btnImportProposal"));
+  check($("importJson").value === "" && !$("importError") && $("btnFileImport").disabled, "opened again, it starts empty");
+  type($("importJson"), fixture.import_returned);
+  let releaseCheck;
+  importCheckDelay = new Promise((r) => { releaseCheck = r; });
+  await click($("btnCheckImport"));
+  await navTo("governing");
+  releaseCheck();
+  await settle();
+  check(!$("btnFileImport") && !$("importError") && !$("review").firstChild,
+    "a check still on its way when the person leaves is dropped, never shown anywhere");
+  await navTo("proposals");
 
   /* --------------------------------------------------------- Change Sets */
 
@@ -1538,12 +1891,10 @@ for (const file of ["markdown.js", "app.js"]) {
   check(lastCall("/api/changesets/list") && !$("changeSetIndex").hidden && $("changeSetEditor").hidden
     && $("changeSetList").querySelectorAll(".changeset-row").length === fixture.cs_list.drafts.length,
     "Change Sets opens on its index of private drafts");
-  check($("changeSetIndex").querySelector(".lede").textContent
-    === "Plan several authority changes and apply them together with one confirmation.",
-    "its introduction is one sentence");
-  const aboutCs = $("changeSetInfo").querySelector(".info-pop");
-  check(/never commits: Git is yours/.test(aboutCs.textContent) && /private local state/.test(aboutCs.textContent),
-    "its information control says drafts are private, and Git is the person's");
+  check($("changeSetIndex").querySelector(".lede").textContent === "Apply one or more authority changes as a set.",
+    "its subtitle reads exactly “Apply one or more authority changes as a set.”");
+  check(!$("changeSetInfo") && !$("changeSetIndex").querySelectorAll(".info-toggle").length,
+    "Change Sets has no information control: the README explains change sets");
   csNext = fixture.cs_created;
   await click($("btnNewChangeSet"));
   check(lastCall("/api/changeset/create") && $("changeSetIndex").hidden && !$("changeSetEditor").hidden,
@@ -1555,40 +1906,69 @@ for (const file of ["markdown.js", "app.js"]) {
     && csSteps[0].getAttribute("aria-current") === "step" && !csSteps[1].getAttribute("aria-current"),
     "two screens, Build change set then Preview and apply, and the first is current");
   check(/Private draft — not context/.test($("csStatus").textContent) && $("csTitle").value === ""
-    && !/commit/i.test($("csTitleHint").textContent), "a private, untitled draft, its name never invented");
-  check($("csNoRows") && $("csPreview").disabled, "an empty plan cannot be previewed");
+    && !$("csTitle").getAttribute("placeholder") && labelFor($("csPlan"), "csTitle").textContent === "Name",
+    "a private, untitled draft, its Name field empty and never invented");
+  check(!$("csCandidates") && !$("csWithdrawals") && $("csPreview").disabled, "an empty plan cannot be previewed");
 
-  console.log("\nBuild change set: the person's own rows and decisions");
-  const addRow = $("csAddRow");
-  check(addRow.options.map((o) => o.value).slice(1).join() === fixture.cs_created.others.map((g) => g.path).join(),
-    "any governing document can be added to the plan");
-  addRow.value = "authoritative/a.md";
+  console.log("\nBuild change set: candidates first, each with its own decision");
+  const addCandidate = $("csAddCandidate");
+  check(addCandidate.options.map((o) => o.value).slice(1).sort().join()
+      === fixture.cs_created.available_candidates.map((c) => c.path).sort().join() && !$("csNoCandidates"),
+    "any authority candidate can be included");
+  check($("csAddWithdrawal").options.map((o) => o.value).slice(1).sort().join()
+      === fixture.cs_created.governing.map((g) => g.path).sort().join(),
+    "any governing document can be withdrawn, in the same change set");
+  check(!$("csRetained") && !$("csRetainedList"), "and nothing asks about the governing documents it retains");
+  addCandidate.value = fixture.cs_row.plan_candidates[0].path;
   csNext = fixture.cs_row;
-  await click($("csAddRowButton"));
-  check(JSON.stringify(lastCall("/api/changeset/update").body.outcomes) === JSON.stringify({ "authoritative/a.md": { outcome: "" } }),
-    "adding a row declares nothing");
-  check($("csOutcome-0").value === "" && !$("csCandidate-0"), "its outcome starts unchosen, with no candidate");
-  check($("csOutcome-0").options.map((o) => o.value).join() === ",retain,revise,replace,withdraw",
-    "the outcomes are retain, revise, replace and withdraw");
-  check(!!$("csRetainOthers") && /Retain all other governing documents/.test($("csRetainOthers").textContent),
-    "every other governing document waits for one explicit Retain decision");
+  await click($("csAddCandidateButton"));
+  check(JSON.stringify(lastCall("/api/changeset/update").body) === JSON.stringify({ id: fixture.cs_created.draft.id,
+    revision: fixture.cs_created.draft.revision, candidates: [fixture.cs_row.plan_candidates[0].path] }),
+    "including a candidate decides nothing for it");
+  check($("csDecision-0").value === "" && !$("csTarget-0")
+    && !$("csAddCandidate").options.some((o) => o.value === fixture.cs_row.plan_candidates[0].path),
+    "its decision starts unchosen, and a candidate already in the plan is not offered again");
+  const noneLeft = JSON.parse(JSON.stringify(fixture.cs_row));
+  noneLeft.available_candidates.forEach((c) => { c.used = true; });
+  csNext = noneLeft;
+  await vm.runInThisContext("openChangeSet")(noneLeft.draft.id);
+  await settle();
+  check(!$("csNoCandidates") && !$("csAddCandidate") && noneLeft.plan_candidates.length > 0,
+    "with every candidate already included and listed, it offers no Add and never says “No candidates available.”");
+  const noneAtAll = JSON.parse(JSON.stringify(fixture.cs_created));
+  noneAtAll.available_candidates = [];
+  noneAtAll.plan_candidates = [];
+  csNext = noneAtAll;
+  await vm.runInThisContext("openChangeSet")(noneAtAll.draft.id);
+  await settle();
+  check($("csNoCandidates") && $("csNoCandidates").textContent === "No candidates available." && !$("csAddCandidate"),
+    "with no candidate listed and none to add, it says exactly “No candidates available.”");
 
-  console.log("\nA complete plan, beside its review");
+  console.log("\nA complete plan, beside its one Agent Review panel");
   csNext = fixture.cs_valid;
   await vm.runInThisContext("openChangeSet")(fixture.cs_valid.draft.id);
   await settle();
-  check(!$("csPreview").disabled && /Retained — your decision/.test($("csOthers").textContent)
-    && $("csRows").querySelectorAll(".cs-row").length === 2 && $("csAlongside").querySelectorAll(".cs-row").length === 1,
-    "revise, withdraw and govern alongside, the others retained by decision: ready to preview");
-  check($("csBuild").children.map((c) => c.id).join() === "csPlan,csReview"
-    && $("csReview").children.map((c) => c.id).join() === "csPromptPanel,csResponsesPanel",
-    "the plan sits beside a column of the context-impact review above the agent responses");
+  check(!$("csPreview").disabled && $("csDecision-0").value === "replace" && $("csDecision-1").value === "govern-alongside"
+    && $("csTarget-0").value === "authoritative/a.md" && !$("csTarget-1")
+    && $("csCandidates").querySelectorAll(".cs-row").length === 2 && $("csWithdrawals").querySelectorAll(".cs-row").length === 1
+    && /^Ready to preview\.$/.test($("csReady").textContent),
+    "a replacement, a candidate governing alongside and a withdrawal: ready to preview");
+  check(!$("csAddWithdrawal").options.some((o) => o.value === "authoritative/a.md" || o.value === "authoritative/b.md")
+    && !$("csTarget-0").options.some((o) => o.value === "authoritative/b.md"),
+    "a governing document already replaced or withdrawn is offered for neither again");
+  check($("csBuild").children.map((c) => c.id).join() === "csPlan,csAgentReview"
+    && $("csAgentReview").querySelector("h4").textContent === "Agent Review"
+    && !$("csPromptPanel") && !$("csResponsesPanel") && !/Context-Impact Review/.test($("changeSetEditor").textContent),
+    "the plan sits beside one Agent Review panel; there is no separate Context-Impact Review panel");
   check(/grid-template-columns:\s*minmax\(0,\s*1\.15fr\)\s*minmax\(0,\s*1fr\)/.test(rule(css, ".review .inner.cs-build"))
     && /@(?:media|container)[^{]*\{\s*\.review \.inner\.cs-build\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/.test(css),
     "two columns on desktop, stacked on narrow widths");
+  check(!labelFor($("csPlan"), "csRationale") && $("csRationale").getAttribute("aria-labelledby") === "csRationaleHeading"
+    && $("csRationaleHeading").textContent === "Change Set Summary" && !$("csRationaleHint"),
+    "the rationale is the Change Set Summary, with no explanatory text");
   check($("csCopyPrompt") && $("csDisclosure").textContent === fixture.cs_valid.disclosure_warning
-    && $("csDisclosure").parentNode === $("csCopyPrompt").parentNode,
-    "the review is one prompt to copy, the disclosure warning beside the button");
+    && $("csDisclosure").parentNode === $("csCopyPrompt").parentNode && insideOf($("csCopyPrompt"), $("csAgentReview")),
+    "Agent Review offers the prompt to copy, the disclosure warning beside the button");
   check(/Charter sends nothing/.test($("csDisclosure").textContent), "and it says nothing is sent");
   Object.defineProperty(global, "navigator", { configurable: true,
     value: { clipboard: { writeText: async (t) => { global.__copied = t; } } } });
@@ -1603,35 +1983,91 @@ for (const file of ["markdown.js", "app.js"]) {
   Object.assign(packetView.review_prompt, { over_limit: true, size_chars: 120000, limit: 50000, size_bytes: 120000,
     file_name: "charter-review-packet-x.md", request: "Please carry out the review in the attached file." });
   delete packetView.review_prompt.text;
+  packetView.reports = [];
   csNext = packetView;
   await vm.runInThisContext("openChangeSet")(packetView.draft.id);
   await settle();
   check($("csSavePacket") && !$("csPromptText") && $("csPacketDisclosure").textContent === fixture.cs_valid.packet_disclosure,
     "a review packet to save instead, its disclosure beside it, and no text on the page");
+  const packetPanel = $("csAgentReview");
+  check($("csPacketStatus").textContent
+      === "Review packet required: 120,000 characters, past the 50,000-character single-message limit · 117 KB."
+    && $("csPacketDisclosure").parentNode === $("csSavePacket").parentNode
+    && !$("csPacketIntro") && !$("csPacketIncludes") && !$("csPacketRequest") && !$("csPacketRequestPanel")
+    && !buttonSaying(packetPanel, "Copy request")
+    && !/Request to Send with the Packet|Please carry out the review|holds the review instructions/.test(packetPanel.textContent),
+    "the packet is compact and factual: its status and size, the save action, and the disclosure beside it — no narrative or request block");
+  check($("csAddReview").textContent === "Add a review" && !$("csReviews"),
+    "with no review yet, the control reads Add a review");
   await click($("csSavePacket"));
   check(lastCall("/api/changeset/packet/save").body.plan_fingerprint === fixture.cs_valid.plan_fingerprint,
     "saving asks the server, for this plan");
   check(/Choose a folder outside every Agent Context/.test($("csPacketRefused") ? $("csPacketRefused").textContent : "")
     || !!$("csPacketSaved"), "a refused destination is said, or the saved file is named");
 
-  console.log("\nAgent responses: advisory, side by side, never choosing");
+  console.log("\nAgent Review: reviews saved as written, valid reports side by side, never choosing");
   csNext = fixture.cs_reports;
   await vm.runInThisContext("openChangeSet")(fixture.cs_reports.draft.id);
   await settle();
-  const reportCards = $("csReports").querySelectorAll(".report-card");
-  check(reportCards.length === 2 && reportCards.every((c) => /Not Verified, Not Findings/.test(c.textContent)),
-    "two reports, each shown as the agent's unverified claims");
-  check(/Agent suggests: revise/.test(reportCards[0].textContent) && /Agent suggests: retain/.test(reportCards[1].textContent)
-    && $("csOutcome-0").value === "revise", "they disagree side by side, and neither changes an outcome");
-  check(/display:\s*grid/.test(rule(css, ".report-grid")) && /max-height/.test(rule(css, ".cs-reasons")),
-    "reports sit in a grid; long lists stay bounded");
+  const entries = $("csReviews").querySelectorAll(".cs-review-entry");
+  check(entries.length === 2 && entries.every((e) => e.classList.contains("is-valid"))
+    && entries.every((e, i) => {
+      const labels = e.querySelectorAll("label");
+      return labels[0].textContent === "Reviewing agent" && labels[0].getAttribute("for") === `csReviewAgent-${i}`
+        && labels[1].getAttribute("for") === `csReviewText-${i}`
+        && e.children.indexOf(labels[0].parentNode) < e.children.indexOf(labels[1].parentNode);
+    })
+    && $("csReviewAgent-0").value === "Agent one" && $("csReviewText-0").value.length > 0,
+    "each review has its own Reviewing agent label above its input, and its own response field");
+  const reportCards = $("csReviews").querySelectorAll(".report-card");
+  check(reportCards.length === 2 && reportCards.every((c) => /Not Verified, Not Findings/.test(c.textContent))
+    && /Agent suggests: revise/.test(reportCards[0].textContent) && /Agent suggests: retain/.test(reportCards[1].textContent)
+    && $("csDecision-0").value === "replace" && /display:\s*grid/.test(rule(css, ".cs-reviews")),
+    "two valid reports that disagree are shown side by side, and neither changes a decision");
+  check(!buttonSaying($("changeSetEditor"), "Attach report") && !/No report attached/.test($("changeSetEditor").textContent)
+    && !fieldsIn($("csAgentReview")).some((i) => i.getAttribute("placeholder")),
+    "there is no Attach report action, no “No report attached” status, and no placeholder text");
+  csNext = fixture.cs_review_added;
+  await click($("csAddReview"));
+  await settle();
+  check(lastCall("/api/changeset/review/add") && $("csReviews").querySelectorAll(".cs-review-entry").length === 3
+    && $("csReviewAgent-2").value === "" && /Not yet written\./.test($("csReviewState-2").textContent),
+    "Add another review adds an empty review of its own");
+  check($("csAddReview").textContent === "Add another review",
+    "once a review exists, the control reads Add another review");
+  const savesBefore = calls.filter((c) => c.url === "/api/changeset/review/save").length;
+  $("csReviewText-2").value = "not a report";
+  $("csReviewText-2").dispatch("input");
+  csNext = fixture.cs_review_invalid;
+  $("csReviewText-2").dispatch("change");
+  await settle();
+  const reviewSaves = calls.filter((c) => c.url === "/api/changeset/review/save");
+  check(reviewSaves.length === savesBefore + 1 && reviewSaves[reviewSaves.length - 1].body.text === "not a report"
+    && reviewSaves[reviewSaves.length - 1].body.report_id === fixture.cs_review_added.reports[2].id,
+    "a review saves on its own as it is written, with no attach step");
+  check($("csReviewText-2").value === "not a report" && !$("csReview-2").classList.contains("is-valid")
+    && /Not a structurally valid report yet, so it is not attached as advisory evidence/.test($("csReviewState-2").textContent)
+    && $("csReviewState-2").querySelectorAll("li").length > 0 && $("csReviewAgent-2").value === "Third agent",
+    "invalid text stays saved as written, with clear validation feedback, and is not attached evidence");
+  const priorConfirmReview = global.confirm;
+  let removalPrompts = 0;
+  global.confirm = () => { removalPrompts += 1; return false; };
+  const removesBefore = calls.filter((c) => c.url === "/api/changeset/report/remove").length;
+  await click($("csRemoveReview-0"));
+  check(removalPrompts === 1 && calls.filter((c) => c.url === "/api/changeset/report/remove").length === removesBefore,
+    "removing a structurally valid report asks first; declined, nothing is removed");
+  await click($("csRemoveReview-2"));
+  check(removalPrompts === 1 && calls.filter((c) => c.url === "/api/changeset/report/remove").length === removesBefore + 1
+    && lastCall("/api/changeset/report/remove").body.report_id === fixture.cs_review_added.reports[2].id,
+    "removing a review that is not a valid report needs no confirmation, and removes only that review");
+  global.confirm = priorConfirmReview;
 
   console.log("\nStale review evidence, and Refresh");
   csNext = fixture.cs_stale;
   await vm.runInThisContext("openChangeSet")(fixture.cs_stale.draft.id);
   await settle();
   check(/Stale — Refresh Before Applying/.test($("csPlan").textContent) && $("csPreview").disabled
-    && $("csReports").querySelectorAll(".report-card").every((c) => /Stale — not current review evidence/.test(c.textContent)),
+    && $("csReviews").querySelectorAll(".report-card").every((c) => /Stale — not current review evidence/.test(c.textContent)),
     "a changed candidate makes the plan and its reports stale, and blocks applying");
   csNext = fixture.cs_refreshed;
   await click($("csRefresh"));
@@ -1645,11 +2081,41 @@ for (const file of ["markdown.js", "app.js"]) {
     && JSON.stringify(lastPlan().body.request) === JSON.stringify({ draft_id: fixture.cs_refreshed.draft.id,
       draft_revision: fixture.cs_refreshed.draft.revision }), "it previews exactly this draft's plan");
   const steps2 = $("csSteps").querySelectorAll("li");
-  check(steps2[1].getAttribute("aria-current") === "step" && $("csPreviewing") && $("setCompare"),
-    "the second screen: the governing set before and after");
+  check(steps2[1].getAttribute("aria-current") === "step" && $("csPreviewing") && !$("setCompare")
+    && !/Governing Now|Governing After/.test($("review").textContent),
+    "the second screen, with no before-and-after lists");
+  const previewBody = $("csPreviewBody");
+  const order = previewBody.children.map((n) => n.getAttribute("id") === "planProblems" ? "problems"
+    : n.classList.contains("cs-preview-warning") ? "warning" : n.getAttribute("id") === "csAuthorityEffects" ? "effects"
+    : n.classList.contains("cs-retained") ? "retained" : n.classList.contains("file-list") ? "files"
+    : n.querySelector("#confirmPhrase") ? "confirm" : n.classList.contains("actions") ? "actions" : n.tagName);
+  const firstOf = (k) => order.indexOf(k);
+  check(firstOf("effects") >= 0 && firstOf("files") > firstOf("effects") && firstOf("confirm") > firstOf("files")
+    && firstOf("actions") === order.length - 1 && (firstOf("retained") === -1 || (firstOf("retained") > firstOf("effects")
+      && firstOf("retained") < firstOf("files")))
+    && ["problems", "warning"].every((k) => firstOf(k) === -1 || firstOf(k) < firstOf("effects")),
+    "one pass, in order: problems and warnings, Authority Effects, retained documents, files, then the typed confirmation");
+  const effectLines = $("csAuthorityEffects").querySelectorAll(".cs-effect");
+  const csEffects = fixture.cs_refreshed.effects.filter((e) => e.effect !== "retain");
+  check($("csAuthorityEffects").querySelector("h4").textContent === "Authority Effects" && effectLines.length === csEffects.length
+    && effectLines.every((li, i) => li.querySelector(".title-row .title").textContent === csEffects[i].title
+      && li.querySelector(".title-row .chip").textContent.length > 0),
+    "Authority Effects lists each changed governing document by title, its declared effect right after it");
+  const replaced = effectLines.find((li) => /Replaced/.test(li.querySelector(".chip").textContent));
+  check(!replaced || (/Current scope[\s\S]*Candidate's scope[\s\S]*Resulting scope/.test(replaced.querySelector(".cs-effect-scope").textContent)
+      && /^By “/.test(replaced.querySelector(".cs-effect-by").textContent)),
+    "a replacement shows its candidate and its scope continuity: current, candidate's and resulting scope");
+  const retainedCount = fixture.cs_refreshed.effects.filter((e) => e.effect === "retain").length;
+  check(retainedCount === 0 || ($("csPreviewRetainedToggle").textContent === `Retained Governing Documents (${retainedCount})`
+    && $("csPreviewRetainedToggle").getAttribute("aria-expanded") === "false" && $("csPreviewRetainedBody").hidden),
+    "every retained document is behind a collapsed Retained Governing Documents (N) disclosure");
+  check(previewBody.querySelectorAll(".file-item").length === fixture.cs_plan.changes.length - fixture.cs_plan.changes.filter((c) => c.action === "delete" && fixture.cs_plan.changes.some((o) => o.moved_from === c.path)).length
+    && previewBody.querySelectorAll(".file-path").some((n) => n.textContent === "AGENT-CONTEXT.md"),
+    "every changed file is a row with its diff, the regenerated map included");
   check(labelFor($("review"), "confirmPhrase").textContent === "Type “change governing context” once to apply the whole change set"
-    && /written as one action/.test($("review").textContent) && /does not stage, commit/.test($("review").textContent),
-    "one typed phrase for the whole set, written as one action, with no Git");
+    && $("btnApply").textContent === "Apply" && !!buttonSaying(previewBody, "Cancel")
+    && !/written as one action|does not stage, commit|receipt is kept privately|Document dates are assigned|confirmed in words/.test($("review").textContent),
+    "one typed phrase, Apply and Cancel, and no note that only explains mechanics");
   type($("confirmPhrase"), "change governing context");
   csNext = fixture.cs_applied;
   await click($("btnApply"));
@@ -1657,83 +2123,69 @@ for (const file of ["markdown.js", "app.js"]) {
   check(csApplied.confirm === "change governing context" && csApplied.id === fixture.cs_refreshed.draft.id
     && csApplied.plan_id === fixture.cs_plan.plan_id,
     "applying sends the phrase for this draft");
-  check(/Applied — receipt/.test($("csStatus").textContent) && /Private record — not context/.test($("csStatus").textContent)
-    && /Git is untouched/.test($("csRecorded").textContent) && !/Recorded in Git/.test($("changeSetEditor").textContent),
-    "it becomes an immutable private receipt, saying Git is left to the person");
-  check($("csReceiptOutcomes").querySelectorAll("li").length === 3 && !$("csTitle") && !$("csOutcome-0")
+  check($("csAppliedStatus").textContent === "Change set applied" && /Private record — not context/.test($("csStatus").textContent)
+    && /Agents read the new context now/.test($("csRecorded").textContent) && /Git is untouched/.test($("csRecorded").textContent)
+    && /did not operate it/.test($("csRecorded").textContent) && !/Recorded in Git/.test($("changeSetEditor").textContent),
+    "it becomes an immutable private receipt, led by its completion, saying agents read it and Git is left to the person");
+  check($("csReceiptOutcomes").querySelectorAll("li").length === 3 && !$("csTitle") && !$("csDecision-0")
     && /Change set: Restructure/.test($("csSummary").textContent) && !!$("csCopySummary"),
-    "with its final outcomes, a copyable summary, and nothing editable");
+    "with its changed documents, a copyable summary, and nothing editable");
   await click($("csBackToIndex"));
   check(!$("changeSetIndex").hidden && $("changeSetEditor").hidden, "← Change Sets returns to the index");
   clearToasts();
 
-  console.log("\nLong scopes: one line in the plan, the whole scope one disclosure away");
+  console.log("\nLong scopes: one line in the row, the complete scope behind View details");
   csNext = fixture.cs_valid;
   await vm.runInThisContext("openChangeSet")(fixture.cs_valid.draft.id);
   await settle();
   const longScope = fixture.cs_long_scope;
-  check(longScope.length > 400 && fixture.cs_valid.rows.some((r) => r.candidate && r.candidate.scope === longScope),
-    "the plan's revision has a scope of hundreds of characters");
-  const revRow = fixture.cs_valid.rows.findIndex((r) => r.candidate && r.candidate.scope === longScope);
+  check(longScope.length > 400 && fixture.cs_valid.plan_candidates.some((c) => c.scope === longScope),
+    "the plan's replacement has a scope of hundreds of characters");
+  const revRow = fixture.cs_valid.plan_candidates.findIndex((c) => c.scope === longScope);
+  const alongRow = fixture.cs_valid.plan_candidates.findIndex((c) => c.decision === "govern-alongside");
   const line = $(`csScopeLine-${revRow}`);
-  check(line && line.classList.contains("cs-scope-oneline") && line.textContent.indexOf(longScope) !== -1
-    && /^Scope (changes|unchanged)Candidate's scope: /.test(line.textContent),
-    "a revision row shows the candidate's scope as one line — the whole text, for a screen reader");
-  const toggle = $(`csScopeToggle-${revRow}`);
-  const region = regionOf(toggle);
-  check(toggle.tagName === "BUTTON" && toggle.getAttribute("type") === "button" && toggle.getAttribute("tabindex") === null
-    && toggle.getAttribute("aria-expanded") === "false" && region && region.hidden
-    && region.querySelectorAll("dl").length === 1,
-    "its complete scope and comparison are behind a closed disclosure, a keyboard-operable button");
-  await click(toggle);
-  check(toggle.getAttribute("aria-expanded") === "true" && !region.hidden
-    && /Candidate's scope[\s\S]*Current scope[\s\S]*Scope after/.test(region.textContent)
-    && region.textContent.indexOf(longScope) !== -1,
-    "opened, it says so, and shows the whole scope beside the current and resulting scope");
-  await click(toggle);
-  check(toggle.getAttribute("aria-expanded") === "false" && region.hidden, "and closes again");
-  check(!!$(`csEditDetails-${revRow}`) && $(`csEditDetails-${revRow}`).textContent === "Edit details…",
-    "the planned candidate has Edit details…");
-
-  const alongsideLine = $("csAlongsideScopeLine-0");
-  const alongsideToggle = $("csAlongsideScopeToggle-0");
-  check(alongsideLine && alongsideLine.classList.contains("cs-scope-oneline")
-    && alongsideLine.textContent.indexOf("Delta: " + longScope) !== -1
-    && $("csAlongside").querySelectorAll("dl").length === regionOf(alongsideToggle).querySelectorAll("dl").length,
-    "a candidate governing alongside shows one line too, with no comparison in the open");
-  check(alongsideToggle.getAttribute("aria-expanded") === "false" && regionOf(alongsideToggle).hidden
-    && !!$("csAlongsideEdit-0"),
-    "its complete scope is behind a closed disclosure, beside Edit details…");
-  await click(alongsideToggle);
-  check(!regionOf(alongsideToggle).hidden && regionOf(alongsideToggle).textContent.indexOf("Delta: " + longScope) !== -1,
-    "opened, it shows the whole scope");
-  await click(alongsideToggle);
+  check(line && line.classList.contains("cs-scope-oneline") && line.textContent === `Scope: ${longScope}`,
+    "a replacement shows the candidate's scope as one line — the whole text, for a screen reader");
+  check(!$(`csScopeToggle-${revRow}`) && !$("csCandidates").querySelectorAll(".disclosure-toggle").length
+    && !$("csCandidates").querySelectorAll("dl").length && !/Full scope|Scope changes|Scope unchanged/.test($("csCandidates").textContent),
+    "no row holds a scope disclosure, comparison table or other expanded comparison");
+  check(!!$(`csEditDetails-${revRow}`) && $(`csEditDetails-${revRow}`).textContent === "Edit details…"
+    && $(`csViewDetails-${revRow}`).textContent === "View details",
+    "the planned candidate has View details and Edit details…");
+  await click($(`csViewDetails-${revRow}`));
+  check(/Candidate's scope[\s\S]*Current scope[\s\S]*Scope after/.test($("csDetails").textContent)
+    && $("csDetails").textContent.indexOf(longScope) !== -1,
+    "View details shows the whole scope beside the current and resulting scope");
+  vm.runInThisContext("closeReview")();
+  check($(`csScopeLine-${alongRow}`).textContent === `Scope: Delta: ${longScope}` && !!$(`csEditDetails-${alongRow}`)
+    && !!$(`csViewDetails-${alongRow}`),
+    "a candidate governing alongside shows one line too, beside View details and Edit details…");
+  await click($(`csViewDetails-${alongRow}`));
+  check($("csDetails").textContent.indexOf("Delta: " + longScope) !== -1 && !/Current scope/.test($("csDetails").textContent),
+    "and its details show its whole scope, with nothing to compare");
+  vm.runInThisContext("closeReview")();
 
   const oneline = rule(css, ".cs-scope-oneline");
   check(/white-space:\s*nowrap/.test(oneline) && /text-overflow:\s*ellipsis/.test(oneline) && /overflow:\s*hidden/.test(oneline),
-    "on screen the line is clipped with an ellipsis, so a long scope cannot make the card tall");
-  check(/min-width:\s*0/.test(rule(css, ".cs-item")) && /minmax\(0, 1fr\)/.test(rule(css, ".cs-item"))
-    && /min-width:\s*0/.test(rule(css, ".cs-scope")),
-    "and the card can shrink to its column, so nothing scrolls sideways");
-  check(/max-height/.test(rule(css, ".cs-scope-detail")) && /overflow-y:\s*auto/.test(rule(css, ".cs-scope-detail")),
-    "an opened full scope is bounded, and scrolls on its own");
+    "on screen the line is clipped with an ellipsis, so a long scope cannot make the row tall");
+  check(/min-width:\s*0/.test(rule(css, ".cs-item")) && /minmax\(0, 1fr\)/.test(rule(css, ".cs-item")),
+    "and the row can shrink to its column, so nothing scrolls sideways");
 
   console.log("\nA blank candidate scope says it inherits the replaced document's");
   csNext = fixture.cs_blank;
   await vm.runInThisContext("openChangeSet")(fixture.cs_blank.draft.id);
   await settle();
-  check(/Candidate's scope: Blank — inherits the replaced document's scope/.test($("csScopeLine-0").textContent),
+  check(/^Scope: Blank — inherits the replaced document's scope$/.test($("csScopeLine-0").textContent),
     "the one line says the blank scope inherits");
-  await click($("csScopeToggle-0"));
-  check(/\(inherited\)/.test(regionOf($("csScopeToggle-0")).textContent),
-    "and the comparison shows the inherited scope after");
-  await click($("csScopeToggle-0"));
+  await click($("csViewDetails-0"));
+  check(/\(inherited\)/.test($("csDetails").textContent), "and View details shows the inherited scope after");
+  vm.runInThisContext("closeReview")();
 
   console.log("\nEdit details…: the candidate's own metadata, then back to the draft to refresh it");
   csNext = fixture.cs_valid;
   await vm.runInThisContext("openChangeSet")(fixture.cs_valid.draft.id);
   await settle();
-  const editPath = fixture.cs_valid.rows[revRow].candidate.path;
+  const editPath = fixture.cs_valid.plan_candidates[revRow].path;
   await click($(`csEditDetails-${revRow}`));
   check(lastCall("/api/draft").body.path === editPath && /^Edit “/.test($("review").querySelector("h3").textContent)
     && !$("changeSetEditor").hidden,
@@ -1754,7 +2206,49 @@ for (const file of ["markdown.js", "app.js"]) {
   clearToasts();
   await vm.runInThisContext("closeChangeSet")();
 
-  console.log("\nApplied change sets: final outcomes and established governing documents");
+  console.log("\nA draft in the earlier form: shown as recorded, converted only once the person confirms");
+  csNext = fixture.cs_earlier;
+  await vm.runInThisContext("openChangeSet")(fixture.cs_earlier.draft.id);
+  await settle();
+  check(/Earlier form/.test($("csStatus").textContent) && /Recorded in the Earlier Form/.test($("csEarlier").textContent)
+    && $("csEarlierRows").querySelectorAll(".cs-row").length === 2
+    && /Retain/.test($("csEarlierRows").textContent) && /Revise/.test($("csEarlierRows").textContent),
+    "an earlier-form draft is shown as recorded: its retain and revise outcomes, as they were declared");
+  check(!$("csPreview") && !$("csTitle") && !$("csAddCandidate") && !$("csCopyPrompt") && !$("csDecision-0")
+    && !!buttonSaying($("changeSetEditor"), "Discard draft") && !buttonSaying($("changeSetEditor"), "Delete draft"),
+    "it cannot be edited, reviewed or previewed; it can be discarded");
+  check(!!$("csConvert") && $("csConvert").textContent === "Convert to current form…" && !$("csConversion"),
+    "it offers Convert to current form…, which converts nothing yet");
+  const convertsBefore = calls.filter((c) => c.url === "/api/changeset/convert").length;
+  await click($("csConvert"));
+  const conversionItems = $("csConversionChanges").querySelectorAll("li");
+  check(conversionItems.length === fixture.cs_earlier.conversion.changes.length
+    && conversionItems.every((li, i) => li.textContent.indexOf(fixture.cs_earlier.conversion.changes[i].text) !== -1)
+    && /becomes Replace/.test($("csConversionChanges").textContent) && /retained without a decision/.test($("csConversionChanges").textContent)
+    && calls.filter((c) => c.url === "/api/changeset/convert").length === convertsBefore,
+    "Convert to current form… first shows every change it would make, and converts nothing");
+  check(document.activeElement === $("csConversionHeading") && $("csConversion").getAttribute("role") === "region"
+    && /changes no governing context/.test($("csConversionNote").textContent)
+    && /become stale/.test($("csConversionNote").textContent),
+    "focus moves to the list of changes, which says no governing context changes and reports go stale");
+  await click($("csConvertCancel"));
+  check(!$("csConversion") && document.activeElement === $("csConvert")
+    && calls.filter((c) => c.url === "/api/changeset/convert").length === convertsBefore,
+    "Cancel closes it and converts nothing");
+  await click($("csConvert"));
+  csNext = fixture.cs_converted;
+  await click($("csConvertConfirm"));
+  check(JSON.stringify(lastCall("/api/changeset/convert").body) === JSON.stringify({ id: fixture.cs_earlier.draft.id,
+    revision: fixture.cs_earlier.draft.revision, confirm: true }),
+    "Convert sends the person's confirmation, for the draft as it was shown");
+  check(!/Earlier form/.test($("csStatus").textContent) && $("csDecision-0").value === "replace"
+    && $("csTarget-0").value === "authoritative/c.md" && !!$("csPreview")
+    && /Converted to the current form/.test(toastNow().textContent),
+    "converted, it is an ordinary current-form plan: the revise is a Replace of the same document");
+  clearToasts();
+  await vm.runInThisContext("closeChangeSet")();
+
+  console.log("\nApplied change sets: a receipt led by its completion and what it did");
   const applied = fixture.cs_applied_list.drafts.find((d) => d.state === "applied");
   check(applied && applied.final_outcomes === 3 && applied.established === fixture.cs_applied.receipt.after.length,
     "the server counts an applied change set from its receipt");
@@ -1763,38 +2257,91 @@ for (const file of ["markdown.js", "app.js"]) {
   await vm.runInThisContext("renderChangeSets")();
   await settle();
   const card = $("changeSetList").querySelectorAll(".changeset-row").find((r) => r.getAttribute("data-id") === applied.id);
-  check(card && /3 final outcomes · \d+ established governing documents/.test(card.textContent)
-    && !/planned/.test(card.textContent),
-    "its index card says final outcomes and established governing documents, never planned changes");
+  check(!card && !/applied/.test($("changeSetList").textContent),
+    "the normal index does not list an applied change set: its receipt stays private");
+  check(/3 final outcomes · \d+ established governing documents/.test(vm.runInThisContext("changeSetCounts")(applied))
+    && !/planned/.test(vm.runInThisContext("changeSetCounts")(applied)),
+    "its recorded counts are final outcomes and established governing documents, never planned changes");
   fixture.cs_list = savedList;
   csNext = fixture.cs_applied;
   await vm.runInThisContext("openChangeSet")(fixture.cs_applied.draft.id);
   await settle();
-  const editorText = $("changeSetEditor").textContent;
-  check(/Final Outcomes \(3\)/.test(editorText)
-    && new RegExp(`Established Governing Documents \\(${fixture.cs_applied.receipt.after.length}\\)`).test(editorText)
-    && !/planned/i.test(editorText.replace($("csSummary").textContent, "")),
-    "the receipt says final outcomes and established governing documents, never planned");
+  const receiptHead = $("changeSetPanel").querySelector("header");
+  const appliedDay = fixture.cs_applied.receipt.at.slice(0, 10);
+  check(receiptHead.children[0] === $("csAppliedStatus") && $("csAppliedStatus").getAttribute("role") === "status"
+    && $("csAppliedStatus").textContent === "Change set applied" && receiptHead.children[1] === $("csOutcomeSummary"),
+    "the receipt leads with Change set applied, then its outcome summary");
+  check($("csOutcomeSummary").textContent
+      === `1 document updated · 1 newly governing · 1 withdrawn · 1 retained · applied ${appliedDay}`,
+    "the summary counts each outcome in plain words, with the date it was applied");
+  check(!/updated by replacement/i.test($("changeSetEditor").textContent) && !/ 0 /.test($("csOutcomeSummary").textContent),
+    "no technical phrasing, and no category with nothing in it");
+  const receiptItems = $("csReceiptOutcomes").querySelectorAll("li");
+  console.log("    lines: " + receiptItems.map((li) => li.querySelector(".cs-receipt-line").textContent).join(" | "));
+  check(receiptItems.map((li) => li.querySelector(".cs-receipt-line").textContent).join(" | ")
+      === "AlphaReplaced | BetaWithdrawn | DeltaGoverns alongside" && /by “Alpha two”/.test(receiptItems[0].textContent),
+    "each changed document is listed by its title first, with a badge naming its outcome as recorded");
+  const detailToggle = $("csReceiptDetailToggle-0");
+  check(detailToggle.textContent === "Technical details" && detailToggle.getAttribute("aria-expanded") === "false"
+    && regionOf(detailToggle).hidden && !/archive\//.test(receiptItems[0].querySelector(".cs-receipt-line").textContent)
+    && /archive\/a-superseded\.md/.test(regionOf(detailToggle).textContent)
+    && /authoritative\/a\.md/.test(regionOf(detailToggle).textContent),
+    "its path and archive location sit behind a collapsed, keyboard-operable Technical details disclosure");
+  await click(detailToggle);
+  check(detailToggle.getAttribute("aria-expanded") === "true" && !regionOf(detailToggle).hidden, "opened, it shows them");
+  await click(detailToggle);
+  check($("csReceiptRetainedToggle").textContent === "Retained Governing Documents (1)"
+    && $("csReceiptRetainedToggle").getAttribute("aria-expanded") === "false" && regionOf($("csReceiptRetainedToggle")).hidden
+    && $("csReceiptRetained").querySelectorAll("li").length
+      === fixture.cs_applied.receipt.outcomes.filter((o) => o.effect === "retain").length,
+    "the retained documents are listed apart, collapsed");
   check($("csReceiptEstablishedToggle").getAttribute("aria-expanded") === "false"
+    && $("csReceiptEstablishedToggle").textContent
+      === `Established Governing Documents (${fixture.cs_applied.receipt.after.length})`
     && $("csReceiptEstablished").querySelectorAll("li").length === fixture.cs_applied.receipt.after.length,
-    "the established governing documents are listed behind a disclosure");
-  check(!!$("csReceiptRetainedToggle") && $("csReceiptRetained").querySelectorAll("li").length
-      === fixture.cs_applied.receipt.outcomes.filter((o) => o.effect === "retain").length
-    && $("csReceiptOutcomes").querySelectorAll("li").length === 3,
-    "the documents retained unchanged are listed apart from the final outcomes");
-  check(/\nFinal outcomes:\n/.test($("csSummary").textContent), "its summary names the final outcomes");
+    "the established governing documents are behind a disclosure too");
+  check(/2 advisory reports attached/.test($("csReceiptReview").textContent) && !$("csReceiptNoReport")
+    && $("csReceiptShared").querySelectorAll("li").length === 1
+    && /^Review prompt copied/.test($("csReceiptShared").textContent)
+    && /not advisory evidence/.test($("csReceiptSharedSection").textContent)
+    && !insideOf($("csReceiptShared"), $("csReceiptReview")),
+    "the advisory reports are apart from the record of the review prompt copied, which is not evidence");
+  const summaryToggle = $("csSummaryToggle");
+  check(summaryToggle.textContent === "Technical change summary" && summaryToggle.getAttribute("aria-expanded") === "false"
+    && regionOf(summaryToggle).hidden && /\nFinal outcomes:\n/.test($("csSummary").textContent)
+    && !insideOf($("csCopySummary"), regionOf(summaryToggle)),
+    "the full technical change summary is collapsed, and Copy summary works without opening it");
+  check(!/planned/i.test($("changeSetEditor").textContent.replace($("csSummary").textContent, "")),
+    "nothing on the receipt says planned");
   await vm.runInThisContext("closeChangeSet")();
 
-  console.log("\nAn older receipt keeps its stored summary, under the new wording");
+  console.log("\nA receipt with no review: said plainly, with no shared-material record");
+  const unreviewed = JSON.parse(JSON.stringify(fixture.cs_applied));
+  unreviewed.receipt.reports = [];
+  unreviewed.receipt.prompts = [{ mode: "packet", exported: "2026-10-14T09:00:00+00:00" }];
+  csNext = unreviewed;
+  await vm.runInThisContext("openChangeSet")(unreviewed.draft.id);
+  await settle();
+  check($("csReceiptNoReport").textContent === "No advisory report attached."
+    && $("csReceiptShared").textContent === "Review packet exported · 2026-10-14",
+    "no advisory report attached, and separately, the review packet exported");
+  unreviewed.receipt.prompts = [];
+  await vm.runInThisContext("openChangeSet")(unreviewed.draft.id);
+  await settle();
+  check(!!$("csReceiptNoReport") && !$("csReceiptSharedSection"), "with nothing shared, there is no shared-material record");
+  await vm.runInThisContext("closeChangeSet")();
+
+  console.log("\nAn earlier-form receipt keeps its stored summary and outcomes as recorded");
   const older = JSON.parse(JSON.stringify(fixture.cs_applied));
   older.receipt.summary = older.receipt.summary.replace("Final outcomes:", "Declared outcomes:");
+  older.receipt.outcomes.forEach((o) => { if (o.effect === "replace") o.effect = "revise"; });
   csNext = older;
   await vm.runInThisContext("openChangeSet")(older.draft.id);
   await settle();
   check($("csSummary").textContent === older.receipt.summary && /Declared outcomes:/.test($("csSummary").textContent)
-    && /Final Outcomes \(3\)/.test($("changeSetEditor").textContent)
-    && /Established Governing Documents/.test($("changeSetEditor").textContent),
-    "its summary is shown exactly as kept; only the labels around it are new");
+    && /^1 document revised · 1 newly governing · 1 withdrawn · 1 retained/.test($("csOutcomeSummary").textContent)
+    && /AlphaRevised/.test($("csReceiptOutcomes").textContent),
+    "its summary is shown exactly as kept, and its revision counted and badged as Revised");
   await vm.runInThisContext("closeChangeSet")();
   clearToasts();
 
@@ -1820,15 +2367,31 @@ for (const file of ["markdown.js", "app.js"]) {
     await navTo("connect");
     const v = connectView();
     const firstH2 = v.querySelector("h2");
-    check(!v.hidden && firstH2.textContent === "Connect Agents with MCP (Recommended)"
-      && firstH2.id === "connectMcpTitle" && $("connectMcp").getAttribute("aria-labelledby") === "connectMcpTitle"
+    check(!v.hidden && firstH2.textContent === "Connect Agents" && v.querySelectorAll("h2").length === 1
       && document.title === "Connect Agents — Charter"
       && !v.querySelector(".lede") && !$("connectStatus") && !/ready to connect/i.test(v.textContent)
-      && $("connectMcp").firstChild === $("connectMcpInstruction")
+      && $("connectMcp").getAttribute("aria-labelledby") === "connectMcpTitle"
+      && $("connectMcpDetails").firstChild === $("connectMcpInstruction")
       && $("connectMcpInstruction").textContent === "Configure the Charter MCP server for your agent."
       && !$("connectFolder") && !$("connectChecksDetails") && !$("connectLaunch") && !$("connectWritesNothing")
       && !$("connectPrerequisite"),
-      `${name}: the MCP heading leads, with one instruction beneath — no page title, lede or readiness line`);
+      `${name}: the page is titled Connect Agents; the MCP section opens with its one purpose sentence`);
+    const sections = [["connectMcp", "connectMcpTitle", "connectMcpToggle", "connectMcpDetails", "Connect Agents with MCP (Recommended)"],
+      ["connectPointerSection", "connectPointerTitle", "connectPointerToggle", "connectPointerDetails", "Add Project Instructions (Optional)"],
+      ["connectVerify", "connectTestTitle", "connectTestToggle", "connectTestDetails", "Test the Connection (Optional)"],
+      ["connectOther", "connectFilesTitle", "connectFilesToggle", "connectFilesDetails", "Connect Agents with File Access"]];
+    check(sections.every(([s], i) => $("connectBody").children.indexOf($(s)) === i) && $("connectBody").children.length === 4,
+      `${name}: four sections, in order: MCP, project instructions, the connection test, file access`);
+    check(sections.every(([s, t, tg, d, label]) => $(s).getAttribute("aria-labelledby") === t && $(t).tagName === "H3"
+        && $(t).children.length === 1 && $(t).firstChild === $(tg) && $(tg).classList.contains("disclosure-toggle")
+        && $(tg).textContent === label && $(tg).getAttribute("aria-controls") === d && $(s).children[1] === $(d)),
+      `${name}: each section's heading is its own toggle, all alike`);
+    check(sections.map(([, , tg, d]) => [$(tg).getAttribute("aria-expanded"), $(d).hidden].join()).join(" | ")
+        === "true,false | false,true | false,true | false,true",
+      `${name}: only the MCP section is open at first`);
+    check(!v.querySelectorAll(".connect-reveal").length && !/Show text|Hide text/.test(v.textContent)
+      && !rule(css, ".connect-reveal-body") && v.querySelectorAll(".disclosure-toggle").length === 4,
+      `${name}: no Show text or Hide text controls remain`);
     const server = JSON.parse($("connectConfig").textContent).mcpServers[payload.server_name];
     const launched = [server.command].concat(server.args).join(" ");
     check($("connectConfig").textContent === payload.config_text
@@ -1841,10 +2404,8 @@ for (const file of ["markdown.js", "app.js"]) {
       && $("connectPointer").textContent === payload.pointer
       && $("connectVerifyPrompt").textContent === payload.verify_prompt,
       `${name}: Codex's TOML, the startup pointer and the verification prompt are shown exactly`);
-    check(v.querySelectorAll("h2").map((h) => h.textContent).join(" | ")
-        === "Connect Agents with MCP (Recommended) | Connect Agents with File Access"
-      && v.querySelectorAll("h3").map((h) => h.textContent).join(" | ")
-        === "Instruct Your Agent to Use Charter | Test the Connection"
+    check(v.querySelectorAll("h3").map((h) => h.textContent).join(" | ")
+        === "Connect Agents with MCP (Recommended) | Add Project Instructions (Optional) | Test the Connection (Optional) | Connect Agents with File Access"
       && !/1\. Connect an agent|2\. Confirm it works|Optional file access|Send this in a new agent session/.test(v.textContent)
       && !$("connectProposals") && !$("connectVisible") && !$("connectTrustDetails") && !$("connectReadme")
       && !$("connectCheckToggle") && !$("connectCheckDetails") && !$("connectVscodeDetails") && !$("connectVscodeItem")
@@ -1873,15 +2434,19 @@ for (const file of ["markdown.js", "app.js"]) {
           && $("connectClaude-cmdBlock").querySelector("h4").textContent === "Command Prompt"
         : !$("connectClaude-posixBlock").querySelector("h4")),
       `${name}: ${name === "Windows" ? "PowerShell and Command Prompt are each labelled" : "one terminal command"}`);
-    const pointerSection = $("connectPointerSection");
-    check(v.querySelectorAll(".disclosure-toggle").length === 1 && v.querySelector(".disclosure-toggle") === $("connectFilesToggle")
-      && !$("connectPointerToggle") && !$("connectPointerDetails") && !/Optional/.test(v.textContent)
-      && within(pointerSection, $("connectMcp")) && pointerSection.getAttribute("aria-labelledby") === "connectPointerTitle"
-      && $("connectPointerTitle").tagName === "H3" && $("connectPointerTitle").textContent === "Instruct Your Agent to Use Charter",
-      `${name}: file access is the only disclosure; the agent instruction is a shown, labelled section, not optional`);
-    const pointerParts = pointerSection.children;
-    check(pointerParts[0] === $("connectPointerTitle") && pointerParts[1] === $("connectPointerNote")
-      && pointerParts[2] === $("connectPointerBlock")
+    check(insideOf($("connectHosts"), $("connectMcpDetails")) && insideOf($("connectClaude-" + payload.shells[0].shell), $("connectMcpDetails"))
+      && insideOf($("btnCopyConnectConfig"), $("connectMcpDetails"))
+      && insideOf($("connectPointer"), $("connectPointerDetails")) && insideOf($("btnCopyConnectPointer"), $("connectPointerDetails"))
+      && insideOf($("connectVerifyPrompt"), $("connectTestDetails")) && insideOf($("btnCopyConnectVerifyPrompt"), $("connectTestDetails"))
+      && insideOf($("connectInstruction"), $("connectFilesDetails")) && !insideOf($("connectPointerSection"), $("connectMcp")),
+      `${name}: host choice, setup commands and their Copy actions are in the MCP section; each optional text and its Copy only in its own closed section`);
+    await click($("connectPointerToggle"));
+    check(!$("connectPointerDetails").hidden && $("connectPointerToggle").getAttribute("aria-expanded") === "true"
+      && $("connectTestDetails").hidden && $("connectFilesDetails").hidden && !$("connectMcpDetails").hidden,
+      `${name}: its heading opens the project instructions, and only those`);
+    const pointerParts = $("connectPointerDetails").children;
+    check(pointerParts[0] === $("connectPointerNote")
+      && pointerParts[1] === $("connectPointerBlock")
       && $("connectPointerNote").textContent === "Copy this into the project instructions or system context your agent receives—for example, CLAUDE.md, AGENTS.md, or your agent host’s equivalent. Do not put it in AGENT-CONTEXT.md or anywhere inside the Agent Context folder."
       && $("connectPointerNote").querySelectorAll("code").map((c) => c.textContent).join()
         === "CLAUDE.md,AGENTS.md,AGENT-CONTEXT.md"
@@ -1910,17 +2475,28 @@ for (const file of ["markdown.js", "app.js"]) {
       && $("connectFilesNote").textContent === "Requires direct read access to the Agent Context folder. See the README for guidance."
       && !$("connectInstructionBlock").querySelector(".hint")
       && $("connectFilesDetails").querySelectorAll("p").length === 1
-      && $("connectFilesToggle").parentNode.tagName === "H2"
+      && $("connectFilesToggle").parentNode.tagName === "H3"
       && $("connectFilesToggle").textContent === "Connect Agents with File Access",
       `${name}: file access is a closed section heading: one warning first, then the instruction`);
     await click($("connectFilesToggle"));
     check(!$("connectFilesDetails").hidden && $("connectFilesToggle").getAttribute("aria-expanded") === "true",
       `${name}: and opens from its heading`);
     await click($("connectFilesToggle"));
-    check(!$("connectVerifyPromptBlock").querySelector(".hint") && $("connectTestTitle").textContent === "Test the Connection"
-      && $("connectTestTitle").classList.contains("connect-label") && $("connectVerify").getAttribute("aria-labelledby") === "connectTestTitle"
-      && !!$("btnCopyConnectVerifyPrompt"),
-      `${name}: Test the connection is a small label over the prompt and its Copy button, with no other words`);
+    await click($("connectTestToggle"));
+    check(!$("connectVerifyPromptBlock").querySelector(".hint") && $("connectTestTitle").textContent === "Test the Connection (Optional)"
+      && $("connectVerify").getAttribute("aria-labelledby") === "connectTestTitle"
+      && !$("connectTestDetails").hidden && !!$("btnCopyConnectVerifyPrompt"),
+      `${name}: Test the connection opens to its prompt and Copy button, with no other words`);
+    await navTo("governing");
+    await navTo("connect");
+    check(!$("connectTestDetails").hidden && !$("connectPointerDetails").hidden && $("connectFilesDetails").hidden,
+      `${name}: what was opened stays open across a redraw`);
+    await click($("connectTestToggle"));
+    await click($("connectPointerToggle"));
+    await click($("connectMcpToggle"));
+    check($("connectMcpDetails").hidden && $("connectMcpToggle").getAttribute("aria-expanded") === "false",
+      `${name}: the MCP section closes from its heading like the others`);
+    await click($("connectMcpToggle"));
   }
   check(fixture.connect_windows.shells.map((s) => s.label).join() === "PowerShell,Command Prompt"
     && fixture.connect_posix.shells.map((s) => s.label).join() === "Terminal",
@@ -1957,6 +2533,22 @@ for (const file of ["markdown.js", "app.js"]) {
     "Copy copies charter add-to-path, and runs nothing");
   clearToasts();
 
+  console.log("\nA development checkout: setup names its own launcher by full path");
+  connectAnswer = fixture.connect_windows_dev;
+  await navTo("governing");
+  await navTo("connect");
+  const devLauncher = fixture.connect_dev_launcher;
+
+  check(fixture.connect_windows_dev.connect === "ready" && !$("connectStatus") && !$("connectAddToPath")
+    && !$("connectPrerequisite") && !!$("connectConfig"),
+    "it is ready whatever PATH holds: no add-to-path prerequisite");
+  check($("connectConfig").textContent === fixture.connect_windows_dev.config_text
+    && JSON.parse($("connectConfig").textContent).mcpServers[fixture.connect_windows_dev.server_name].args[1] === devLauncher
+    && fixture.connect_windows_dev.shells.every((s) => $("connectClaude-" + s.shell).textContent.indexOf(devLauncher) !== -1),
+    "the configuration and every command run that checkout's own launcher, never a bare `charter`");
+  connectAnswer = fixture.connect_windows;
+  clearToasts();
+
   console.log("\nWindows, a path cmd /c cannot carry: file access, and the MCP limitation");
   connectAnswer = fixture.connect_files_only;
   await navTo("governing");
@@ -1976,6 +2568,9 @@ for (const file of ["markdown.js", "app.js"]) {
     && !!$("btnCopyConnectInstruction") && !$("connectFilesDetails").hidden
     && $("connectFilesToggle").getAttribute("aria-expanded") === "true" && !$("connectHosts"),
     "the file-access instruction, the only route here, starts open to copy; no host choice is offered");
+  check(!$("connectPointerSection") && $("connectBody").children.map((s) => s.id).join() === "connectStatus,connectMcp,connectVerify,connectOther"
+    && !$("connectMcpDetails").hidden && $("connectTestDetails").hidden,
+    "with no MCP route there are no project instructions; the MCP section stays open to show why");
   connectAnswer = fixture.connect_windows;
   await navTo("governing");
 
@@ -2010,8 +2605,8 @@ for (const file of ["markdown.js", "app.js"]) {
   for (const sel of ["#connectBody", ".connect-method p"]) {
     check(!/max-width/.test(rule(css, sel)), `${sel} is not held to a narrow column`);
   }
-  check(/font-weight:\s*400/.test(rule(css, ".connect-method .connect-label"))
-    && !/max-width/.test(rule(css, "#connectMcpTitle"))
+  check(/font:\s*inherit/.test(rule(css, ".connect-section-title .disclosure-toggle"))
+    && /max-width:\s*none/.test(rule(css, ".connect-method .disclosure-body"))
     && /minmax\(0, 1fr\)/.test(rule(css, "#connectBody")) && /auto-fit/.test(rule(css, ".connect-shells")),
     "the lede uses the full width; the body and the shell commands still reflow on a narrow screen");
 
@@ -2020,7 +2615,7 @@ for (const file of ["markdown.js", "app.js"]) {
   currentState = fixture.state_valid;
   for (const view of ["connect", "settings", "candidates", "proposals", "changesets"]) {
     await navTo(view);
-    check(!within($("originUnknown"), $("view-" + view)) && !within($("originUnknown"), $("contextStatus"))
+    check(!insideOf($("originUnknown"), $("view-" + view)) && !insideOf($("originUnknown"), $("contextStatus"))
       && $("view-governing").hidden && $("contextStatus").textContent.indexOf("Origin unknown") === -1,
       `${view}: the origin-unknown notice is not shown`);
   }
@@ -2079,7 +2674,7 @@ for (const file of ["markdown.js", "app.js"]) {
   const strip = (s) => s.replace(/ · authority-candidates\/coding-standards-\d\.md$/, "");
   check(twinLabels[twins[0].path] !== twinLabels[twins[1].path]
     && strip(twinLabels[twins[0].path]) === strip(twinLabels[twins[1].path])
-    && /Revise, revises “Coding Standards” · How code is written\. · changes 1 line · created 2026-10-14/.test(twinLabels[twins[0].path]),
+    && /Revision, revises “Coding Standards” · How code is written\. · changes 1 line · created 2026-10-14/.test(twinLabels[twins[0].path]),
     "two otherwise identical candidates differ, with their path added beside the source, scope, change and date that still read alike");
   const differing = labelsFor([twins[0], Object.assign({}, twins[1], { change_summary: "changes 3 lines" })]);
   check(Object.values(differing).every((l) => !/authority-candidates\//.test(l))

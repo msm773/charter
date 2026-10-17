@@ -116,6 +116,78 @@ def case_listing() -> None:
         shutil.rmtree(folder)
 
 
+def case_titles() -> None:
+    print("\neach listed proposal names the document it concerns, for the person")
+    with isolated_private_state():
+        folder, cs, cand = setup()
+        gov = ac.examine(folder).documents[0]
+        ids = {
+            "amend of a governing document": file(folder, {
+                "agent": "codex", "operation": "amend", "target_path": gov.path, "reason": "Clarify.",
+                "base_sha256": sha(folder, gov.path), "proposed_body": "Clearer.\n",
+                "proposed_meta": {"title": "A new title", "scope": "Scope."}}),
+            "amend of a candidate": file(folder, {
+                "agent": "codex", "operation": "amend", "target_path": cand, "reason": "Refine.",
+                "base_sha256": ac.sha256_text(cs.read_candidate(cand)), "proposed_body": "Refined.\n"}),
+            "retire of a candidate": file(folder, {
+                "agent": "codex", "operation": "retire", "target_path": cand, "reason": "Unneeded.",
+                "base_sha256": ac.sha256_text(cs.read_candidate(cand))}),
+            "create with a proposed title": file(folder, {
+                "agent": "codex", "operation": "create", "target_path": "authority-candidates/n.md",
+                "reason": "New.", "proposed_body": "Text.\n", "proposed_meta": {"title": "  New   rule ", "scope": ""}}),
+            "create with no title": file(folder, {
+                "agent": "codex", "operation": "create", "target_path": "authority-candidates/m.md",
+                "reason": "New.", "proposed_body": "Text.\n"}),
+            "create titled by its first heading": file(folder, {
+                "agent": "codex", "operation": "create", "target_path": "authority-candidates/h.md",
+                "reason": "New.", "proposed_body": "Lead line.\n\n#   Heading   rule\n\n## Not this one\n"}),
+            "imported create titled by its first heading": apx.file(folder, {
+                "agent": "chat-agent", "operation": "create", "target_path": "authority-candidates/i.md",
+                "reason": "New.", "proposed_body": "# Imported heading\n\nText.\n"}, source=apx.IMPORTED)["proposal_id"],
+        }
+        listing = apx.listing(folder)
+        listed = {p["proposal_id"]: p for p in listing["pending"] + listing["imported"]}
+        expected = {"amend of a governing document": (gov.title, "current"),
+                    "amend of a candidate": ("Draft", "current"),
+                    "retire of a candidate": ("Draft", "current"),
+                    "create with a proposed title": ("New rule", "proposed"),
+                    "create with no title": ("authority-candidates/m.md", "path"),
+                    "create titled by its first heading": ("Heading rule", "proposed"),
+                    "imported create titled by its first heading": ("Imported heading", "proposed")}
+        for label, pid in ids.items():
+            got = (listed[pid]["title"], listed[pid]["title_kind"])
+            check(got == expected[label], f"{label}: {got[1]} title {got[0]!r}")
+        check(listed[ids["amend of a governing document"]]["target_path"] == gov.path,
+              "the logical target path is still given beside the title")
+        summaries = {label: au.plan(folder, "accept-proposal", {"proposal_id": pid}).summary
+                     for label, pid in ids.items()}
+        check(summaries["create titled by its first heading"]
+              == "Accept as candidate: “Heading rule” becomes a private authority candidate."
+              and summaries["imported create titled by its first heading"]
+              == "Accept as candidate: “Imported heading” becomes a private authority candidate.",
+              "accepting a create titled by its heading files the candidate under the title its card showed")
+        check(summaries["create with a proposed title"]
+              == "Accept as candidate: “New rule” becomes a private authority candidate."
+              and f"a revision of “{gov.title}”" in summaries["amend of a governing document"]
+              and "keeps governing unchanged" in summaries["amend of a governing document"]
+              and "“Draft” is updated" in summaries["amend of a candidate"]
+              and all("file “" not in s.lower() and "authority-candidates/" not in s
+                      and "does not govern" not in s for s in summaries.values()),
+              "each acceptance summary names the candidate by friendly title, never “file <name>”, "
+              "with no appended “does not govern” sentence")
+        reject = au.plan(folder, "reject-proposal", {"proposal_id": ids["amend of a candidate"], "reason": "No."})
+        check(reject.summary == "Reject the proposal for “Draft”. Nothing else changes.",
+              "the rejection preview names the proposal by its title")
+        write(folder, gov.path, doc_text("x", "Edited outside", body="Changed.\n"))
+        listed = {p["proposal_id"]: p for p in apx.listing(folder)["pending"]}
+        check((listed[ids["amend of a governing document"]]["title"],
+               listed[ids["amend of a governing document"]]["title_kind"]) == (gov.path, "path")
+              and listed[ids["amend of a candidate"]]["title"] == "Draft",
+              "while the Agent Context is not valid, a governing target falls back to its path; a candidate "
+              "still has its title")
+        shutil.rmtree(folder)
+
+
 def case_import() -> None:
     print("\nimporting a returned proposal")
     with isolated_private_state():
@@ -256,13 +328,22 @@ def case_reject_and_stale() -> None:
         folder, cs, _cand = setup()
         pid = file(folder, {"agent": "a", "operation": "amend", "target_path": "authoritative/b.md", "reason": "r",
                             "base_sha256": sha(folder, "authoritative/b.md"), "proposed_body": "New.\n"})
-        check(raises(au.ActionRefused, au.plan, folder, "reject-proposal", {"proposal_id": pid, "reason": " "}),
-              "rejecting needs a reason")
+        blank = file(folder, {"agent": "a", "operation": "create", "target_path": "authority-candidates/blank.md",
+                              "reason": "r", "proposed_body": "x\n"})
+        bare = file(folder, {"agent": "a", "operation": "create", "target_path": "authority-candidates/bare.md",
+                             "reason": "r", "proposed_body": "y\n"})
+        decide(folder, "reject-proposal", {"proposal_id": blank, "reason": "   "})
+        decide(folder, "reject-proposal", {"proposal_id": bare})
+        for rid in (blank, bare):
+            rec = json.loads(open(cs.path(ps.PROPOSALS, apx.REJECTED, rid + ".json"), encoding="utf-8").read())
+            check(rec["decision"]["decision"] == apx.REJECTED and "reason" not in rec["decision"],
+                  f"rejecting needs no reason: rejected with {'a blank' if rid == blank else 'no'} reason, none recorded")
         candidates = cs.candidates()
         decide(folder, "reject-proposal", {"proposal_id": pid, "reason": "Out of scope."})
         record = json.loads(open(cs.path(ps.PROPOSALS, apx.REJECTED, pid + ".json"), encoding="utf-8").read())
         check(record["decision"]["reason"] == "Out of scope." and cs.candidates() == candidates
-              and apx.listing(folder)["pending"] == [], "rejecting records why, and changes nothing else")
+              and apx.listing(folder)["pending"] == [],
+              "a reason given is kept privately with the rejection, and nothing else changes")
 
         stale = file(folder, {"agent": "a", "operation": "amend", "target_path": "authoritative/b.md", "reason": "r",
                               "base_sha256": sha(folder, "authoritative/b.md"), "proposed_body": "Other.\n"})
@@ -365,6 +446,7 @@ def case_atomic() -> None:
 
 def run() -> None:
     case_listing()
+    case_titles()
     case_import()
     case_older_front_matter()
     case_accept()

@@ -3,9 +3,13 @@
 Coordinated Context Changes and Advisory Review; UI Standards:
 
   * drafts, attached reports and receipts are private local state only;
-  * the person declares every outcome — retain, revise, replace, withdraw,
-    govern alongside — and nothing is inferred; every other governing
-    document stays only by an explicit decision;
+  * the plan is candidate-first: the person chooses Replace, with its target,
+    or Govern alongside for each candidate, and may withdraw governing
+    documents; every other governing document is retained without a
+    decision; revise is never a decision, and nothing is inferred;
+  * a draft recorded in the earlier form is shown as recorded, can be
+    abandoned or deleted, and is refreshed, reviewed or applied only once the
+    person explicitly converts it;
   * pins are hashes: a changed governing document, candidate, map, settings
     or plan makes the draft and its review evidence stale; refresh repins;
   * applying is one previewed, all-or-nothing write of the governing
@@ -69,53 +73,95 @@ def setup():
 
 
 def three_outcomes(ctx, draft, revision, newcomer):
+    """Replace `a.md` with its revision, withdraw `b.md`, and govern a newcomer
+    alongside; `c.md` is retained."""
     return chs.update(ctx, draft["id"], draft["revision"], {
-        "outcomes": {"authoritative/a.md": {"outcome": "revise", "candidate": revision},
-                     "authoritative/b.md": {"outcome": "withdraw"}},
-        "alongside": [newcomer], "retain_others": True})
+        "candidates": [revision, newcomer],
+        "decisions": {revision: {"decision": "replace", "target": "authoritative/a.md"},
+                      newcomer: {"decision": "govern-alongside"}},
+        "withdrawals": ["authoritative/b.md"]})
 
 
 def case_private_and_explicit() -> None:
-    print("\nprivate drafts, explicit outcomes")
+    print("\nprivate drafts, candidate-first decisions, every other document retained")
     with isolated_private_state() as root:
         folder, ctx, revision, newcomer, spare = setup()
         before = snapshot(folder)
         draft = chs.create(ctx)
-        check(draft["title"] == chs.UNTITLED and draft["outcomes"] == {} and draft["alongside"] == []
-              and draft["retained"] == [], "a new change set is an empty, untitled plan")
+        check(draft["title"] == chs.UNTITLED and draft["candidates"] == [] and draft["decisions"] == {}
+              and draft["withdrawals"] == [] and draft["form"] == chs.CURRENT,
+              "a new change set is an empty, untitled plan in the current form")
+        with open(ctx.cs.path(ps.CHANGESETS, draft["id"] + ".json"), encoding="utf-8") as fh:
+            stored = json.load(fh)
+        check(stored["version"] == chs.RECORD_VERSION == 2 and "outcomes" not in stored["draft"]
+              and "retained" not in stored["draft"],
+              "it is recorded as version 2, with no per-document outcomes and no retained list")
         check(snapshot(folder) == before and os.path.isfile(ctx.cs.path(ps.CHANGESETS, draft["id"] + ".json"))
               and ctx.cs.base.startswith(root), "it lives in private state; the Agent Context is unchanged")
         detail = api.detail(ctx, draft)
         check(detail["lifecycle"] == chs.WAITING and not detail["valid"]
-              and {r["code"] for r in detail["reasons"]} == {"others-undecided", "nothing-to-apply"},
-              "nothing is decided for the person: every other document waits for an explicit decision")
-        draft = chs.update(ctx, draft["id"], draft["revision"], {"outcomes": {"authoritative/a.md": {"outcome": ""}}})
-        check(any(r["code"] == "undecided" for r in api.detail(ctx, draft)["reasons"]),
-              "a row starts undecided")
+              and {r["code"] for r in detail["reasons"]} == {"nothing-to-apply"}
+              and [r["path"] for r in detail["retained"]] == ["authoritative/a.md", "authoritative/b.md",
+                                                              "authoritative/c.md"],
+              "nothing is asked of the governing documents: every one is retained without a decision")
+        draft = chs.update(ctx, draft["id"], draft["revision"], {"candidates": [revision]})
+        check(draft["candidates"] == [revision] and chs.decision_of(draft, revision)["decision"] == ""
+              and any(r["code"] == "decision-not-chosen" and r["document"] == revision
+                      for r in api.detail(ctx, draft)["reasons"]),
+              "a candidate joins the plan with its decision not yet made")
         draft = chs.update(ctx, draft["id"], draft["revision"],
-                           {"outcomes": {"authoritative/a.md": {"outcome": "revise"}}})
-        check(any(r["code"] == "candidate-not-chosen" for r in api.detail(ctx, draft)["reasons"]),
-              "a revision waits for the person to choose its candidate")
+                           {"decisions": {revision: {"decision": "replace"}}})
+        check(any(r["code"] == "target-not-chosen" for r in api.detail(ctx, draft)["reasons"]),
+              "Replace waits for the person to choose the governing document it replaces")
+        for decision, why in (("revise", "Revise is not a change-set decision"),
+                              ("retain", "Retain is not a decision"),
+                              ("withdraw", "A withdrawal uses no candidate"),
+                              ("merge", "replace or govern-alongside")):
+            try:
+                chs.update(ctx, draft["id"], draft["revision"],
+                           {"decisions": {revision: {"decision": decision}}})
+                refused = ""
+            except chs.ChangeSetError as exc:
+                refused = str(exc)
+            check(why in refused, f"`{decision}` is refused as a decision, saying why")
+        for old in ("outcomes", "alongside", "retain_others"):
+            check(raises(chs.ChangeSetError, chs.update, ctx, draft["id"], draft["revision"], {old: {}}),
+                  f"the earlier form's `{old}` is refused")
         check(raises(chs.ChangeSetError, chs.update, ctx, draft["id"], draft["revision"],
-                     {"candidates": [revision]}),
-              "a candidate cannot be added except by choosing it for a row")
+                     {"decisions": {spare: {"decision": "govern-alongside"}}}),
+              "a decision for a candidate not in the plan is refused")
         check(raises(chs.ChangeSetError, chs.update, ctx, draft["id"], draft["revision"],
-                     {"outcomes": {"authoritative/a.md": {"outcome": "merge"}}}), "only the four outcomes exist")
+                     {"decisions": {revision: {"decision": "replace", "target": "authoritative/zz.md"}}}),
+              "a replacement target must be a governing document")
+        check(raises(chs.ChangeSetError, chs.update, ctx, draft["id"], draft["revision"],
+                     {"withdrawals": [spare]}), "only a governing document can be withdrawn")
         check(raises(chs.ChangeSetError, chs.update, ctx, draft["id"], draft["revision"] - 1, {"title": "x"}),
               "an edit against an older revision is refused")
         draft = chs.update(ctx, draft["id"], draft["revision"], {
-            "outcomes": {"authoritative/a.md": {"outcome": "revise", "candidate": revision}},
-            "alongside": [revision]})
-        check(any(r["code"] == "candidate-used-twice" for r in api.detail(ctx, draft)["reasons"]),
-              "a candidate used twice is refused")
-        draft = chs.update(ctx, draft["id"], draft["revision"], {"alongside": []})
+            "candidates": [revision, spare],
+            "decisions": {revision: {"decision": "replace", "target": "authoritative/a.md"},
+                          spare: {"decision": "replace", "target": "authoritative/a.md"}}})
+        check(any(r["code"] == "target-replaced-twice" for r in api.detail(ctx, draft)["reasons"])
+              and api.detail(ctx, draft)["lifecycle"] == chs.BLOCKED,
+              "a governing document replaced twice blocks the plan")
+        draft = chs.update(ctx, draft["id"], draft["revision"], {
+            "candidates": [revision], "withdrawals": ["authoritative/a.md"]})
+        check(draft["decisions"] == {revision: {"decision": "replace", "target": "authoritative/a.md"}}
+              and any(r["code"] == "target-replaced-and-withdrawn" for r in api.detail(ctx, draft)["reasons"]),
+              "a candidate removed from the plan takes its decision with it; replacing and withdrawing "
+              "one document blocks the plan")
+        draft = chs.update(ctx, draft["id"], draft["revision"], {"withdrawals": ["authoritative/b.md"]})
+        detail = api.detail(ctx, draft)
+        check(detail["lifecycle"] == chs.VALID and [r["path"] for r in detail["retained"]] == ["authoritative/c.md"]
+              and [(e["effect"], e["document"]) for e in detail["effects"]] ==
+              [("replace", "authoritative/a.md"), ("withdraw", "authoritative/b.md"),
+               ("retain", "authoritative/c.md")],
+              "with each candidate decided, the plan is valid and the document left alone is retained")
         fp = chs.plan_fingerprint(draft)
         draft = chs.update(ctx, draft["id"], draft["revision"], {"title": "Renamed", "rationale": "Why."})
         check(chs.plan_fingerprint(draft) == fp, "the plan fingerprint ignores the title and rationale")
-        draft = chs.update(ctx, draft["id"], draft["revision"], {"retain_others": True})
-        check(chs.plan_fingerprint(draft) != fp and draft["retained"] == ["authoritative/b.md", "authoritative/c.md"],
-              "retaining the others is an explicit part of the plan")
-        check([d["id"] for d in chs.list_drafts(ctx)] == [draft["id"]], "drafts are listed for this context")
+        check([d["id"] for d in chs.list_drafts(ctx)] == [draft["id"]]
+              and chs.list_drafts(ctx)[0]["form"] == chs.CURRENT, "drafts are listed for this context")
         shutil.rmtree(folder)
 
 
@@ -129,98 +175,95 @@ def case_prefilled_start() -> None:
         au.apply(folder, "revise", p.request, p.plan_id, True)
         origin = next(c for c in ctx.cs.candidates() if "alpha-from-revise" in c)
 
+        before = snapshot(folder)
+        made = api.create(session, {"start": {"candidate": origin}})
+        draft = chs.load(ctx, made["draft"]["id"])
+        check(draft["title"] == chs.UNTITLED and made["draft"]["untitled"] and draft["candidates"] == [origin]
+              and chs.decision_of(draft, origin) == {"decision": "", "target": ""}
+              and draft["withdrawals"] == [] and set(draft["pins"]["candidates"]) == {origin},
+              "started from a Revise candidate: it is included with its decision not yet made, no "
+              "target is inferred from its origin, and the draft is not named from it")
+        check(made["lifecycle"] == chs.WAITING
+              and {r["code"] for r in made["reasons"]} == {"decision-not-chosen"}
+              and snapshot(folder) == before,
+              "it waits only for that decision; nothing is written to the Agent Context")
+        made = api.create(session, {"start": {"withdraw": "authoritative/c.md"}})
+        draft = chs.load(ctx, made["draft"]["id"])
+        check(draft["title"] == chs.UNTITLED and draft["withdrawals"] == ["authoritative/c.md"]
+              and draft["candidates"] == [] and made["lifecycle"] == chs.VALID,
+              "started from Withdraw in a change set: an unnamed withdrawal in an ordinary change set, ready to preview")
+
         starts = [
-            ({"alongside": newcomer}, "Govern alongside: “Delta”",
-             {}, [newcomer]),
-            ({"document": "authoritative/a.md", "outcome": "revise", "candidate": revision},
-             "Revise “Alpha” with “Alpha two”",
-             {"authoritative/a.md": {"outcome": "revise", "candidate": revision}}, []),
-            ({"document": "authoritative/b.md", "outcome": "replace", "candidate": newcomer},
-             "Replace “Beta” with “Delta”",
-             {"authoritative/b.md": {"outcome": "replace", "candidate": newcomer}}, []),
-            ({"document": "authoritative/c.md", "outcome": "withdraw"}, "Withdraw “Gamma”",
-             {"authoritative/c.md": {"outcome": "withdraw"}}, []),
+            ({"candidate": newcomer, "decision": "govern-alongside"}, "govern alongside",
+             {newcomer: {"decision": "govern-alongside", "target": ""}}),
+            ({"candidate": revision, "decision": "replace", "target": "authoritative/a.md"},
+             "replace",
+             {revision: {"decision": "replace", "target": "authoritative/a.md"}}),
         ]
-        for start, title, outcomes, along in starts:
-            before = snapshot(folder)
+        for start, label, decisions in starts:
             made = api.create(session, {"start": start})
             draft = chs.load(ctx, made["draft"]["id"])
-            label = title.split(":")[0].split(" “")[0].lower()
-            check(draft["title"] == title and draft["outcomes"] == outcomes
-                  and draft["alongside"] == along and draft["retained"] == []
-                  and set(draft["pins"]["candidates"]) == set(chs.members(draft)),
-                  f"{label}: the valid candidate or document the person chose is accepted, and only it")
-            check(made["lifecycle"] == chs.WAITING
-                  and {r["code"] for r in made["reasons"]} == {"others-undecided"}
-                  and snapshot(folder) == before,
-                  f"{label}: every other governing document is left undecided; nothing is written")
-            ready = chs.update(ctx, draft["id"], draft["revision"], {"retain_others": True})
+            check(draft["title"] == chs.UNTITLED and draft["decisions"] == decisions
+                  and made["lifecycle"] == chs.VALID,
+                  f"{label}: the decision the person chose is kept, every other document retained, and the "
+                  "draft left unnamed")
             hand = chs.create(ctx, "By hand")
             hand = chs.update(ctx, hand["id"], hand["revision"],
-                              {"outcomes": outcomes, "alongside": along, "retain_others": True})
-            seeded_eval, hand_eval = chs.evaluate(ctx, ready), chs.evaluate(ctx, hand)
-            check(api.detail(ctx, ready)["lifecycle"] == chs.VALID
-                  and chs.plan_fingerprint(ready) == chs.plan_fingerprint(hand)
-                  and seeded_eval["after"] == hand_eval["after"]
-                  and seeded_eval["effects"] == hand_eval["effects"],
-                  f"{label}: once the person retains the others, it is the same plan as one built by hand")
+                              {"candidates": list(decisions), "decisions": decisions})
+            check(chs.plan_fingerprint(draft) == chs.plan_fingerprint(hand)
+                  and chs.evaluate(ctx, draft)["effects"] == chs.evaluate(ctx, hand)["effects"],
+                  f"{label}: the same plan as one built by hand")
             chs.delete(ctx, hand["id"])
 
-        made = api.create(session, {"start": {"alongside": origin}, "title": "My own name"})
+        made = api.create(session, {"start": {"candidate": origin}, "title": "My own name"})
         draft = chs.load(ctx, made["draft"]["id"])
-        check(draft["title"] == "My own name" and draft["outcomes"] == {} and draft["alongside"] == [origin],
-              "a Revise candidate started to govern alongside stays alongside: no target is inferred "
-              "from its origin, and the person's own name is kept")
         draft = chs.update(ctx, draft["id"], draft["revision"],
-                           {"outcomes": {"authoritative/b.md": {"outcome": "withdraw"}}, "retain_others": True})
+                           {"decisions": {origin: {"decision": "govern-alongside"}},
+                            "withdrawals": ["authoritative/b.md"]})
         p = au.plan(folder, "changeset", {"draft_id": draft["id"], "draft_revision": draft["revision"]})
-        check(api.detail(ctx, draft)["lifecycle"] == chs.VALID and not p.blocked,
-              "a related outcome can be added before preview")
+        check(draft["title"] == "My own name" and api.detail(ctx, draft)["lifecycle"] == chs.VALID
+              and not p.blocked, "the person's own name is kept, and a related withdrawal can be added "
+                                 "before preview")
         au.apply(folder, "changeset", p.request, p.plan_id, PHRASE)
         governing = {d.path for d in ac.examine(folder).documents}
         check("authoritative/alpha-from-revise.md" in governing and "authoritative/b.md" not in governing
               and "authoritative/a.md" in governing,
-              "and both outcomes apply as one change set")
+              "and both apply as one change set")
 
         before = snapshot(folder)
         drafts = len(chs.list_drafts(ctx))
         refused = [
             ("not an object", "withdraw"),
             ("empty", {}),
-            ("an unknown candidate", {"alongside": "authority-candidates/nope.md"}),
-            ("a governing path as a candidate", {"alongside": "authoritative/a.md"}),
-            ("a document that does not govern", {"document": "authoritative/zz.md", "outcome": "withdraw"}),
-            ("a candidate as the document", {"document": spare, "outcome": "withdraw"}),
-            ("revise without a candidate", {"document": "authoritative/a.md", "outcome": "revise"}),
-            ("replace with an empty candidate", {"document": "authoritative/a.md", "outcome": "replace",
-                                                 "candidate": ""}),
-            ("revise with an unknown candidate", {"document": "authoritative/a.md", "outcome": "revise",
-                                                  "candidate": "authority-candidates/nope.md"}),
-            ("withdraw with a candidate", {"document": "authoritative/a.md", "outcome": "withdraw",
-                                           "candidate": spare}),
-            ("retain as a start", {"document": "authoritative/a.md", "outcome": "retain"}),
-            ("an unknown outcome", {"document": "authoritative/a.md", "outcome": "merge"}),
-            ("no outcome", {"document": "authoritative/a.md"}),
-            ("both shapes at once", {"alongside": spare, "document": "authoritative/a.md",
-                                     "outcome": "withdraw"}),
-            ("an unknown field", {"document": "authoritative/a.md", "outcome": "withdraw", "why": "x"}),
-            ("a list of candidates", {"alongside": [spare]}),
+            ("an unknown candidate", {"candidate": "authority-candidates/nope.md"}),
+            ("a governing path as a candidate", {"candidate": "authoritative/a.md"}),
+            ("a document that does not govern", {"withdraw": "authoritative/zz.md"}),
+            ("a candidate to withdraw", {"withdraw": spare}),
+            ("revise as a decision", {"candidate": spare, "decision": "revise", "target": "authoritative/a.md"}),
+            ("retain as a decision", {"candidate": spare, "decision": "retain"}),
+            ("a replacement of a document that does not govern",
+             {"candidate": spare, "decision": "replace", "target": "authoritative/zz.md"}),
+            ("the earlier form's alongside", {"alongside": spare}),
+            ("the earlier form's document outcome", {"document": "authoritative/a.md", "outcome": "withdraw"}),
+            ("both shapes at once", {"candidate": spare, "withdraw": "authoritative/a.md"}),
+            ("an unknown field", {"candidate": spare, "why": "x"}),
+            ("a list of candidates", {"candidate": [spare]}),
         ]
         for what, start in refused:
             check(raises(console.ApiError, api.create, session, {"start": start}),
                   f"a seed with {what} is refused")
-        for key, value in (("candidates", [spare]), ("alongside", [spare]),
-                           ("outcomes", {"authoritative/a.md": {"outcome": "withdraw"}}),
+        for key, value in (("candidates", [spare]), ("decisions", {}), ("withdrawals", ["authoritative/a.md"]),
+                           ("alongside", [spare]), ("outcomes", {"authoritative/a.md": {"outcome": "withdraw"}}),
                            ("retain_others", True)):
             check(raises(console.ApiError, api.create, session, {key: value}),
                   f"`{key}` without a seed is refused: candidates join only through an explicit choice")
-            check(raises(console.ApiError, api.create, session, {"start": {"alongside": spare}, key: value}),
+            check(raises(console.ApiError, api.create, session, {"start": {"candidate": spare}, key: value}),
                   f"`{key}` beside a seed is refused too")
         check(snapshot(folder) == before and len(chs.list_drafts(ctx)) == drafts,
               "a refused seed writes nothing: no draft, and no change to the Agent Context")
 
         write(folder, "authoritative/b.md", doc_text("b", "Beta", body="Edited outside.\n"))
-        check(raises(console.ApiError, api.create, session, {"start": {"alongside": spare}})
+        check(raises(console.ApiError, api.create, session, {"start": {"candidate": spare}})
               and len(chs.list_drafts(ctx)) == drafts,
               "no seed is accepted while the Agent Context is not valid")
         shutil.rmtree(folder)
@@ -234,7 +277,7 @@ def case_three_outcomes() -> None:
         detail = api.detail(ctx, draft)
         check(detail["valid"] and detail["lifecycle"] == chs.VALID, "a complete plan is structurally valid")
         check([(a["path"], a["effect"]) for a in detail["after"]] ==
-              [("authoritative/a.md", "revised"), ("authoritative/c.md", "retained"),
+              [("authoritative/a.md", "replaced"), ("authoritative/c.md", "retained"),
                ("authoritative/delta.md", "added")], "the governing set after is shown, with each effect")
         effects = {e["document"]: e for e in detail["effects"]}
         check(effects["authoritative/a.md"]["archived_to"] == "archive/a-superseded.md"
@@ -275,7 +318,7 @@ def case_three_outcomes() -> None:
               "candidates were consumed, the replaced version archived and the withdrawn one returned privately")
         receipt = api.get(session, {"id": draft["id"]})
         check(receipt["lifecycle"] == chs.APPLIED and receipt["receipt"]["at"]
-              and [o["effect"] for o in receipt["receipt"]["outcomes"]] == ["revise", "withdraw", "retain",
+              and [o["effect"] for o in receipt["receipt"]["outcomes"]] == ["replace", "withdraw", "retain",
                                                                            "govern-alongside"],
               "an immutable receipt keeps the final outcomes")
         check(receipt["receipt"]["summary"].startswith("Change set: Restructure")
@@ -331,6 +374,22 @@ def case_stale() -> None:
               and raises(console.ApiError, api.refresh, s, {"id": draft["id"]}),
               "an invalid Agent Context blocks it, and cannot be refreshed against")
         os.remove(os.path.join(folder, "notes.txt"))
+
+        # A document that starts governing after the draft was prepared is
+        # retained once the draft is refreshed, with no decision asked for.
+        write(folder, "authoritative/e.md", doc_text("e", "Epsilon", body="Epsilon rules.\n"))
+        generate(folder)
+        detail = api.detail(ctx, chs.load(ctx, draft["id"]))
+        check(any(r["code"] == "new-governing" and r["document"] == "authoritative/e.md"
+                  and "retained" in r["message"] for r in detail["reasons"]),
+              "a document that started governing makes the draft stale, saying it will be retained")
+        refreshed = api.refresh(s, {"id": draft["id"]})
+        check(any(c["document"] == "authoritative/e.md" and "retained" in c["change"]
+                  for c in refreshed["refreshed"])
+              and refreshed["lifecycle"] == chs.VALID
+              and "authoritative/e.md" in [r["path"] for r in refreshed["retained"]]
+              and ("retain", "authoritative/e.md") in [(e["effect"], e["document"]) for e in refreshed["effects"]],
+              "refreshed, it is retained without a decision, and the plan is ready again")
         shutil.rmtree(folder)
 
 
@@ -395,13 +454,14 @@ def case_receipt_is_part_of_the_transaction() -> None:
         check(applied["state"] == chs.APPLIED and chs.APPLIED_AT not in json.dumps(applied)
               and applied["applied"]["fingerprint"] == ac.examine(folder).fingerprint,
               "once applied, the draft is its receipt, stamped, naming the context it produced")
-        check([o["effect"] for o in receipt["outcomes"]] == ["revise", "withdraw", "retain", "govern-alongside"]
+        check([o["effect"] for o in receipt["outcomes"]] == ["replace", "withdraw", "retain", "govern-alongside"]
               and [d["path"] for d in receipt["before"]] == ["authoritative/a.md", "authoritative/b.md",
                                                             "authoritative/c.md"]
               and [(d["path"], d["effect"]) for d in receipt["after"]] ==
-              [("authoritative/a.md", "revised"), ("authoritative/c.md", "retained"),
+              [("authoritative/a.md", "replaced"), ("authoritative/c.md", "retained"),
                ("authoritative/delta.md", "added")]
-              and [(r["label"], r["status"]) for r in receipt["reports"]] == [("Agent one", "malformed")]
+              # A response that is not a structurally valid report is never attached evidence.
+              and receipt["reports"] == [] and "- No advisory report attached." in receipt["summary"]
               and receipt["summary"].startswith("Change set: Restructure"),
               "the receipt holds the final outcomes, before and after, the evidence and the summary")
         shutil.rmtree(folder)
@@ -539,31 +599,42 @@ def case_every_field_validated() -> None:
         session = console.Session(folder)
         record = json.loads(chs.record_text(good))["draft"]
         applied = dict(record, state=chs.APPLIED, applied={"at": "x", "fingerprint": "y"})
+        earlier = {k: v for k, v in record.items() if k not in ("form", "decisions", "withdrawals")}
+        earlier.update(outcomes={}, alongside=[], retained=[])
         variants = {
-            "a title that is a number": dict(record, title=7),
-            "a revision that is text": dict(record, revision="3"),
-            "a revision that is true": dict(record, revision=True),
-            "an unknown state": dict(record, state="published"),
-            "an outcome that is not a dict": dict(record, outcomes={"authoritative/a.md": "revise"}),
-            "an unknown outcome": dict(record, outcomes={"authoritative/a.md": {"outcome": "grant"}}),
-            "a candidate that is a list": dict(record, outcomes={"authoritative/a.md":
-                                                                {"outcome": "revise", "candidate": ["x"]}}),
-            "alongside naming a number": dict(record, alongside=[3]),
-            "retained that is text": dict(record, retained="all"),
-            "a pin that is not a hash": dict(record, pins=dict(record["pins"], candidates={"x": 1})),
-            "a report that is text": dict(record, reports=["report"]),
-            "a report without an id": dict(record, reports=[{"text": "t"}]),
-            "prompts that is a dict": dict(record, prompts={}),
-            "applied, with no receipt": applied,
-            "an id that is not its file's": dict(record, id="ffffffffffffffff"),
+            "a title that is a number": (2, dict(record, title=7)),
+            "a revision that is text": (2, dict(record, revision="3")),
+            "a revision that is true": (2, dict(record, revision=True)),
+            "an unknown state": (2, dict(record, state="published")),
+            "candidates that is text": (2, dict(record, candidates="all")),
+            "a decision that is not a dict": (2, dict(record, decisions={"x": "replace"})),
+            "revise as a decision": (2, dict(record, decisions={"x": {"decision": "revise"}})),
+            "a target that is a list": (2, dict(record, decisions={"x": {"decision": "replace",
+                                                                          "target": ["y"]}})),
+            "withdrawals naming a number": (2, dict(record, withdrawals=[3])),
+            "no decisions at all": (2, {k: v for k, v in record.items() if k != "decisions"}),
+            "a pin that is not a hash": (2, dict(record, pins=dict(record["pins"], candidates={"x": 1}))),
+            "a report that is text": (2, dict(record, reports=["report"])),
+            "a report without an id": (2, dict(record, reports=[{"text": "t"}])),
+            "prompts that is a dict": (2, dict(record, prompts={})),
+            "applied, with no receipt": (2, applied),
+            "an id that is not its file's": (2, dict(record, id="ffffffffffffffff")),
+            "an unknown record version": (3, record),
+            "earlier form: an outcome that is not a dict": (1, dict(earlier, outcomes={"authoritative/a.md": "revise"})),
+            "earlier form: an unknown outcome": (1, dict(earlier, outcomes={"authoritative/a.md": {"outcome": "grant"}})),
+            "earlier form: a candidate that is a list": (1, dict(earlier, outcomes={"authoritative/a.md": {
+                "outcome": "revise", "candidate": ["x"]}})),
+            "earlier form: alongside naming a number": (1, dict(earlier, alongside=[3])),
+            "earlier form: retained that is text": (1, dict(earlier, retained="all")),
+            "earlier form: no outcomes at all": (1, record),
         }
         names = {}
-        for n, (label, draft) in enumerate(variants.items()):
+        for n, (label, (version, draft)) in enumerate(variants.items()):
             draft_id = f"{n + 1:016x}"
             if label != "an id that is not its file's":
                 draft = dict(draft, id=draft_id)
             with open(ctx.cs.path(ps.CHANGESETS, f"{draft_id}.json"), "w", encoding="utf-8") as fh:
-                json.dump({"version": chs.RECORD_VERSION, "draft": draft}, fh)
+                json.dump({"version": version, "draft": draft}, fh)
             names[draft_id] = label
         with open(ctx.cs.path(ps.CHANGESETS, "00000000000000ff.json"), "wb") as fh:
             fh.write(b'{"version": 1, "draft": ' + b"[" * 100_000 + b"]" * 100_000 + b"}")
@@ -593,8 +664,7 @@ def case_no_review_material_for_a_blocked_plan() -> None:
         before = set(ctx.cs.candidates())
         add(folder, "Alpha")  # would govern beside the governing "Alpha"
         twin = (set(ctx.cs.candidates()) - before).pop()
-        draft = chs.create(ctx, "", {"alongside": twin})
-        draft = chs.update(ctx, draft["id"], draft["revision"], {"retain_others": True})
+        draft = chs.create(ctx, "", {"candidate": twin, "decision": "govern-alongside"})
         session = console.Session(folder)
         shown = api.get(session, {"id": draft["id"]})
         check(shown["lifecycle"] == chs.BLOCKED
@@ -605,8 +675,8 @@ def case_no_review_material_for_a_blocked_plan() -> None:
               "and no review prompt is prepared for it, saying why")
         check(raises(chs.ChangeSetError, chs.packet_material, ctx, draft["id"], chs.plan_fingerprint(draft)),
               "nor any review packet")
-        draft = chs.update(ctx, draft["id"], draft["revision"], {"alongside": []})
-        draft = chs.update(ctx, draft["id"], draft["revision"], {"alongside": [_newcomer]})
+        draft = chs.update(ctx, draft["id"], draft["revision"], {
+            "candidates": [_newcomer], "decisions": {_newcomer: {"decision": "govern-alongside"}}})
         check(api.get(session, {"id": draft["id"]})["review_prompt"]["ready"],
               "once the plan is structurally valid, its review prompt is prepared")
         shutil.rmtree(folder)
@@ -630,6 +700,175 @@ def case_applied_receipt_is_immutable() -> None:
         shutil.rmtree(folder)
 
 
+def _earlier_record(ctx, draft_id: str, **fields) -> dict:
+    """A draft as the earlier change-set form recorded it — version 1, an
+    outcome for each governing document — written as that form wrote it."""
+    now = chs.Now(ctx)
+    draft = {"id": draft_id, "title": "Earlier plan", "created": "2026-01-01T00:00:00+00:00",
+             "updated": "2026-01-01T00:00:00+00:00", "revision": 3, "state": chs.ACTIVE,
+             "candidates": [], "outcomes": {}, "alongside": [], "retained": [], "rationale": "Kept.",
+             "pins": chs._pins(now, []), "prompts": [], "reports": [], "applied": None}
+    draft.update(fields)
+    draft["pins"] = chs._pins(now, draft["candidates"])
+    with open(ctx.cs.path(ps.CHANGESETS, draft_id + ".json"), "w", encoding="utf-8") as fh:
+        json.dump({"version": 1, "draft": draft}, fh, indent=1, sort_keys=True)
+    return draft
+
+
+def case_earlier_form() -> None:
+    print("\na change set recorded in the earlier form: shown as recorded, converted only on request")
+    with isolated_private_state():
+        folder, ctx, revision, newcomer, spare = setup()
+        session = console.Session(folder)
+        a, b, c = "authoritative/a.md", "authoritative/b.md", "authoritative/c.md"
+        old = _earlier_record(ctx, "00000000000000e1", candidates=[revision, spare, newcomer], outcomes={
+            a: {"outcome": "revise", "candidate": revision},
+            b: {"outcome": "replace", "candidate": spare},
+            c: {"outcome": "retain"}}, alongside=[newcomer],
+            prompts=[{"mode": "self-contained", "copied": "2026-01-02T00:00:00+00:00",
+                      "plan_fingerprint": "f" * 64}],
+            reports=[{"id": "r1", "label": "Earlier report", "attached": "2026-01-02T00:00:00+00:00",
+                      "text": "not a report"}])
+        path = ctx.cs.path(ps.CHANGESETS, old["id"] + ".json")
+        with open(path, "rb") as fh:
+            original_bytes = fh.read()
+        listed = next(d for d in chs.list_drafts(ctx) if d["id"] == old["id"])
+        check(not listed.get("unreadable") and listed["form"] == chs.EARLIER and listed["state"] == chs.ACTIVE,
+              "an active version 1 draft is listed as an earlier-form active draft, never as unreadable")
+        check(console._active_change_sets(folder) == 1, "and it counts as an active draft")
+        shown = api.get(session, {"id": old["id"]})
+        check(shown["form"] == chs.EARLIER and shown["lifecycle"] == chs.BLOCKED
+              and [r["code"] for r in shown["reasons"]] == ["earlier-form"]
+              and [(r["path"], r["outcome"]) for r in shown["earlier"]["rows"]] ==
+              [(a, "revise"), (b, "replace"), (c, "retain")]
+              and [x["path"] for x in shown["earlier"]["alongside"]] == [newcomer],
+              "it is shown exactly as recorded, with one reason: convert it first")
+        check(not shown["review_prompt"]["ready"] and "text" not in shown["review_prompt"]
+              and "convert it" in shown["review_prompt"]["reason"],
+              "no review material is prepared for it")
+        before = snapshot(folder)
+        blocked = [
+            ("refreshed", lambda: chs.refresh(ctx, old["id"])),
+            ("edited", lambda: chs.update(ctx, old["id"], None, {"title": "x"})),
+            ("given a decision", lambda: chs.update(ctx, old["id"], None, {"candidates": [spare]})),
+            ("recorded as a copied prompt", lambda: chs.record_copy(ctx, old["id"], "self-contained",
+                                                                    chs.plan_fingerprint(chs.load(ctx, old["id"])))),
+            ("recorded as a saved packet", lambda: chs.record_packet(ctx, old["id"], chs.plan_fingerprint(chs.load(ctx, old["id"])))),
+            ("saved as a packet", lambda: chs.packet_material(ctx, old["id"], chs.plan_fingerprint(chs.load(ctx, old["id"])))),
+            ("given a report", lambda: chs.attach_report(ctx, old["id"], "text")),
+            ("relieved of its report", lambda: chs.remove_report(ctx, old["id"], "r1")),
+            ("loaded to apply", lambda: chs.load_for_apply(ctx, old["id"], 3)),
+        ]
+        for what, fn in blocked:
+            check(raises(chs.ChangeSetError, fn), f"it cannot be {what}")
+        check(raises(au.ActionRefused, au.plan, folder, "changeset", {"draft_id": old["id"], "draft_revision": 3}),
+              "nor previewed or applied")
+        with open(path, "rb") as fh:
+            check(fh.read() == original_bytes and snapshot(folder) == before,
+                  "none of that touched the record or the Agent Context")
+
+        conversion = shown["conversion"]
+        check([(x["change"], x["from"], x["to"], x["document"], x["candidate"]) for x in conversion["changes"]] ==
+              [("converted", "revise", "replace", a, revision),
+               ("kept", "replace", "replace", b, spare),
+               ("removed", "retain", "", c, ""),
+               ("kept", "govern-alongside", "govern-alongside", "", newcomer)],
+              "the conversion lists every change: revise becomes replace, replace stays replace of the "
+              "same document by the same candidate, govern alongside is kept, retain is removed")
+        check(all(x["text"] for x in conversion["changes"])
+              and "becomes Replace “Alpha” with “Alpha two”" in conversion["changes"][0]["text"]
+              and "kept as declared" in conversion["changes"][1]["text"]
+              and "retained without a decision" in conversion["changes"][2]["text"],
+              "each change is worded for the person, by title")
+        check(raises(console.ApiError, api.convert, session, {"id": old["id"], "revision": 3}),
+              "converting needs explicit confirmation")
+        check(raises(console.ApiError, api.convert, session, {"id": old["id"], "revision": 2, "confirm": True}),
+              "and is refused against an older revision of the draft")
+        with open(path, "rb") as fh:
+            check(fh.read() == original_bytes, "nothing converts automatically")
+
+        earlier_fp = chs.plan_fingerprint(chs.load(ctx, old["id"]))
+        converted = api.convert(session, {"id": old["id"], "revision": 3, "confirm": True})
+        new = chs.load(ctx, old["id"])
+        with open(path, encoding="utf-8") as fh:
+            stored = json.load(fh)
+        check(stored["version"] == chs.RECORD_VERSION and new["form"] == chs.CURRENT
+              and new["candidates"] == [revision, spare, newcomer]
+              and new["decisions"] == {revision: {"decision": "replace", "target": a},
+                                       spare: {"decision": "replace", "target": b},
+                                       newcomer: {"decision": "govern-alongside", "target": ""}}
+              and new["withdrawals"] == [] and "outcomes" not in new and "retained" not in new,
+              "once confirmed, it is a current-form draft: the replace row kept, the revise row a replace, "
+              "the alongside kept")
+        check(new["title"] == "Earlier plan" and new["rationale"] == "Kept." and new["revision"] == 4
+              and converted["converted"] and snapshot(folder) == before,
+              "its name and rationale are kept, and no governing context changed")
+        check(new["prompts"] == old["prompts"] and [r["id"] for r in new["reports"]] == ["r1"]
+              and chs.plan_fingerprint(new) != earlier_fp
+              and converted["copied"] == [{"mode": "self-contained", "copied": "2026-01-02T00:00:00+00:00",
+                                           "exported": None, "current": False}],
+              "its prompt records and reports are kept as historical evidence, and are stale: the plan changed")
+        check(raises(console.ApiError, api.convert, session, {"id": old["id"], "revision": 4, "confirm": True}),
+              "a current-form draft is not converted again")
+        detail = api.get(session, {"id": old["id"]})
+        check(detail["lifecycle"] == chs.VALID and [r["path"] for r in detail["retained"]] == [c],
+              "converted, the plan is ready to review and preview, with the retained document shown")
+        plan = au.plan(folder, "changeset", {"draft_id": old["id"], "draft_revision": new["revision"]})
+        au.apply(folder, "changeset", plan.request, plan.plan_id, PHRASE)
+        exam = ac.examine(folder)
+        check(exam.valid and [d.path for d in exam.documents] == [a, b, c, "authoritative/delta.md"]
+              and {d.path: d.title for d in exam.documents}[a] == "Alpha two"
+              and {d.path: d.title for d in exam.documents}[b] == "Spare",
+              "and it applies like any other change set")
+
+        e2 = _earlier_record(ctx, "00000000000000e2", candidates=[], outcomes={
+            "authoritative/a.md": {"outcome": "withdraw"},
+            "authoritative/b.md": {"outcome": ""},
+            "authoritative/c.md": {"outcome": "replace", "candidate": ""}})
+        e3 = _earlier_record(ctx, "00000000000000e3", candidates=[newcomer], outcomes={
+            "authoritative/a.md": {"outcome": "replace", "candidate": newcomer}},
+            alongside=[newcomer], retained=["authoritative/b.md", "authoritative/c.md"])
+        out2, out3 = chs.conversion(chs.load(ctx, e2["id"])), chs.conversion(chs.load(ctx, e3["id"]))
+        check([(x["change"], x.get("why", "")) for x in out2["changes"]] ==
+              [("kept", ""), ("removed", "undecided"), ("removed", "candidate-not-chosen")]
+              and out2["draft"]["withdrawals"] == ["authoritative/a.md"] and out2["draft"]["candidates"] == [],
+              "withdraw is kept; a row never decided, and a replace with no candidate, are removed and listed")
+        check([(x["change"], x.get("why", "")) for x in out3["changes"]] ==
+              [("kept", ""), ("removed", "candidate-used-twice"), ("removed", "retained")]
+              and out3["changes"][2]["documents"] == ["authoritative/b.md", "authoritative/c.md"]
+              and out3["draft"]["candidates"] == [newcomer],
+              "a candidate used twice keeps its first decision; Retain all other governing documents is "
+              "removed and listed")
+
+        chs.abandon(ctx, e2["id"])
+        with open(ctx.cs.path(ps.CHANGESETS, e2["id"] + ".json"), encoding="utf-8") as fh:
+            stored = json.load(fh)
+        check(stored["version"] == 1 and "form" not in stored["draft"] and stored["draft"]["state"] == chs.ABANDONED
+              and stored["draft"]["outcomes"] == e2["outcomes"],
+              "abandoning one keeps it in the earlier form, exactly as recorded")
+        abandoned = api.get(session, {"id": e2["id"]})
+        check(abandoned["lifecycle"] == chs.ABANDONED and abandoned["reasons"] == []
+              and abandoned["conversion"] is None
+              and [r["outcome"] for r in abandoned["earlier"]["rows"]] == ["withdraw", "", "replace"],
+              "an abandoned earlier-form draft is shown as recorded, with nothing to convert")
+        api.delete(session, {"id": e3["id"], "confirm": True})
+        check(all(d["id"] != e3["id"] for d in chs.list_drafts(ctx)), "and an earlier-form draft can be deleted")
+
+        receipt = {"outcomes": [{"effect": "revise", "document": a, "title": "Alpha",
+                                 "candidate": revision, "candidate_title": "Alpha two",
+                                 "archived_to": "archive/a-superseded.md"},
+                                {"effect": "retain", "document": c, "title": "Gamma"}],
+                   "before": [], "after": [], "summary": "Change set: Old\n\nDeclared outcomes:\n- Revise\n",
+                   "reports": [], "prompts": []}
+        _earlier_record(ctx, "00000000000000e4", state=chs.APPLIED,
+                        applied={"at": "2026-01-03T00:00:00+00:00", "fingerprint": "0" * 64, "receipt": receipt})
+        shown = api.get(session, {"id": "00000000000000e4"})
+        check(shown["lifecycle"] == chs.APPLIED and shown["receipt"]["outcomes"] == receipt["outcomes"]
+              and shown["receipt"]["summary"] == receipt["summary"],
+              "an earlier-form receipt is shown exactly as recorded, Revised included")
+        shutil.rmtree(folder)
+
+
 def run() -> None:
     case_private_and_explicit()
     case_prefilled_start()
@@ -642,6 +881,7 @@ def run() -> None:
     case_no_review_material_for_a_blocked_plan()
     case_applied_receipt_is_immutable()
     case_reports_and_lifecycle()
+    case_earlier_form()
     print(f"\n{OK} All change-set checks passed.")
 
 

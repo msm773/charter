@@ -48,7 +48,7 @@ from . import agent_context as ac
 from . import host_state as hs
 from . import private_store as ps
 from . import transaction as tx
-from .docs import leading_front_matter, not_text
+from .docs import Document, leading_front_matter, not_text, parse_front_matter
 
 OPERATIONS = ("create", "amend", "retire")
 FIELDS = ("agent", "operation", "target_path", "reason", "proposed_body", "replacements",
@@ -513,6 +513,42 @@ def unexpected_text(cs: ps.ContextState, name: str, limit: int = 65536) -> str:
         return fh.read(limit).decode("utf-8", "replace")
 
 
+def first_heading(body: Any) -> str:
+    """The text of a Markdown body's first first-level heading, or "". The
+    title a create proposal gets when it supplies none, on its card and when
+    it is accepted."""
+    if not isinstance(body, str):
+        return ""
+    return next((" ".join(ln[2:].split()) for ln in body.splitlines() if ln.startswith("# ")), "")
+
+
+def title_of(p: Dict[str, Any], target: Optional[Target], cs: ps.ContextState) -> Tuple[str, str]:
+    """The friendly title a proposal card leads with, and what it is
+    (UI Standards): the current title of the governing document or candidate
+    it targets (`current`); for a create, the title it supplies, or else its
+    body's first-level heading, whether filed directly or imported
+    (`proposed`); and only when Charter cannot determine one, its logical
+    target path (`path`)."""
+    path = p.get("target_path", "")
+    if p.get("operation") == "create":
+        proposed = (p.get("proposed_meta") or {}).get("title")
+        if isinstance(proposed, str) and proposed.strip():
+            return " ".join(proposed.split()), "proposed"
+        heading = first_heading(p.get("proposed_body"))
+        return (heading, "proposed") if heading else (path, "path")
+    if target is not None and path in target.governing:
+        return target.governing[path].title, "current"
+    try:
+        text = cs.read_candidate(path) if path in cs.candidates() else None
+    except (ps.PrivateStateError, OSError, ValueError):
+        text = None
+    if text:
+        meta, body = parse_front_matter(text)
+        if isinstance(meta, dict) and isinstance(meta.get("title"), str) and meta["title"].strip():
+            return Document(path=path, meta=meta, body=body).title, "current"
+    return path, "path"
+
+
 def listing(folder: str, state: Optional[ps.PrivateState] = None) -> Dict[str, Any]:
     """Pending and imported proposals, and unexpected local records, for the person."""
     cs = (state or ps.PrivateState.default()).for_context(folder)
@@ -523,7 +559,9 @@ def listing(folder: str, state: Optional[ps.PrivateState] = None) -> Dict[str, A
     for record in sorted(filed, key=lambda r: r.get("received", "")):
         p = record["proposal"]
         stale = staleness(p, target) if target else ["The Agent Context is not valid now."]
+        title, title_kind = title_of(p, target, cs)
         shown.append({"proposal_id": record["proposal_id"], "source": record["source"],
+                      "title": title, "title_kind": title_kind,
                       "received": record.get("received", ""), "agent": p.get("agent", ""),
                       "operation": p["operation"], "target_path": p["target_path"],
                       "reason": p.get("reason", ""),
