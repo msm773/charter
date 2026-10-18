@@ -48,6 +48,14 @@ def is_context_root(folder: str) -> bool:
     return any(os.path.isfile(os.path.join(folder, name)) for name in GENERATED)
 
 
+def is_incomplete_context(folder: str) -> bool:
+    """Whether `folder` holds `authoritative/` but none of the generated files:
+    an existing, incomplete Agent Context (Product Specification 3.1), opened
+    with Open Agent Context, never created over."""
+    held = os.path.join(folder, AUTHORITATIVE)
+    return os.path.isdir(held) and not os.path.islink(held) and not is_context_root(folder)
+
+
 def read_text(folder: str, rel: str) -> Optional[str]:
     """`folder/rel` as LF-normalized UTF-8 text, or None when it is missing or
     not valid UTF-8. One strict reader for every "read a context file" site:

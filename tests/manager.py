@@ -377,6 +377,72 @@ def case_earlier_name_map() -> None:
         shutil.rmtree(folder)
 
 
+def case_incomplete_context() -> None:
+    print("\nauthored documents in authoritative/, no map: opened, never created; Rebuild only when ready")
+    with isolated_private_state():
+        def authored(files: dict) -> str:
+            folder = tempfile.mkdtemp(prefix="charter-authored-")
+            os.makedirs(os.path.join(folder, "authoritative"))
+            for rel, text in files.items():
+                write(folder, rel, text.encode("utf-8"))
+            return folder
+
+        plain = authored({"authoritative/notes.md": "# Notes\n\nNo front matter.\n"})
+        check(ac.is_incomplete_context(plain) and not ac.is_context_root(plain),
+              "a folder with authoritative/ and no map or metadata is an incomplete Agent Context")
+        before = snapshot(plain)
+        check(raises(au.ActionRefused, mg.create, plain, "Typed") and snapshot(plain) == before,
+              "Create refuses it, and writes nothing")
+        try:
+            mg.create(plain, "Typed")
+        except au.ActionRefused as exc:
+            check("Open Agent Context" in str(exc) and "incomplete" in str(exc),
+                  "and says to open it with Open Agent Context")
+        status = mg.open_context(plain)
+        check(snapshot(plain) == before, "opening it writes nothing in the folder")
+        issues = " ".join(f"{i.get('path', '')} {i['message']}" for i in status["issues"])
+        check(not status["agents_served"] and status["headline_title"] == mg.INCOMPLETE_TITLE
+              and "AGENT-CONTEXT.md" in issues and ".agent-context.json" in issues
+              and "authoritative/notes.md" in issues,
+              "it is unavailable, naming what is missing and the document that cannot govern")
+        blocked = mg.rebuild_plan(plain, "Typed")
+        check(not status["rebuild"]["available"] and blocked.blocked
+              and any("authoritative/notes.md" in p for p in blocked.problems)
+              and raises(Exception, mg.rebuild_apply, plain, blocked.plan_id, True, "Typed")
+              and snapshot(plain) == before,
+              "with a document that cannot govern, Rebuild is not offered, its preview is blocked, "
+              "and applying it is refused, writing nothing")
+
+        ready = authored({"authoritative/rules.md": doc_text("rules", "Rules")})
+        status = mg.open_context(ready)
+        check(status["rebuild"]["available"] and status["headline_detail"] == mg.INCOMPLETE_READY
+              and status["rebuild"]["needs_project_name"],
+              "with only valid documents, Rebuild is offered and asks for the project name")
+        rules = read(ready, "authoritative/rules.md")
+        check(raises(au.ActionRefused, rebuild, ready, "Rules project"),
+              "Rebuild applies only once the person also confirms the agent guidance")
+
+        def confirmed(folder: str, name: str) -> dict:
+            p = mg.rebuild_plan(folder, name, ac.default_guidance())
+            return mg.rebuild_apply(folder, p.plan_id, True, name, ac.default_guidance())
+        status = confirmed(ready, "Rules project")
+        check(status["agents_served"] and read(ready, "authoritative/rules.md") == rules
+              and [d["path"] for d in status["governing"]] == ["authoritative/rules.md"],
+              "Rebuild generates the map and metadata, and the document governs unchanged")
+
+        empty = authored({})
+        status = mg.open_context(empty)
+        check(status["rebuild"]["available"] and confirmed(empty, "Empty")["agents_served"],
+              "with no documents left, Rebuild makes a valid, empty Agent Context")
+
+        stray = authored({"authoritative/rules.md": doc_text("rules", "Rules"), "README.md": "x\n"})
+        status = mg.open_context(stray)
+        check(not status["rebuild"]["available"] and status["strays"],
+              "anything else in the folder keeps Rebuild from being offered")
+        for folder in (plain, ready, empty, stray):
+            shutil.rmtree(folder)
+
+
 def case_rebuild_refusals() -> None:
     print("\nwhat Rebuild refuses")
     with isolated_private_state():
@@ -853,6 +919,7 @@ def run() -> None:
     case_plain_refusals()
     case_map_format_updates()
     case_earlier_name_map()
+    case_incomplete_context()
     case_rebuild_refusals()
     case_rebuild_generated_damage()
     case_settings()

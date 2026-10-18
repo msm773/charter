@@ -273,6 +273,56 @@ def case_clear_recent() -> None:
         shutil.rmtree(other)
 
 
+def case_recent_console_only() -> None:
+    print("\nRecent lists only what the console opened or created; earlier entries stay until cleared")
+    with isolated_private_state() as root:
+        from app import manager as mg, mcp, propose
+        opened, by_mcp, by_propose, by_check, legacy = (context() for _ in range(5))
+        session = console.Session()
+        console.open_context(session, {"path": opened})
+        server = mcp.Server(by_mcp)
+        server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                       "params": {"name": "get_context", "arguments": {}}})
+        filed = propose.submit(["--context", by_propose], json.dumps({
+            "agent": "A", "operation": "create", "target_path": "authority-candidates/x.md",
+            "reason": "r", "proposed_body": "# X\n"}).encode())
+        mg.check(by_check)
+        known = set(map(os.path.normcase, ps.PrivateState.default().known_contexts()))
+        check(filed.get("result") == "pending"
+              and {os.path.normcase(f) for f in (by_mcp, by_propose)} <= known,
+              "MCP and charter propose made private state for their folders")
+        # State an earlier Charter made, by any route, before Recent was limited.
+        from app import host_state as hs
+        key = os.path.join(root, "contexts", hs.location_key(hs.canonical(legacy)))
+        os.makedirs(key)
+        with open(os.path.join(key, "context.json"), "w", encoding="utf-8") as fh:
+            json.dump({"version": 1, "folder": hs.canonical(legacy)}, fh)
+        listed = console.state(console.Session())["recent"]
+        check(listed == [opened, legacy],
+              "Recent: the console-opened context, then the earlier entry; never MCP, propose or check")
+
+        def records() -> dict:
+            out = {}
+            for top, _dirs, files in os.walk(root):
+                for f in files:
+                    if f in ("context.json", "recent-opened.json", "recent-cleared.json"):
+                        out[os.path.join(top, f)] = open(os.path.join(top, f), "rb").read()
+            return out
+        before = records()
+        console.state(console.Session())
+        check(records() == before, "listing Recent rewrites, clears or removes nothing")
+        console.open_context(session, {"path": by_mcp})
+        check(console.state(session)["recent"] == [by_mcp, opened, legacy],
+              "a folder MCP made state for is listed once the console opens it, first")
+        console.clear_recent(session, {})
+        check(console.state(session)["recent"] == [], "Clear removes the earlier entry with the rest")
+        console.open_context(session, {"path": legacy})
+        check(console.state(session)["recent"] == [legacy], "opening the earlier entry lists it again")
+        for folder in (opened, by_mcp, by_propose, by_check, legacy):
+            shutil.rmtree(folder)
+
+
 def case_recent_order() -> None:
     print("\nRecent: the most recently opened Agent Context first")
     with isolated_private_state():
@@ -1082,6 +1132,7 @@ def run() -> int:
     case_recent_while_open()
     case_clear_recent()
     case_import_duplicate()
+    case_recent_console_only()
     case_recent_order()
     case_change_set_count()
     case_server()

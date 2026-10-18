@@ -158,6 +158,23 @@ def build_fixture() -> dict:
     out["peek_existing"] = console.peek(session, {"path": folder})
     out["peek_empty"] = console.peek(session, {"path": empty_folder})
     shutil.rmtree(empty_folder, ignore_errors=True)
+    # A folder of authored documents in authoritative/, with no map yet: an
+    # incomplete Agent Context, opened (never created), and what it then shows
+    # with a document that cannot govern, and with only valid ones.
+    authored = tempfile.mkdtemp(prefix="charter-authored-")
+    os.makedirs(os.path.join(authored, "authoritative"))
+    with open(os.path.join(authored, "authoritative", "notes.md"), "w", encoding="utf-8") as fh:
+        fh.write("# Notes\n\nNo governance front matter.\n")
+    out["peek_incomplete"] = console.peek(session, {"path": authored})
+    opened_authored = console.Session()
+    console.open_context(opened_authored, {"path": authored})
+    out["state_incomplete_blocked"] = console.state(opened_authored)
+    with open(os.path.join(authored, "authoritative", "notes.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nid: notes\ntitle: Notes\nstatus: active\nauthority: authoritative\nscope: Notes\n"
+                 "created: 2026-10-18\nupdated: 2026-10-18\nsupersedes: []\nsuperseded_by: []\n---\n\n"
+                 "# Notes\n\nGoverning now.\n")
+    out["state_incomplete_ready"] = console.state(opened_authored)
+    shutil.rmtree(authored, ignore_errors=True)
     candidate = "authority-candidates/gamma-rules.md"
     out["candidate"] = candidate
     out["unscoped"] = "authority-candidates/unscoped-idea.md"

@@ -221,12 +221,27 @@ Git.
   text, a light outline, with no filled, danger or authority variant; disabled
   buttons stay visibly disabled. An error toast's **Dismiss** keeps it too, with
   ink text, never white on its white face. **Recent** lists the Agent
-  Contexts opened on this computer, the most recently opened first, whenever
-  the Open view is shown; its
+  Contexts opened or created in the console on this computer, the most
+  recently opened first, whenever the Open view is shown. A folder that only
+  MCP, `charter check`, `charter propose` or another command used is never
+  added: private state Charter makes now is marked to be listed once the
+  console opens it. Entries an earlier Charter listed stay as they were until
+  the person removes them, and listing Recent rewrites nothing. Its
   **Clear** empties only that list, never an Agent Context or its private
   state, and opening or creating an Agent Context lists it again. The
   Context Map no longer repeats the agent guidance, which Settings shows. Retired
   and replaced documents stay in private state; the console shows no archive.
+- **Authored documents, no map yet.** A folder that holds `authoritative/` but
+  no `AGENT-CONTEXT.md` or `.agent-context.json` is an existing, incomplete
+  Agent Context: the Open or Create view offers **Open Agent Context** for it
+  and never **Create Agent Context**, which refuses it and says to open it.
+  Opening writes nothing in the folder. Its status, **This Agent Context has no
+  map yet**, names what is missing and each document that cannot govern;
+  **Rebuild Agent Context…** is offered only once the folder is clean and every
+  document under `authoritative/` is valid, or none remains, and asks for the
+  project name and agent guidance. A document without governance front matter
+  never governs this way. Explanations above every view show file names as
+  code.
 - **Connect agents:** a guided, copy-only view, offered only while the Agent
   Context is ready. From a development checkout or worktree, every
   configuration and command names that checkout's own launcher by its full

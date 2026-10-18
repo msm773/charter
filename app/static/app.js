@@ -695,7 +695,7 @@ function renderContextStatus() {
   if (!s.agents_served) {
     const card = el("section", { class: "status-card refused", id: "refusedCard" }, [
       el("h3", {}, withCode(s.headline_title || s.headline)),
-      s.headline_detail ? el("p", { class: "status-detail", id: "refusedDetail", text: s.headline_detail }) : null,
+      s.headline_detail ? el("p", { class: "status-detail", id: "refusedDetail" }, withCode(s.headline_detail)) : null,
     ]);
     const errors = s.issues.filter((i) => i.level === "error");
     if (errors.length) {
@@ -3522,9 +3522,12 @@ function applyStartMode() {
     nameField.setAttribute("aria-required", "false");
     nameField.classList.add("secondary");
     if (label) label.textContent = "Name";
-    if (hint) hint.textContent = "An Agent Context is already here, so there is nothing to create. "
-      + (startPeek.name ? "Opening keeps its name; change it later in Settings."
-        : "Opening will show its state.");
+    if (hint) hint.textContent = startPeek.incomplete
+      ? "This folder holds authoritative/ but no context map yet, so there is nothing to create. "
+        + "Open it to see what it needs; opening writes nothing in it."
+      : "An Agent Context is already here, so there is nothing to create. "
+        + (startPeek.name ? "Opening keeps its name; change it later in Settings."
+          : "Opening will show its state.");
   } else {
     // Leaving an existing context drops the name it filled in, so a new folder
     // starts from an empty, editable field rather than the old context's name.

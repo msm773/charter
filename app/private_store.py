@@ -50,12 +50,18 @@ import stat
 import sys
 import time
 import unicodedata
-from typing import Any, Dict, Iterable, Iterator, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from . import host_state as hs
 
 CONTEXTS = "contexts"
 CONTEXT_RECORD = "context.json"
+# Marks state created under the rule that Recent lists only Agent Contexts
+# opened or created in the console (UI and Interaction Standards, criterion
+# 22): such a folder is listed once the console opens it, never merely because
+# MCP, `charter check`, `charter propose` or another command made its state.
+# State without the mark predates the rule; it stays listed as it was.
+CONSOLE_RECENT = "recent_when_opened"
 OBSERVED = "observed.json"
 LAST_SETTINGS = "settings.json"
 CANDIDATES = "candidates"
@@ -370,7 +376,7 @@ class PrivateState:
             os.makedirs(os.path.join(base, sub), mode=0o700, exist_ok=True)
         if record is None:
             hs.write_json_atomic(os.path.join(base, CONTEXT_RECORD),
-                                 {"version": RECORD_VERSION, "folder": folder})
+                                 {"version": RECORD_VERSION, "folder": folder, CONSOLE_RECENT: True})
         return ContextState(folder, base)
 
     def find_context(self, folder: str, strict: bool = False) -> Optional["ContextState"]:
@@ -414,10 +420,14 @@ class PrivateState:
         return ContextState(folder, base)
 
     def known_contexts(self) -> List[str]:
-        """The folders this computer has private state for, for the person's
-        list of recent Agent Contexts. A folder may no longer exist."""
+        """The folders this computer has private state for. A folder may no
+        longer exist."""
+        return [folder for folder, _record in self._known_records()]
+
+    def _known_records(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """Each folder this computer has private state for, with its record."""
         top = os.path.join(self._read_root(), CONTEXTS)
-        found: List[str] = []
+        found: List[Tuple[str, Dict[str, Any]]] = []
         if not os.path.isdir(top):
             return found
         for key in sorted(os.listdir(top)):
@@ -426,7 +436,7 @@ class PrivateState:
             except hs.HostStateError:
                 continue
             if isinstance(record, dict) and isinstance(record.get("folder"), str):
-                found.append(record["folder"])
+                found.append((record["folder"], record))
         return found
 
     # --- the Recent list ---
@@ -455,12 +465,18 @@ class PrivateState:
                 if isinstance(f, str) and isinstance(t, int) and not isinstance(t, bool)}
 
     def recent_contexts(self) -> List[str]:
-        """The known folders, less those cleared from Recent since last opened,
-        the most recently opened first; any never opened since Recent kept
-        times follow, in their earlier order."""
+        """The folders opened or created in the console, and the legacy
+        entries listed before Recent was limited to those, less any the person
+        cleared since last opened; the most recently opened first, then any
+        legacy entry never opened since, in its earlier order. A folder whose
+        state was made under the console-only rule by anything but the console
+        is not listed. Reading changes nothing: no entry is rewritten or
+        removed."""
         cleared = {os.path.normcase(f) for f in self._cleared_recent()}
         opened = self._opened_recent()
-        listed = [f for f in self.known_contexts() if os.path.normcase(f) not in cleared]
+        listed = [f for f, record in self._known_records()
+                  if os.path.normcase(f) not in cleared
+                  and (os.path.normcase(f) in opened or record.get(CONSOLE_RECENT) is not True)]
         return sorted(listed, key=lambda f: -opened.get(os.path.normcase(f), -1))
 
     def clear_recent(self) -> None:

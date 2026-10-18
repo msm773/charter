@@ -257,6 +257,10 @@ def peek(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     folder = hs.canonical(raw)
     if not os.path.isdir(folder):
         return blank
+    if ac.is_incomplete_context(folder):
+        # Authored documents in authoritative/ and no map yet: an existing,
+        # incomplete Agent Context, to open, never to create over.
+        return {"exists": True, "has_context": True, "incomplete": True, "valid": False, "name": ""}
     if not ac.is_context_root(folder):
         return {"exists": True, "has_context": False, "valid": False, "name": ""}
     status = mg.check(folder, git=False)

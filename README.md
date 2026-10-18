@@ -495,11 +495,39 @@ The console carries no information icons or hover panels; this part of the guide
 2. When the folder already holds an Agent Context, its name appears read-only under **Name**; change it later in [Settings](#settings).
 3. Choose **Open Agent Context**.
 
-**Open Agent Context** checks the folder and shows whether agents can be served; it writes nothing in the folder, except that an interrupted Charter write is rolled back first. **Create Agent Context** makes a new, empty one in an empty folder. To start from governing documents you already have, put them in `authoritative/` and open the folder: **Rebuild Agent Context…** generates the rest. Neither action runs Git or creates agent instruction files such as `AGENTS.md` or `CLAUDE.md`.
+**Open Agent Context** checks the folder and shows whether agents can be served; it writes nothing in the folder, except that an interrupted Charter write is rolled back first. **Create Agent Context** makes a new, empty one in an empty folder. Neither action runs Git or creates agent instruction files such as `AGENTS.md` or `CLAUDE.md`.
+
+#### Bring in documents you already have
+
+A folder that holds `authoritative/` but no `AGENT-CONTEXT.md` or `.agent-context.json` is an existing, incomplete Agent Context, not an empty folder: open it with **Open Agent Context**. **Create Agent Context** doesn't accept it.
+
+1. Put the governing documents, one Markdown file each, in `authoritative/` in a folder of their own.
+2. Enter that folder under **Agent Context folder**. The line under **Name** says it holds `authoritative/` but no context map yet; choose **Open Agent Context**. Opening writes nothing in the folder.
+3. The status reads **This Agent Context has no map yet** and lists what's missing, each document that can't govern, and anything else in the folder.
+4. Correct or move out each item listed. A document without governance front matter never governs this way: move it out of the folder, and add it with [Create candidate](#4-add-your-documents) if you want it.
+5. Once nothing else is listed, choose **Rebuild Agent Context…**, enter the **Project name**, confirm the agent guidance, review the preview, and choose **Rebuild Agent Context**. With no documents left, Rebuild makes an empty Agent Context.
+
+A governing document starts with front matter like this, followed by its Markdown text:
+
+```text
+---
+id: deployment-rules
+title: Deployment Rules
+status: active
+authority: authoritative
+scope: How and where we deploy
+created: 2026-10-18
+updated: 2026-10-18
+supersedes: []
+superseded_by: []
+---
+```
+
+Rebuild never changes a governing document; it only writes the map and metadata.
 
 An **Agent Context** is a dedicated folder agents read: `AGENT-CONTEXT.md`, `.agent-context.json`, and the governing documents in `authoritative/`. It may sit inside a project or its own Git repository; nothing else belongs in it.
 
-**Recent and Clear.** **Recent** lists the Agent Contexts opened in the console on this computer, the most recently opened first; opening one moves it to the top. **Clear** takes every listed Agent Context off this computer's Recent list and changes nothing else: it never opens, closes, or changes an Agent Context, its files, or its candidates, proposals, and change sets. It hides the folders rather than erasing them: Charter's private state still records each folder's path, with the work it keeps for that folder, so clearing Recent doesn't remove a folder's name from this computer. Opening or creating a context afterwards lists it again.
+**Recent and Clear.** **Recent** lists the Agent Contexts opened or created in the console on this computer, the most recently opened first; opening one moves it to the top. A folder Charter only reads or keeps private state for in another way—an MCP retrieval, `charter check`, `charter propose`, or another command—is never added. Entries listed by an earlier Charter, which also listed folders that only those commands had used, stay until you remove them yourself, for example with **Clear**: Charter can't tell how they were first used, so it never silently drops or rewrites them. **Clear** takes every listed Agent Context off this computer's Recent list and changes nothing else: it never opens, closes, or changes an Agent Context, its files, or its candidates, proposals, and change sets. It hides the folders rather than erasing them: Charter's private state still records each folder's path, with the work it keeps for that folder, so clearing Recent doesn't remove a folder's name from this computer. Opening or creating a context afterwards lists it again.
 
 ### Check context health
 
@@ -512,6 +540,7 @@ The top bar always shows one status, and **Governing Context** shows the map's s
 | **No Agent Context open** | Top bar | Nothing is open in the console. | Choose **Open Agent Context…**. |
 | **Charter command ready** | Top bar, after the context's status | `charter` in a new terminal runs this copy of Charter. | Nothing. |
 | **Charter command needs attention** | Top bar, after the context's status | `charter` in a new terminal runs another copy of Charter, or isn't found, so a terminal, or an agent running `charter propose`, wouldn't reach this copy. It's a warning about your PATH, not about the Agent Context: nothing is disabled, and agents set up with Connect Agents start this copy by its full path. | Choose it, or **Fix…** beside it. The dialog names the copy found, gives one command to copy that puts this copy on your PATH (after removing any other copy it names), and says to open a new terminal afterwards. |
+| **This Agent Context has no map yet** | Status above every view (with **Map out of date** or **Map not checked**) | The folder holds `authoritative/` but no `AGENT-CONTEXT.md` or `.agent-context.json`, so agents get an unavailable answer. | Correct or move out each item listed, then choose **Rebuild Agent Context…**, which is offered only when the folder is clean and every document is valid, or none remains; see [Bring in documents you already have](#bring-in-documents-you-already-have). |
 | **Map current** | Context Map | `AGENT-CONTEXT.md` and `.agent-context.json` are exactly what Charter generates from the governing documents and settings. | Nothing. |
 | **Map out of date** | Context Map | The map or metadata is missing, unreadable, or not what Charter generates—for example, after a governing document was edited outside Charter, or after you update Charter, when the status above every view reads "This Agent Context’s map is out of date". | Check the governing documents are what you intend, then choose **Rebuild Agent Context…**, review the preview, and choose **Rebuild Agent Context**. |
 | "This copy of Charter is out of date" | Status above every view (with **Map not checked**) | A newer version of Charter generated this Agent Context. The context is not at fault; this console is an older copy. Charter offers no Rebuild here, so it never rewrites the newer map. | Use the current Charter installation: quit this console and start the current one. **Diagnostics** shows which copy is running. |

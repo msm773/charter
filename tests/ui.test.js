@@ -86,6 +86,7 @@ global.fetch = async (url, options) => {
     // A read-only look: a chosen folder already holding a context answers with
     // its name; an empty or missing folder is offered to create.
     const p = (body && body.path) || "";
+    if (/authored/.test(p)) return answer(fixture.peek_incomplete);
     return answer(/missing|empty|new-context|\/other$/.test(p) ? fixture.peek_empty : fixture.peek_existing);
   }
   if (url === "/api/plan") return answer(planFor(body));
@@ -327,6 +328,21 @@ for (const file of ["markdown.js", "app.js"]) {
     && $("btnOpen").getAttribute("aria-describedby") === "newProjectNameHint"
     && !$("btnCreate").getAttribute("aria-describedby"),
     "disabled Open says why, visibly, and is described by that line");
+  console.log("\nA folder of authored documents in authoritative/, with no map yet: opened, never created");
+  type($("contextPath"), "/work/authored-docs");
+  $("contextPath").dispatch("change");
+  await settle();
+  type($("newProjectName"), "Typed name");
+  check(fixture.peek_incomplete.has_context && fixture.peek_incomplete.incomplete
+    && !$("btnOpen").disabled && $("btnCreate").disabled && $("newProjectName").readOnly,
+    "Open applies and Create does not, even with a name typed");
+  check(/holds authoritative\/ but no context map yet, so there is nothing to create/.test($("newProjectNameHint").textContent)
+    && /opening writes nothing in it/.test($("newProjectNameHint").textContent)
+    && $("btnCreate").getAttribute("aria-describedby") === "newProjectNameHint",
+    "the line under the name says so, and describes the disabled Create");
+  type($("contextPath"), "/work/new-context");
+  $("contextPath").dispatch("change");
+  await settle();
   const recent = $("recentContexts").querySelectorAll("button");
   check($("recentContexts").querySelector("h3").textContent === "Recent" && !/Opened on This Computer/.test($("recentContexts").textContent)
     && recent.some((b) => b.textContent === fixture.folder), "Agent Contexts opened here before are listed under Recent");
@@ -1393,6 +1409,28 @@ for (const file of ["markdown.js", "app.js"]) {
     "going back to Create candidate starts fresh: the half-typed title is gone");
   $("title").value = "";
   currentState = fixture.state_valid;
+
+  console.log("\nAn opened folder of authored documents with no map: unavailable, what is missing, and Rebuild only when ready");
+  currentState = fixture.state_incomplete_blocked;
+  await reload();
+  const blockedCard = $("refusedCard");
+  check(blockedCard && /This Agent Context has no map yet/.test(blockedCard.querySelector("h3").textContent)
+    && /Agent context unavailable/.test(document.body.textContent),
+    "it is shown unavailable, as an Agent Context with no map yet");
+  check(/AGENT-CONTEXT\.md/.test(blockedCard.textContent) && /\.agent-context\.json/.test(blockedCard.textContent)
+    && /authoritative\/notes\.md/.test(blockedCard.textContent) && /governance front matter/.test(blockedCard.textContent),
+    "it names what is missing and the document that cannot govern");
+  check(!$("btnRebuildFromStatus") && $("btnRebuildContext").hidden,
+    "with a document that cannot govern, Rebuild is not offered");
+  check(!/`/.test($("refusedDetail").textContent) && $("refusedDetail").querySelectorAll("code").length >= 3,
+    "file names in the explanation are code, never raw backticks");
+  currentState = fixture.state_incomplete_ready;
+  await reload();
+  check($("refusedCard") && /This Agent Context has no map yet/.test($("refusedCard").textContent)
+    && !!$("btnRebuildFromStatus") && !$("btnRebuildContext").hidden,
+    "once every document there is valid and nothing else is in the folder, Rebuild is offered");
+  currentState = fixture.state_valid;
+  await reload();
 
   console.log("\nNo Check again: the console reads the folder on opening and after each operation");
   check(!$("btnRefresh") && !$("refreshStatus")

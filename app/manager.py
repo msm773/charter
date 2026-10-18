@@ -151,6 +151,17 @@ MISMATCH = (NOT_YET, "The map and metadata don’t match the governing documents
                      "documents are what you intend, then use Rebuild Agent Context.")
 NOT_VALID = (NOT_YET, "Something in this folder isn’t valid. Each problem, and how to fix it, is "
                       "listed below.")
+# A folder of authored documents in authoritative/ with no map or metadata yet
+# (Product Specification 3.1): an existing, incomplete Agent Context.
+INCOMPLETE_TITLE = "This Agent Context has no map yet"
+INCOMPLETE_READY = ("Its folder holds `authoritative/` but no `AGENT-CONTEXT.md` or "
+                    "`.agent-context.json`, so agents can’t be served. Check that the documents are "
+                    "what you intend, then use Rebuild Agent Context to generate them.")
+INCOMPLETE_BLOCKED = ("Its folder holds `authoritative/` but no `AGENT-CONTEXT.md` or "
+                      "`.agent-context.json`, so agents can’t be served. Correct or move out each "
+                      "item listed below first. A document without governance metadata can’t govern "
+                      "this way: move it out of the folder, and add it as an authority candidate if "
+                      "you want it.")
 
 
 def _headline_parts(exam: ac.Examination, interrupted: bool) -> Tuple[str, str]:
@@ -161,6 +172,8 @@ def _headline_parts(exam: ac.Examination, interrupted: bool) -> Tuple[str, str]:
         return SERVED, ""
     if exam.state == ac.UNCLEAN:
         return STRAY_TITLE, STRAY_DETAIL
+    if ac.is_incomplete_context(exam.root):
+        return INCOMPLETE_TITLE, INCOMPLETE_BLOCKED if exam.rebuild_blockers else INCOMPLETE_READY
     if exam.charter_outdated:
         return CHARTER_OUTDATED
     if exam.legacy_map:
@@ -300,14 +313,20 @@ def create(folder: str, project_name: str,
     if os.path.exists(folder):
         if not os.path.isdir(folder) or os.path.islink(folder):
             raise ActionRefused("This is not a folder.")
+        if ac.is_incomplete_context(folder):
+            raise ActionRefused(
+                "This folder already holds `authoritative/`, so it is an existing, incomplete "
+                "Agent Context, not an empty folder. Open it with Open Agent Context instead: "
+                "opening writes nothing in it and shows what it needs. Nothing was created.")
         extra = sorted(n for n in os.listdir(folder)
                        if n != ".git" and not ac._tolerated_file(n))
         if extra:
             raise ActionRefused(
                 "An Agent Context is created in an empty folder, and this one holds "
                 + ", ".join(f"`{n}`" for n in extra[:5]) + (" and more" if len(extra) > 5 else "")
-                + ". Choose an empty folder. To make an Agent Context of governing documents you "
-                "already have, put them in `authoritative/` here and use Rebuild Agent Context.")
+                + ". Choose an empty folder. To bring in governing documents you already have, "
+                "put them in `authoritative/` in a folder of their own and open it with Open "
+                "Agent Context.")
     elif not os.path.isdir(os.path.dirname(folder)):
         raise ActionRefused("The folder above it does not exist.")
     enclosing = _enclosing_context(folder)
