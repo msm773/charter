@@ -564,9 +564,11 @@ for (const file of ["markdown.js", "app.js"]) {
       path: "authority-candidates/u.md", title: "U", source_kind: "create" }))),
     "the source tag names an agent only when one is known, and never invents an identity");
   const pickLabel = vm.runInThisContext("candidateLabel")(
-    { title: "X", source_kind: "proposal", revises_title: "Alpha", scope: "short scope" });
-  check(/Agent Proposal/.test(pickLabel) && /revises .Alpha./.test(pickLabel) && /short scope/.test(pickLabel),
-    "a change-set picker label disambiguates by source, revision relationship and a short summary");
+    { title: "X", source_kind: "proposal", revises_title: "Alpha", scope: "short scope",
+      change_summary: "changes 1 line" }, true);
+  check(/Agent Proposal/.test(pickLabel) && /revises .Alpha./.test(pickLabel) && /changes 1 line/.test(pickLabel)
+    && !/short scope/.test(pickLabel),
+    "a change-set picker label disambiguates a shared title by source, revision relationship and a short change summary");
   console.log("\nNo archive in normal views: retired and replaced documents stay private");
   check(archivedDocs.length > 0 && !$("archiveToggle") && !$("archiveList") && !$("archiveBody")
     && !document.querySelectorAll(".is-retired").length
@@ -2938,15 +2940,41 @@ for (const file of ["markdown.js", "app.js"]) {
   const strip = (s) => s.replace(/ · authority-candidates\/coding-standards-\d\.md$/, "");
   check(twinLabels[twins[0].path] !== twinLabels[twins[1].path]
     && strip(twinLabels[twins[0].path]) === strip(twinLabels[twins[1].path])
-    && /Revision, revises “Coding Standards” · How code is written\. · changes 1 line · created 2026-10-14/.test(twinLabels[twins[0].path]),
-    "two otherwise identical candidates differ, with their path added beside the source, scope, change and date that still read alike");
+    && /^Coding Standards — revision · changes 1 line · created 2026-10-14/.test(twinLabels[twins[0].path]),
+    "two otherwise identical candidates differ, with their path added beside the source, change and date that still read alike");
   const differing = labelsFor([twins[0], Object.assign({}, twins[1], { change_summary: "changes 3 lines" })]);
   check(Object.values(differing).every((l) => !/authority-candidates\//.test(l))
     && differing[twins[0].path] !== differing[twins[1].path],
     "candidates the change summary already tells apart carry no path at all: never the suffix alone");
+  check(Object.values(twinLabels).concat(Object.values(differing)).every((l) => !/How code is written/.test(l)),
+    "a picker option never carries the scope: the card and View details show it");
+  const alone = labelsFor([twins[0]])[twins[0].path];
   const earlier = labelsFor([Object.assign({}, twins[0], { revises_current: false })])[twins[0].path];
-  check(/revises an earlier version of “Coding Standards”/.test(earlier),
-    "a revision made from an earlier version says so in the picker");
+  check(alone === "Coding Standards — revision" && earlier === "Coding Standards — revision of an earlier version",
+    "a candidate whose title no other shares is its title and, for a revision, a one-word marker");
+  const ownTitle = { path: "authority-candidates/onboarding.md", title: "Onboarding", source_kind: "proposal",
+    source_agent: "Claude", scope: "New hires.", change_summary: "2 lines of text" };
+  check(labelsFor([ownTitle])[ownTitle.path] === "Onboarding",
+    "a new candidate with a title of its own is its title alone");
+  const offeredTwin = labelsFor([twins[1]], twins);
+  check(/^Coding Standards — revision · changes 1 line$/.test(offeredTwin[twins[1].path]),
+    "a title shared with a candidate already planned still tells the offered one apart");
+  const proposed = labelsFor([
+    { path: "authority-candidates/p.md", title: "Charter — Product Specification", source_kind: "proposal",
+      source_agent: "Codex", revises_title: "Charter — Product Specification", revises_current: true,
+      change_summary: "changes 1 line: “- **Git always belongs to the user.** Charter w…”" },
+    { path: "authority-candidates/p-2.md", title: "Charter — Product Specification", source_kind: "proposal",
+      source_agent: "Claude", revises_title: "Charter — Product Specification", revises_current: true,
+      change_summary: "changes 1 line: “A person opens an existing Agent Context or cre…”" }]);
+  check(proposed["authority-candidates/p.md"] === "Charter — Product Specification — revision · Proposed by: Codex · changes 1 line: “- **Git always belongs to t…”"
+    && proposed["authority-candidates/p-2.md"] === "Charter — Product Specification — revision · Proposed by: Claude · changes 1 line: “A person opens an existing…”",
+    "same-titled revisions read as revisions, by who proposed them and a short change, without repeating the title");
+  const elsewhere = labelsFor([Object.assign({}, twins[0], { title: "Code style" }),
+    Object.assign({}, twins[1], { title: "Code style" })]);
+  check(Object.values(elsewhere).every((l) => /^Code style — revises “Coding Standards” · /.test(l)),
+    "a revision titled differently from what it revises names that document");
+  check(Object.values(differing).concat(Object.values(proposed), [alone, earlier]).every((l) => l.length <= 120),
+    "options stay short enough for a native dropdown: none past 120 characters");
 
   console.log("\nA server's `code` is shown as code, never as raw backticks");
   clearToasts();

@@ -60,7 +60,11 @@ Git.
   candidate made with Revise lists the document it was revised from first
   among replacement targets, labelled, as context only. While no document
   governs, a candidate set to Replace says there is nothing to replace yet and
-  to choose Govern alongside. Change-set records are version 2.
+  to choose Govern alongside. The candidate picker's options are short enough
+  for a native dropdown: a candidate's title, with "revision" for a revision;
+  only candidates that share a title add who or what they came from and a
+  short change, and none carries its scope, which its card and **View
+  details** show. Change-set records are version 2.
 - **Change sets recorded in the earlier form** — version 1, with a retain,
   revise, replace or withdraw outcome for each governing document — keep their
   meaning. Applied receipts and abandoned drafts are shown exactly as recorded,

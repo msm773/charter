@@ -2545,29 +2545,47 @@ function changeSetBuild(cs, active) {
   return el("div", { class: "inner cs-build", id: "csBuild" }, [plan, changeSetAgentReview(cs, editable)]);
 }
 
-/* A picker option distinguishes candidates that share a title by their source,
-   revision relationship, scope and a short change summary — never by the
-   filename suffix alone. */
-function candidateLabel(c) {
-  const parts = [c.title];
-  const bits = [];
-  if (sourceTag(c)) bits.push(sourceTag(c));
-  if (c.revises_title) {
-    bits.push(c.revises_current === false
-      ? `revises an earlier version of “${c.revises_title}”` : `revises “${c.revises_title}”`);
+/* A picker option is short enough to scan in a native dropdown: the
+   candidate's title, and "revision" for one that revises a governing
+   document. Only candidates that share a title also carry their source,
+   what they revise and a short change summary, which tell them apart —
+   never the filename suffix alone. The full provenance and scope stay on the
+   candidate's card and behind View details. */
+function candidateLabel(c, shared) {
+  const earlier = c.revises_current === false;
+  const key = (t) => (t || "").trim().toLowerCase();
+  /* What a revision revises: just "revision" when that is the document of the
+     candidate's own title, which the label already names. */
+  const revises = !c.revises_title ? ""
+    : key(c.revises_title) === key(c.title) ? (earlier ? "revision of an earlier version" : "revision")
+      : (earlier ? `revises an earlier version of “${c.revises_title}”` : `revises “${c.revises_title}”`);
+  if (!shared) {
+    return c.revises_title ? `${c.title} — ${earlier ? "revision of an earlier version" : "revision"}` : c.title;
   }
-  if (bits.length) parts.push(" — " + bits.join(", "));
-  if (c.scope) parts.push(` · ${c.scope.length > 60 ? c.scope.slice(0, 57) + "…" : c.scope}`);
-  if (c.change_summary) parts.push(` · ${c.change_summary}`);
-  return parts.join("");
+  const bits = [];
+  if (revises) bits.push(revises);
+  const tag = sourceTag(c);
+  if (tag && !(tag === "Revision" && revises)) bits.push(tag);  // a Revise candidate's source is said already
+  if (c.change_summary) bits.push(shortChange(c.change_summary));
+  return bits.length ? `${c.title} — ${bits.join(" · ")}` : c.title;
 }
 
-/* Labels for the candidates one picker offers, by path. Where two would
-   still read the same, the date each was created is added, and then its
-   logical path: always beside what tells them apart, never alone. */
-function candidateLabels(list) {
+/* A change summary for a picker option: its quoted line cut shorter still. */
+function shortChange(summary) {
+  return summary.replace(/“([^”]*)”/, (whole, quoted) =>
+    quoted.length > 28 ? `“${quoted.replace(/…$/, "").slice(0, 27).trimEnd()}…”` : whole);
+}
+
+/* Labels for the candidates one picker offers, by path. A title is shared
+   when another candidate in `all` (by default the list itself) has it. Where
+   two would still read the same, the date each was created is added, and
+   then its logical path: always beside what tells them apart, never alone. */
+function candidateLabels(list, all) {
+  const titleKey = (c) => (c.title || "").trim().toLowerCase();
+  const counts = {};
+  (all || list).forEach((c) => { counts[titleKey(c)] = (counts[titleKey(c)] || 0) + 1; });
   const labels = {};
-  list.forEach((c) => { labels[c.path] = candidateLabel(c); });
+  list.forEach((c) => { labels[c.path] = candidateLabel(c, counts[titleKey(c)] > 1); });
   const repeated = () => {
     const seen = {};
     list.forEach((c) => { seen[labels[c.path]] = (seen[labels[c.path]] || 0) + 1; });
@@ -2600,7 +2618,7 @@ function changeSetCandidates(cs, active) {
   const list = el("ul", { class: "cs-list", id: "csCandidates" });
   items.forEach((c, i) => list.appendChild(planCandidate(cs, c, i, active)));
   const free = cs.available_candidates.filter((c) => !c.used);
-  const freeLabels = candidateLabels(free);
+  const freeLabels = candidateLabels(free, cs.available_candidates);
   const pick = el("select", { id: "csAddCandidate", "aria-label": "Authority candidate to include" },
     [el("option", { value: "", text: "Choose an authority candidate" })]
       .concat(free.map((c) => el("option", { value: c.path, text: freeLabels[c.path] }))));
