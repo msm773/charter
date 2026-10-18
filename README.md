@@ -131,17 +131,30 @@ And the process continues as your project evolves.
 
    On Windows, expect `Added to your user PATH:` (or `Already on your user PATH:`). On macOS/Linux, Charter changes neither PATH nor any file: it prints an `export PATH=…` line and the file to add it to, `~/.bashrc` for bash or `~/.zshrc` for zsh. For bash on macOS, it names the login file bash reads: `~/.bash_profile`, or your existing `~/.bash_login` or `~/.profile` if you have one and no `~/.bash_profile`. Add the line with a text editor. Agent hosts started from the desktop rather than a terminal may not read that file; on many Linux desktops they get PATH from `~/.profile`, which takes effect only after you log out and back in.
 
-5. **Restart and verify.** Reopen your terminal and any agent hosts (including VS Code, Claude Code, or Codex), then run from any folder:
+5. **Restart and verify.** Reopen your terminal and any agent hosts (including VS Code, Claude Code, or Codex), then check **this copy** of Charter by its full path, from any folder. Don't use a bare `charter add-to-path --check`: if another copy of Charter comes first on your PATH, that copy answers instead and reports itself as the one that runs.
 
-   ```text
-   charter add-to-path --check
+   Windows (PowerShell), with the Python that runs Charter and this copy's `charter.py`:
+
+   ```powershell
+   & C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path --check
+   ```
+
+   macOS/Linux, with this copy's launcher:
+
+   ```bash
+   ~/tools/charter/charter add-to-path --check
    ```
 
    ✅ **Expected result (Windows):** `New programs run:` followed by **this** Charter folder's launcher, such as `C:\Tools\Charter\charter.cmd`, and exit code 0.
 
-   ✅ **Expected result (macOS/Linux):** `This shell runs:` followed by your launcher path, such as `/home/you/tools/charter/charter`. Otherwise, the output says what to do next, such as a `chmod +x` command if the launcher isn't executable.
+   ✅ **Expected result (macOS/Linux):** `This shell runs:` followed by **this** copy's launcher, such as `/home/you/tools/charter/charter`, and exit code 0. Otherwise, the output says what to do next, such as a `chmod +x` command if the launcher isn't executable.
 
-   ⚠️ **If it reports "Another `charter` comes first on PATH"**, an older or different copy of Charter is earlier on your PATH: a terminal, and an agent that runs `charter propose`, would run that copy. Running `add-to-path` again doesn't change that, and a bare `charter …` command would run the other copy. Remove the folder the message names from your PATH (Windows: **Settings → System → About → Advanced system settings → Environment Variables**, then edit **Path**). If this copy isn't on PATH yet, the message also gives this copy's own command by its full paths: on Windows, for PowerShell, the Python running Charter and this copy's `charter.py`, such as `& C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path`; on macOS/Linux, this copy's launcher, such as `/home/you/tools/charter/charter add-to-path`. Then reopen the terminal and check again with the full-path check command the message gives. If it reports `nothing:`, see [Troubleshooting](#troubleshooting).
+   ⚠️ **If it names another copy of Charter**, an older or different copy comes first on your PATH: a terminal, and an agent that runs `charter propose`, would run that copy.
+
+   - **This copy is on PATH, but another comes first:** the output says "Another `charter` comes first on PATH" and names that copy's folder. Remove that folder from your PATH (Windows: **Settings → System → About → Advanced system settings → Environment Variables**, then edit **Path**). Running `add-to-path` again doesn't change that.
+   - **This copy isn't on PATH yet:** on macOS/Linux, `This shell runs:` names the other copy, and the output gives this copy's `add-to-path` command by its full path, such as `/home/you/tools/charter/charter add-to-path`. Run it and add the line it prints: that line puts this copy ahead of the other one. On Windows, the output says to remove the other copy's folder from your PATH, then gives this copy's command by its full paths, for PowerShell, such as `& C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path`.
+
+   Then reopen the terminal and check again with this copy's full-path check command, as above. If it reports `nothing:`, see [Troubleshooting](#troubleshooting).
 
 **Optional PDF import:** From the Charter folder on Windows, run:
 
@@ -568,7 +581,7 @@ Saving changes no governing document; the map's other wording is generated and c
 
 Agent guidance adds advisory instructions to the map's **Agent guidance** section. It isn't governing context: a governing document's stricter rule always applies.
 
-Each option's name in Settings is also its heading in `AGENT-CONTEXT.md`.
+In `AGENT-CONTEXT.md`, each option that's on is one bullet in the **Agent guidance** section, beginning with the option's name in bold, such as **Context check-in.** With every option off, the map has no Agent guidance section.
 
 | Option | Default | Asks agents to |
 | --- | --- | --- |
