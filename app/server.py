@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import socket
+import sys
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict
@@ -217,12 +218,19 @@ def make_handler(session: console.Session, token: str = ""):
 
 
 class ConsoleServer(ThreadingHTTPServer):
-    """The console's HTTP server. It never reuses an address already in use: on
-    Windows the default `SO_REUSEADDR` would let a second `charter serve` bind the
-    same port silently, so the person's browser could reach a different console.
-    Binding an in-use port fails cleanly instead."""
+    """The console's HTTP server. It never shares a port another program listens
+    on: binding an in-use port fails cleanly instead.
 
-    allow_reuse_address = False
+    On Windows `SO_REUSEADDR` would let a second `charter serve` bind the same
+    port silently, so the person's browser could reach a different console; the
+    port is taken exclusively instead. On Linux and macOS `SO_REUSEADDR` never
+    lets a second listener share the address. It only lets a console restarted
+    after Ctrl+C rebind the port its previous run's closed connections still
+    hold in TIME_WAIT, for about a minute, so it is set there. macOS also lets it
+    bind loopback over another program's wildcard listener, so that is checked
+    first."""
+
+    allow_reuse_address = os.name != "nt"
 
     def server_bind(self) -> None:
         if os.name == "nt":
@@ -230,7 +238,23 @@ class ConsoleServer(ThreadingHTTPServer):
                 self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             except (OSError, AttributeError):
                 pass
+        elif not sys.platform.startswith("linux"):
+            _refuse_wildcard_listener(self.server_address[1])
         super().server_bind()
+
+
+def _refuse_wildcard_listener(port: int) -> None:
+    """Outside Linux and Windows: raise if another program listens on every
+    address at `port`. Binding the wildcard with `SO_REUSEADDR` fails only for a
+    live listener there, not for connections left in TIME_WAIT."""
+    if not port:
+        return
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("", port))
+    finally:
+        probe.close()
 
 
 def serve(folder: str = "", host: str = "127.0.0.1", port: int = 8765) -> int:

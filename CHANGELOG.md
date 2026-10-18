@@ -58,8 +58,9 @@ Git.
   includes it, its decision not yet made; **Withdraw in a change set…** on a
   governing document opens one that withdraws it. Nothing is preselected: a
   candidate made with Revise lists the document it was revised from first
-  among replacement targets, labelled, as context only. Change-set records are
-  version 2.
+  among replacement targets, labelled, as context only. While no document
+  governs, a candidate set to Replace says there is nothing to replace yet and
+  to choose Govern alongside. Change-set records are version 2.
 - **Change sets recorded in the earlier form** — version 1, with a retain,
   revise, replace or withdraw outcome for each governing document — keep their
   meaning. Applied receipts and abandoned drafts are shown exactly as recorded,
@@ -214,7 +215,8 @@ Git.
   Apply, Accept as candidate, Reject proposal, Retire, Close and toast actions
   included — shares the one treatment of **Read** and **Edit…**: white, ink
   text, a light outline, with no filled, danger or authority variant; disabled
-  buttons stay visibly disabled. **Recent** lists the Agent
+  buttons stay visibly disabled. An error toast's **Dismiss** keeps it too, with
+  ink text, never white on its white face. **Recent** lists the Agent
   Contexts opened on this computer, the most recently opened first, whenever
   the Open view is shown; its
   **Clear** empties only that list, never an Agent Context or its private
@@ -260,7 +262,10 @@ Git.
   place: as given, as resolved, through a link to it, or through a top-level
   link such as macOS's `/var` for `/private/var`.
 - **`charter serve`** writes its address at once, also when its output is piped
-  or redirected.
+  or redirected. On Linux and macOS, a console stopped with Ctrl+C starts again
+  at once on the port it used, which its closed connections still hold for
+  about a minute; a port another program listens on is still refused, and on
+  Windows the console still takes its port exclusively.
 - **`charter compare`:** an optional, read-only comparison against a Git
   revision the person names, limited to the Agent Context's folder, with
   advisory review material that names no commit or branch. It runs in the

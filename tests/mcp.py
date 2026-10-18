@@ -375,9 +375,35 @@ def case_check() -> None:
               and "listed 4 tools" in said, "a valid Agent Context: exit 0, the handshake and stdio both answer")
         check(not os.path.exists(state_root) and state_root not in said,
               "no private state was created, and none is named")
-        check("  note  `charter`, typed in a new terminal" in said
+        # Whatever this machine's PATH holds: a clean installation has no `charter` on it.
+        check(any(f"  note  {n}" in said for n in ("`charter`, typed in a new terminal, runs this copy",
+                                                   "`charter`, typed in a new terminal, runs another copy",
+                                                   "`charter` is not on PATH for new terminals"))
               and mcp.NOT_CHECKED_BY_CHECK in said and "did not check your agent host" in said,
               "it says what `charter` by name runs, and that it did not check the agent host")
+        if os.name != "nt":  # Windows reads PATH from the registry, not this process
+            empty, other = tempfile.mkdtemp(prefix="charter-none-"), tempfile.mkdtemp(prefix="charter-other-")
+            with open(os.path.join(other, "charter"), "w") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(os.path.join(other, "charter"), 0o755)
+            notes = {}
+            saved = os.environ.get("PATH")
+            try:
+                for state, path in (("none", empty), ("this", ROOT), ("other", other)):
+                    os.environ["PATH"] = path
+                    notes[state] = run_check(folder)[1]
+            finally:
+                if saved is None:
+                    os.environ.pop("PATH", None)
+                else:
+                    os.environ["PATH"] = saved
+                shutil.rmtree(other)
+                os.rmdir(empty)
+            check("  note  `charter` is not on PATH for new terminals; agent hosts set up with Connect "
+                  "Agents do not need it" in notes["none"]
+                  and "  note  `charter`, typed in a new terminal, runs this copy" in notes["this"]
+                  and f"runs another copy, from {other}; remove {other} from PATH" in notes["other"],
+                  "the note follows PATH: none on it, this copy, or another copy")
         check(f"Charter {mcp.__version__}: MCP check" in said
               and all(f"  {k}" in said for k in ("build ", "launcher ", "charter.py ", "python ", "map format "))
               and "  context map  2 (the format this Charter generates)" in said,

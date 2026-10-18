@@ -113,6 +113,11 @@ def case_private_and_explicit() -> None:
                            {"decisions": {revision: {"decision": "replace"}}})
         check(any(r["code"] == "target-not-chosen" for r in api.detail(ctx, draft)["reasons"]),
               "Replace waits for the person to choose the governing document it replaces")
+        none_govern = [r for r in chs.decision_reasons(draft, 0) if r["code"] == "target-not-chosen"]
+        some_govern = [r for r in chs.decision_reasons(draft, 3) if r["code"] == "target-not-chosen"]
+        check(len(none_govern) == 1 and "nothing to replace: choose Govern alongside" in none_govern[0]["message"]
+              and len(some_govern) == 1 and some_govern[0]["message"].startswith("Choose the governing document"),
+              "with nothing governing yet, Replace says there is nothing to replace, not to choose one")
         for decision, why in (("revise", "Revise is not a change-set decision"),
                               ("retain", "Retain is not a decision"),
                               ("withdraw", "A withdrawal uses no candidate"),

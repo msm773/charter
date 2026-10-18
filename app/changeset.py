@@ -834,9 +834,11 @@ def stale_reasons(draft: Dict[str, Any], now: Now) -> List[Dict[str, Any]]:
     return out
 
 
-def decision_reasons(draft: Dict[str, Any]) -> List[Dict[str, Any]]:
+def decision_reasons(draft: Dict[str, Any], governing: Optional[int] = None) -> List[Dict[str, Any]]:
     """What the person still has to decide, or has decided inconsistently. An
-    active earlier-form draft has one reason: it must be converted first."""
+    active earlier-form draft has one reason: it must be converted first.
+    `governing`, the number of documents governing now, lets a Replace with
+    nothing to replace say so."""
     if earlier(draft):
         if draft.get("state", ACTIVE) != ACTIVE:
             return []
@@ -849,6 +851,9 @@ def decision_reasons(draft: Dict[str, Any]) -> List[Dict[str, Any]]:
             out.append(_reason("decision-not-chosen", "Not yet decided: choose Replace, with the "
                                                       "governing document it replaces, or Govern "
                                                       "alongside.", cand))
+        elif d["decision"] == REPLACE and not d["target"] and governing == 0:
+            out.append(_reason("target-not-chosen", "No document governs yet, so there is nothing "
+                                                    "to replace: choose Govern alongside.", cand))
         elif d["decision"] == REPLACE and not d["target"]:
             out.append(_reason("target-not-chosen", "Choose the governing document this candidate "
                                                     "replaces.", cand))
@@ -923,7 +928,7 @@ def evaluate(ctx: Ctx, draft: Dict[str, Any], now: Optional[Now] = None,
     # An earlier-form draft is never evaluated against the context now: it
     # is shown as recorded until the person converts it.
     stale = [] if earlier(draft) else stale_reasons(draft, now)
-    decisions = decision_reasons(draft)
+    decisions = decision_reasons(draft, len(now.governing))
     result: Dict[str, Any] = {"stale": bool(stale), "reasons": stale + decisions, "plan": None,
                               "effects": [], "before": [], "after": [], "summary": ""}
     result["before"] = [{"path": d.path, "title": d.title, "id": d.id,
@@ -993,7 +998,7 @@ def load_for_apply(ctx: Ctx, draft_id: Any, draft_revision: Any) -> Dict[str, An
                              + " ".join(f"{r['document'] or 'Agent Context'}: {r['message']}"
                                         for r in stale[:3])
                              + " Refresh it and review it again. Nothing was written.", stale)
-    decisions = decision_reasons(draft)
+    decisions = decision_reasons(draft, len(now.governing))
     if decisions:
         raise ChangeSetError("This change set cannot be applied yet: "
                              + " ".join(f"{r['document'] or 'Change set'}: {r['message']}"

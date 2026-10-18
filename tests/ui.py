@@ -516,7 +516,46 @@ def check_contrast() -> int:
             print(f"  FAILED: {exc}")
         print(f"  {'ok' if ok else 'FAILED'} {label}: {r:.2f}:1 (need {minimum}:1)")
         failed |= 0 if ok else 1
+    try:
+        fg, bg = _error_dismiss_colours(css)
+        r = _ratio(fg, bg)
+        ok = r >= 4.5
+    except AssertionError as exc:
+        r, ok = 0.0, False
+        print(f"  FAILED: {exc}")
+    print(f"  {'ok' if ok else 'FAILED'} an error toast's Dismiss label on its button: {r:.2f}:1 (need 4.5:1)")
+    failed |= 0 if ok else 1
     return failed
+
+
+def _error_dismiss_colours(css: str) -> tuple:
+    """The text and background an error toast's Dismiss button ends up with: the
+    shared `.btn` treatment, then any rule naming `.toast-dismiss`, in order."""
+    import re
+
+    def colour(value: str) -> str:
+        value = value.strip()
+        m = re.fullmatch(r"var\((--[\w-]+)\)", value)
+        if m:
+            return _token(css, m.group(1))
+        if re.fullmatch(r"#[0-9a-fA-F]{3}", value):
+            return "#" + "".join(c * 2 for c in value[1:])
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            return value
+        raise AssertionError(f"unsupported colour {value!r} for the error toast's Dismiss button")
+
+    found = {}
+    plain = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", plain):
+        names = [s.strip() for s in selectors.split(",")]
+        if not any(n == ".btn" or ("toast-dismiss" in n and ".toast.error" in n.replace(" ", "")
+                                   or n in (".toast .toast-dismiss", ".toast-dismiss")) for n in names):
+            continue
+        for prop, value in re.findall(r"(?:^|;)\s*(color|background(?:-color)?)\s*:\s*([^;]+)", body):
+            found["fg" if prop == "color" else "bg"] = colour(value)
+    if "fg" not in found or "bg" not in found:
+        raise AssertionError("the shared .btn treatment's colour and background were not found")
+    return found["fg"], found["bg"]
 
 
 def run() -> int:

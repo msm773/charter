@@ -176,11 +176,22 @@ On Debian and Ubuntu, `python3 -m venv` itself needs the `python3-venv` package.
    Copy-Item $env:TEMP\charter-new\charter-<new-version>\* C:\Tools\Charter -Recurse
    ```
 
+   On macOS/Linux, with the Charter folder at `~/tools/charter`:
+
+   ```bash
+   rm -rf /tmp/charter-new
+   unzip charter-<new-version>.zip -d /tmp/charter-new
+   rm -rf ~/tools/charter/*
+   cp -Rp /tmp/charter-new/charter-<new-version>/. ~/tools/charter/
+   ```
+
+   `cp -Rp` keeps the launchers' executable mode. If `charter` then says `Permission denied`, see [Troubleshooting](#troubleshooting).
+
 3. Check it: `charter --version` shows the new version, from the same folder.
 4. Start the console and open each Agent Context. If an update changed what Charter generates, its map shows **Map out of date**: choose **Rebuild Agent Context…** for each one.
 5. Reopen your agent hosts. A host keeps running the Charter it started until it restarts, so an agent host left open answers with the old copy—see [Troubleshooting](#troubleshooting).
 
-Registrations keep working because the folder didn't move. If you move the Charter folder, or change the Python it runs with, [connect your agents](#connect-your-agents) again.
+Registrations keep working because the folder didn't move. If you move the Charter folder, or change the Python it runs with, [connect your agents again](#moving-updating-or-a-development-checkout), replacing each existing registration.
 
 ### Create your first Agent Context
 
@@ -431,7 +442,19 @@ It lists the governing documents and how to use them. Treat only the governing d
 
 #### Moving, updating, or a development checkout
 
-Every registration starts the copy of Charter you set it up from, by its full path, whether that copy is an installed release or a development checkout (a Git working tree of Charter's source), so PATH can never route an agent to another copy. [Updating Charter](#update-charter) in the same folder keeps registrations working. If you move Charter, or change the Python it runs with, connect your agents again: the old registration points at the old path.
+Every registration starts the copy of Charter you set it up from, by its full path, whether that copy is an installed release or a development checkout (a Git working tree of Charter's source), so PATH can never route an agent to another copy. [Updating Charter](#update-charter) in the same folder keeps registrations working. If you move Charter, or change the Python it runs with, connect your agents again: the old registration points at the old path, and the host reports that it can't start the server.
+
+To connect again, start the console from Charter's new location, open **Connect Agents**, and replace each host's existing registration with what it gives you now:
+
+- **Claude Code** refuses to add a server name it already has (`MCP server charter-my-project already exists`). From the same project folder, remove the old registration first, then run the command Connect Agents shows:
+
+  ```text
+  claude mcp remove charter-my-project
+  ```
+
+  If you registered it with `--scope project` or `--scope user`, add the same option to `claude mcp remove`. `claude mcp list` then shows the new path and whether Claude Code can start it.
+- **Codex:** in `config.toml`, replace the existing `[mcp_servers.charter-my-project]` table, its `command` and `args` lines included, with the one **Copy Codex configuration** gives you. Don't add a second table with the same name: TOML doesn't allow one, so the file would no longer be valid. Then quit and reopen Codex.
+- **Other MCP hosts:** replace the server's existing entry rather than adding another.
 
 Optional terminal-based proposals are separate from context retrieval; see [Agent Proposals](#agent-proposals).
 
@@ -476,7 +499,7 @@ The console carries no information icons or hover panels; this part of the guide
 
 An **Agent Context** is a dedicated folder agents read: `AGENT-CONTEXT.md`, `.agent-context.json`, and the governing documents in `authoritative/`. It may sit inside a project or its own Git repository; nothing else belongs in it.
 
-**Recent and Clear.** **Recent** lists the Agent Contexts opened in the console on this computer, the most recently opened first; opening one moves it to the top. **Clear** empties this computer's stored Recent list and nothing else: it never opens, closes, or changes an Agent Context, its files, or its candidates, proposals, and change sets. Opening or creating a context afterwards lists it again.
+**Recent and Clear.** **Recent** lists the Agent Contexts opened in the console on this computer, the most recently opened first; opening one moves it to the top. **Clear** takes every listed Agent Context off this computer's Recent list and changes nothing else: it never opens, closes, or changes an Agent Context, its files, or its candidates, proposals, and change sets. It hides the folders rather than erasing them: Charter's private state still records each folder's path, with the work it keeps for that folder, so clearing Recent doesn't remove a folder's name from this computer. Opening or creating a context afterwards lists it again.
 
 ### Check context health
 
@@ -669,6 +692,17 @@ Each card leads with the title of the document it concerns—for a new document,
 - **Close review**, or leaving Agent Proposals, folds the card away again.
 
 An agent's expected context impact is kept privately with its proposal; it isn't shown on the review screen.
+
+#### Unexpected local records
+
+Charter files each proposal itself, in its private state, and records what it filed. A file it finds among those records that it didn't file—or that changed after it was filed, can't be read as a proposal, or isn't a regular file—appears under **Unexpected Local Records**, marked **Unexpected — not a proposal**, with the reason. This can happen when another program, such as an agent with access to your files, writes there directly.
+
+An unexpected record is never a proposal: it can't be accepted or rejected, and Charter leaves it unchanged.
+
+- **View contents** shows its text.
+- **Import a copy…** opens **Import agent proposal…** with its text filled in. Check it and import it like any agent's JSON. The file itself stays where it is.
+
+To remove an unexpected record from the list, delete the file it names yourself. It's in `contexts/<key>/proposals/pending/` in [private state](#private-state), in the `<key>` folder whose `context.json` names this Agent Context's folder. Charter never moves or deletes it.
 
 ### Work alongside Git
 

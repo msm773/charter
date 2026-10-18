@@ -681,7 +681,6 @@ pre.code { font: 12px/1.5 var(--mono); background: #fff; border: 1px solid var(-
 }
 .toast.error { background: var(--brick); }
 .toast .toast-action, .toast .toast-dismiss { margin-left: .7rem; }
-.toast.error .toast-dismiss { color: #fff; }
 
 .issues { display: grid; gap: .35rem; margin: 0; padding: 0; list-style: none; }
 .issues li { font-size: .87rem; padding: .3rem .6rem; border-left: 2px solid var(--rule-strong); background: var(--surface-sunk); }

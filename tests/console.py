@@ -626,6 +626,49 @@ def case_busy_port() -> None:
         shutil.rmtree(folder)
 
 
+def case_restart_port() -> None:
+    print("\na console stopped after serving the page restarts at once on the same port")
+    with isolated_private_state():
+        folder = context()
+        session = console.Session()
+        console.open_context(session, {"path": folder})
+        httpd = server.ConsoleServer(("127.0.0.1", 0), server.make_handler(session))
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        for _ in range(3):  # the server closes each connection, leaving it in TIME_WAIT
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10).read()
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(10)
+        if os.name == "nt":
+            check(not server.ConsoleServer.allow_reuse_address,
+                  "on Windows the port is still taken exclusively, never shared")
+        else:
+            again = None
+            try:
+                again = server.ConsoleServer(("127.0.0.1", port), server.make_handler(session))
+            except OSError:
+                pass
+            check(again is not None, "the restarted console binds the port its last run used")
+            if again is not None:
+                again.server_close()
+            holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            holder.bind(("", 0))
+            busy = holder.getsockname()[1]
+            holder.listen()
+            try:
+                refused = False
+                try:
+                    server.ConsoleServer(("127.0.0.1", busy), server.make_handler(session)).server_close()
+                except OSError:
+                    refused = True
+                check(refused, "a port another program listens on, on every address, is still refused")
+            finally:
+                holder.close()
+        shutil.rmtree(folder)
+
+
 def case_banner_piped() -> None:
     print("\nthe console's address is written at once, also when its output is not a terminal")
     import subprocess
@@ -1046,6 +1089,7 @@ def run() -> int:
     case_page_routes()
     case_request_boundary()
     case_busy_port()
+    case_restart_port()
     case_banner_piped()
     print(f"\n{OK} All console API and server checks passed.")
     return 0
