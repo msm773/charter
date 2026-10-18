@@ -25,6 +25,7 @@ does, but runs no suite: the quick check of the archives alone.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import shutil
 import stat
@@ -45,6 +46,9 @@ TOP_FILES = ("README.md", "CHANGELOG.md", "LICENSE", "requirements.txt", "charte
 EXECUTABLE = ("charter", "charter.py")
 CRLF = ("charter.cmd",)
 TEST_ONLY = ("tests/harness.py", "tests/_launch.py")
+# A release's build identity (Product Specification §6), written into the
+# release when it is built and nowhere in the source tree.
+BUILD_FILE = "app/build.json"
 # Every suite, run against the extracted release. Each module under tests/
 # that is not a helper is one of these; `inspect` checks that it is.
 SUITES = ("agent_context", "private_store", "host_state", "authority", "manager", "console",
@@ -69,7 +73,28 @@ def _listed(folder: str, suffixes: tuple) -> list:
 def members() -> list:
     """Every file the end-user release contains, as forward-slash paths."""
     out = list(TOP_FILES) + _listed("app", (".py",)) + _listed("app/static", (".js", ".css", ".html"))
-    return sorted(out)
+    return sorted(out + [BUILD_FILE])
+
+
+def build_record() -> bytes:
+    """`app/build.json`: the version, when this release was built, and, when Git
+    can tell, the commit it was built from and whether the tree had uncommitted
+    changes. Git is asked read-only, about this source tree only."""
+    from app import identity
+    found = identity.commit_of(ROOT) if identity.development_checkout(ROOT) else {"commit": "", "dirty": None}
+    record = {"version": __version__,
+              "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+              "commit": found["commit"], "dirty": bool(found["dirty"])}
+    return (json.dumps(record, indent=1, sort_keys=True) + "\n").encode("utf-8")
+
+
+def release_file(rel: str) -> bytes:
+    """One release member's bytes as the release carries them, `app/build.json`
+    included, which is generated rather than read from the source tree."""
+    if rel == BUILD_FILE:
+        return build_record()
+    with open(os.path.join(ROOT, *rel.split("/")), "rb") as fh:
+        return release_bytes(rel, fh.read())
 
 
 def bundle_members() -> list:
@@ -86,10 +111,18 @@ def release_bytes(rel: str, data: bytes) -> bytes:
     return data
 
 
-def _write(target: str, prefix: str, files: list, root: str = ROOT) -> None:
+def _write(target: str, prefix: str, files: list, root: str = ROOT, generated: dict = None) -> None:
     tmp = target + ".partial"
+    generated = generated or {}
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
         for rel in files:
+            if rel in generated:
+                info = zipfile.ZipInfo(f"{prefix}/{rel}", time.localtime()[:6])
+                info.create_system = 3
+                info.external_attr = (0o100644 & 0xFFFF) << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                archive.writestr(info, generated[rel])
+                continue
             path = os.path.join(root, *rel.split("/"))
             info = zipfile.ZipInfo(f"{prefix}/{rel}", time.localtime(os.path.getmtime(path))[:6])
             info.create_system = 3  # Unix, so the permission bits below are honoured
@@ -107,7 +140,7 @@ def build(out: str = "") -> tuple:
     os.makedirs(out, exist_ok=True)
     release = os.path.join(out, NAME + ".zip")
     bundle = os.path.join(out, BUNDLE + ".zip")
-    _write(release, NAME, members())
+    _write(release, NAME, members(), generated={BUILD_FILE: build_record()})
     _write(bundle, NAME, bundle_members())
     print(f"Built {release} ({len(members())} files)")
     print(f"Built {bundle} ({len(bundle_members())} files)")
@@ -185,6 +218,11 @@ def verify(release: str, bundle: str, run_suites: bool = True) -> int:
               "there is no `cgu` launcher: no compatibility command")
         version = archive.read(f"{NAME}/app/__init__.py").decode("utf-8")
         check(f'__version__ = "{__version__}"' in version, f"it is version {__version__}")
+        record = json.loads(archive.read(f"{NAME}/{BUILD_FILE}").decode("utf-8"))
+        check(set(record) == {"version", "built", "commit", "dirty"} and record["version"] == __version__
+              and len(record["built"]) == 20 and record["built"].endswith("Z")
+              and isinstance(record["commit"], str) and isinstance(record["dirty"], bool),
+              "it records its build identity: version, build time, commit and whether the tree was dirty")
         check(f"{NAME}/LICENSE" in names, "the release includes a LICENSE file")
         license_text = archive.read(f"{NAME}/LICENSE").decode("utf-8")
         check("Apache License" in license_text and "Version 2.0" in license_text
@@ -222,7 +260,7 @@ def verify(release: str, bundle: str, run_suites: bool = True) -> int:
     checked_out = subprocess.run([sys.executable, os.path.join(root, "charter.py"), "check", "--context",
                                   "."], cwd=empty, capture_output=True, text=True,
                                  stdin=subprocess.DEVNULL)
-    check(checked_out.returncode == 1 and "Agents:        refused" in checked_out.stdout
+    check(checked_out.returncode == 1 and "Agents:        unavailable" in checked_out.stdout
           and os.listdir(empty) == [],
           "the extracted `python charter.py check --context .` reports a folder that is not a valid "
           "Agent Context, exit 1, writing nothing in it")

@@ -171,10 +171,10 @@ def state(session: Session) -> Dict[str, Any]:
             "confirm_phrase": au.CONFIRM_PHRASE}
     private = ps.PrivateState.default()
     base["legacy_state"] = private.legacy()
-    # Recent: the Agent Contexts opened on this computer, whether or not one is
-    # open now, so Open Agent Context… always offers them.
-    known = [p for p in private.known_contexts() if os.path.isdir(p)]
-    base["recent"] = known[-8:]
+    # Recent: the Agent Contexts opened on this computer, the most recent first,
+    # whether or not one is open now, so Open Agent Context… always offers them.
+    known = [p for p in private.recent_contexts() if os.path.isdir(p)]
+    base["recent"] = known[:8]  # the most recently opened first
     if not session.folder:
         return dict(base, open=False)
     folder = session.folder
@@ -221,7 +221,28 @@ def open_context(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     status = _guard(lambda: mg.open_context(folder))
     session.folder = status["path"]
     session.recovered = status.get("recovered")
+    _back_in_recent(status["path"])
     return {"opened": status["path"], "name": status["name"], "headline": status["headline"]}
+
+
+def _back_in_recent(folder: str) -> None:
+    """An Agent Context the person opens or creates heads Recent, listed again
+    if it was cleared. The list is a convenience: failing to update it never
+    fails the open."""
+    try:
+        ps.PrivateState.default().note_opened(folder)
+    except (OSError, ps.PrivateStateError, hs.HostStateError):
+        pass
+
+
+def clear_recent(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Clear the Recent list. No Agent Context, and none of its private state,
+    is opened, closed or changed."""
+    try:
+        _guard(lambda: ps.PrivateState.default().clear_recent())
+    except OSError:
+        raise ApiError("Charter could not clear the Recent list. Nothing else was changed.")
+    return {"cleared": True}
 
 
 def peek(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -251,6 +272,7 @@ def create_context(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
         raise ApiError("Name the project to create an Agent Context.")
     status = _guard(lambda: mg.create(folder, name))
     session.folder = status["path"]
+    _back_in_recent(status["path"])
     return {"created": status["path"], "name": status["name"], "headline": status["headline"],
             "follow_up": status.get("follow_up", [])}
 
@@ -416,12 +438,9 @@ def stage(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
         # title and scope are offered as editable suggestions, nothing else.
         markdown, front = convert.remove_front_matter(markdown)
     suggested = (front or {}).get("title") or ""
-    heading, rest = convert.strip_leading_title(markdown)
-    # A leading heading becomes the title, unless the front matter named a
-    # different one: then the heading is text, and stays.
-    if heading and (not suggested or " ".join(heading.split()).casefold()
-                    == " ".join(suggested.split()).casefold()):
-        markdown = rest
+    # A leading heading suggests the title, but stays in the text as written,
+    # as an accepted proposal's body keeps it: the document keeps its section.
+    heading, _rest = convert.strip_leading_title(markdown)
     if front:
         notes.append(_front_matter_note(front))
     return {"filename": filename, "kind": convert.extension(filename).lstrip(".").upper(),
@@ -475,7 +494,8 @@ def _shown(plan: au.Plan) -> Dict[str, Any]:
                             else "Private local state — not agent-visible")
         change["preview"] = {"available": raw.new is not None and raw.label.endswith(".md"),
                              "why": "" if raw.new is not None else "Removed by this action."}
-    out["issues"] = [{"level": "error", "path": "", "message": m, "fix": ""}
+    # A plan's problems are about the action, not one file: shown as sentences.
+    out["issues"] = [{"level": "error", "path": "", "message": m, "fix": "", "general": True}
                      for m in plan.problems]
     return out
 
@@ -550,11 +570,29 @@ def import_check(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def import_file(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
-    """File a returned proposal as imported, after the person has checked it."""
+    """File a returned proposal as imported, after the person has checked it.
+
+    The pasted text exactly as given is its duplicate identity. A duplicate of
+    one still awaiting a decision is not filed: the result names the waiting
+    proposal, for the person to replace (`replace`, its id) or leave."""
     folder = session.require()
     if body.get("confirm") is not True:
         raise ApiError("Confirm the import to file it.")
-    return apx.file(folder, _import_json(body), source=apx.IMPORTED)
+    raw = _import_json(body)
+    submitted = body["json"]
+    if body.get("replace") is not None:
+        return apx.replace(folder, raw, body.get("replace"), source=apx.IMPORTED, submitted=submitted)
+    result = apx.file(folder, raw, source=apx.IMPORTED, submitted=submitted)
+    if result.get("result") == "duplicate":
+        try:
+            target = apx.open_target(folder)
+            waiting = apx.find_duplicate(target.cs, apx.submission_identity(submitted))
+        except apx.Unavailable:
+            waiting = None
+        if waiting is not None:
+            title, _kind = apx.title_of(waiting["proposal"], target, target.cs)
+            result["waiting"] = {"proposal_id": waiting["proposal_id"], "title": title}
+    return result
 
 
 def unexpected(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -662,10 +700,37 @@ def connect_agents(session: Session) -> Dict[str, Any]:
     return connect.connection(session.require())
 
 
-GET_ROUTES = {"/api/state": state, "/api/connect": connect_agents}
+def diagnostics(session: Session) -> Dict[str, Any]:
+    """Diagnostics: which copy of Charter this is, the map format the open Agent
+    Context records, and, as a fact, what `charter` by name runs for a new
+    program. Its remedy is the Charter command dialog's alone, never repeated
+    here (UI Standards). Reads; writes nothing."""
+    from . import identity
+    exam = ac.examine(session.folder) if session.folder and os.path.isdir(session.folder) else None
+    ident = identity.identity(exam)
+    command = connect.command_status()
+    if command["state"] == connect.COMMAND_READY:
+        on_path_text = "this copy"
+    elif command["state"] == connect.COMMAND_OTHER:
+        on_path_text = f"another copy, from {command['other_folder']}"
+    else:
+        on_path_text = "not found: `charter` is not on PATH for new programs"
+    return {"identity": ident, "relation": identity.RELATION.get(ident.get("context_map_relation") or "", ""),
+            "on_path": {"this_copy": command["state"] == connect.COMMAND_READY, "text": on_path_text}}
+
+
+def command(session: Session) -> Dict[str, Any]:
+    """The header's Charter command status, and its remedy when it needs
+    attention. Independent of the Agent Context's status: it reads PATH, never
+    the folder, and changes nothing."""
+    return connect.command_status()
+
+
+GET_ROUTES = {"/api/state": state, "/api/connect": connect_agents, "/api/diagnostics": diagnostics,
+              "/api/command": command}
 POST_ROUTES = {
     "/api/open": open_context, "/api/create": create_context, "/api/peek": peek,
-    "/api/pick-folder": pick_folder,
+    "/api/pick-folder": pick_folder, "/api/recent/clear": clear_recent,
     "/api/preview": preview, "/api/draft": draft, "/api/candidate/compare": compare,
     "/api/intake/stage": stage,
     "/api/plan": plan, "/api/apply": apply, "/api/acknowledge": acknowledge,

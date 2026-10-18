@@ -73,8 +73,11 @@ def status(cs: Optional[ContextState], exam: ac.Examination) -> Dict[str, Any]:
                            "computer, so the origin of its current content is unknown."}
     paths = outside_since(record, exam)
     rebuilt = record["source"] == "rebuild" and record["fingerprint"] == exam.fingerprint
+    # Only documents changed outside Charter, not yet acknowledged, are news. A
+    # Rebuild's own map and metadata are Charter's output: a Rebuild that only
+    # regenerated them, over documents Charter saw, says nothing.
     changed = bool(paths)
-    if not changed and not rebuilt:
+    if not changed:
         message = ""
     elif exam.valid:
         message = ("This Agent Context changed outside Charter. Its current files "
@@ -85,5 +88,5 @@ def status(cs: Optional[ContextState], exam: ac.Examination) -> Dict[str, Any]:
     else:
         message = ("This Agent Context changed outside Charter, and is not valid "
                    "now.")
-    return {"known": True, "changed_outside": changed or rebuilt, "rebuilt": rebuilt,
+    return {"known": True, "changed_outside": changed, "rebuilt": rebuilt,
             "paths": paths, "message": message}

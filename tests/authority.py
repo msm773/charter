@@ -218,7 +218,7 @@ def case_replace() -> None:
                                   "candidate": revision})
         p = au.plan(folder, "changeset", request)
         check(not any("replaces" in n or "scope" in n for n in p.notes),
-              "the preview repeats no scope note: Authority Effects shows scope continuity from the effect")
+              "the preview adds no scope note: the resulting document carries its scope")
         ctx = chs.Ctx(folder)
         effect = chs.evaluate(ctx, chs.load(ctx, request["draft_id"]))["effects"][0]
         check(effect["scope_before"] == "A scope." and effect["scope_proposed"] == ""
@@ -919,7 +919,8 @@ def case_preview_survives_midnight() -> None:
                   "edit: the candidate keeps its creation day and is updated on the apply day")
 
             p = across("retire", {"candidate": to_retire})
-            noted(p, "retire")
+            check(au.APPLY_DATE_NOTE not in p.notes and dated(p, day1),
+                  "retire: the preview shows only the retirement, with no note about candidate dates")
             check(meta_of(cs.read_archived("retire-me.md"))["updated"] == day2,
                   "retire: the archived candidate is dated the apply day")
 

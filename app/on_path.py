@@ -25,6 +25,7 @@ means something is left to do, and the output says what.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import sys
 from typing import Any, List, Optional, Tuple
@@ -46,7 +47,10 @@ the PATH they started with, and so do the terminals and agents they start:
   - quit and reopen VS Code, Claude, Codex or any other agent host (every
     window), so that their agent sessions can run `charter`.
 
-Then `charter add-to-path --check` says what a new program runs as `charter`."""
+Then this says what a new program runs as `charter`, in a new PowerShell:"""
+
+# PowerShell takes these as they are when unquoted; anything else is quoted.
+PS_PLAIN = re.compile(r"[A-Za-z0-9_.:\\/-]+")
 
 
 # --- PATH values ----------------------------------------------------------------
@@ -207,6 +211,62 @@ def startup_file(shell: str = "", platform: str = "", home: Optional[str] = None
     return "~/.bash_profile"
 
 
+def powershell_arg(arg: str) -> str:
+    """One argument as typed at a PowerShell prompt. Quoted unless it is plain,
+    and always for `--`: PowerShell drops a bare `--` passed to a script, and
+    a `claude` installed by npm is one."""
+    if arg == "--" or not PS_PLAIN.fullmatch(arg):
+        return "'" + arg.replace("'", "''") + "'"
+    return arg
+
+
+def interpreter() -> str:
+    """The Python interpreter running Charter, by its full path."""
+    return os.path.abspath(sys.executable) if sys.executable else ""
+
+
+def this_copy(folder: str, args: List[str], windows: Optional[bool] = None,
+              python: Optional[str] = None) -> str:
+    """One command that runs this copy of Charter by its full paths, from any
+    folder: on Windows, as typed in PowerShell, the Python running Charter with
+    this copy's `charter.py`; elsewhere this copy's launcher, or, while that is
+    not executable, the Python running Charter with `charter.py`. Never a bare
+    `charter`, `py` or `python3`, which PATH could route to another copy."""
+    windows = os.name == "nt" if windows is None else windows
+    python = python or interpreter()
+    script = os.path.join(folder, NAME + ".py")
+    if windows:
+        # `&` runs a program named by a quoted path: PowerShell reads a line
+        # that starts with a string as an expression, not a command.
+        return "& " + " ".join(powershell_arg(a) for a in [python, script] + args)
+    launcher = os.path.join(folder, NAME)
+    if os.path.isfile(launcher) and not os.access(launcher, os.X_OK):
+        return " ".join(shlex.quote(a) for a in [python, script] + args)
+    return " ".join(shlex.quote(a) for a in [launcher] + args)
+
+
+def _run(command: str, windows: bool) -> str:
+    """A command on a line of its own, to copy, naming the shell it is for."""
+    return f"{' in PowerShell' if windows else ''}:\n\n    {command}"
+
+
+def earlier_copy(found: str, folder: str, on_path_already: bool,
+                 windows: Optional[bool] = None) -> str:
+    """What to do when another copy's `charter` comes first: remove that copy's
+    folder from PATH. Nothing added after it can come first while it is there,
+    and a bare `charter …` command would run that copy."""
+    windows = os.name == "nt" if windows is None else windows
+    other = os.path.dirname(found)
+    text = (f"Another `charter` comes first on PATH, from {other}: a new terminal, and an agent "
+            f"that runs `charter propose`, would run that copy, not this one. Remove {other} from "
+            "your PATH, so that this copy is the one found.")
+    if not on_path_already:
+        text += ("\n\nThen put this copy on your PATH, by its full path"
+                 + _run(this_copy(folder, ["add-to-path"], windows), windows))
+    return text + ("\n\nAfterwards, open a new terminal, then check"
+                   + _run(this_copy(folder, ["add-to-path", "--check"], windows), windows))
+
+
 def export_line(folder: str) -> str:
     """The line to add. The folder is double-quoted so `$PATH` still expands, with
     its own backslash, quote, `$` and backquote escaped: the same in bash and zsh."""
@@ -236,8 +296,7 @@ def _blockers(folder: str, now: Optional[str], path_value: str) -> List[str]:
                      "(running it says `Permission denied`). Make it executable:\n\n"
                      f"    chmod +x {shlex.quote(own)}")
     if now and not is_launcher(now, folder) and contains(path_value, folder):
-        found.append(f"Another `charter` comes first on PATH: {now}. Remove {os.path.dirname(now)} "
-                     "from PATH, or use that copy.")
+        found.append(earlier_copy(now, folder, True, windows=False))
     return found
 
 
@@ -254,8 +313,8 @@ def _report_posix(folder: str, now: Optional[str], path_value: str, out: Any) ->
         return 0
     todo = _blockers(folder, now, path_value)
     if not contains(path_value, folder) and os.pathsep not in folder:
-        todo.append("Run `python3 charter.py add-to-path` in this folder for the line to add to your "
-                    "shell startup file.")
+        todo.append("For the line to add to your shell startup file, run"
+                    + _run(this_copy(folder, ["add-to-path"], windows=False), False))
     for item in todo:
         print(f"\n{item}", file=out)
     return 1
@@ -275,8 +334,9 @@ def _guide_posix(folder: str) -> int:
         where = rc or "your shell's startup file (~/.bashrc for bash, ~/.zshrc for zsh)"
         todo.append(f"To run `charter` from any folder, add this line to {where}:\n\n"
                     f"    {export_line(folder)}\n\n"
-                    "Then open a new terminal, restart any agent host, and run "
-                    "`charter add-to-path --check`.\n\n" + desktop_note(rc or "that file"))
+                    "Then open a new terminal, restart any agent host, and check"
+                    + _run(this_copy(folder, ["add-to-path", "--check"], windows=False), False)
+                    + "\n\n" + desktop_note(rc or "that file"))
     for item in todo:
         print(f"\n{item}")
     return 1
@@ -304,10 +364,10 @@ def report(folder: str = LAUNCHERS, registry: Any = None, out: Any = None) -> in
                   "reopen the agent host.", file=out)
         return 0
     if fresh:
-        print(f"\nAnother `charter` comes first on PATH. Remove {os.path.dirname(fresh)} from PATH, "
-              "or run `charter add-to-path` from that copy instead.", file=out)
+        print("\n" + earlier_copy(fresh, folder, contains(user, folder), windows=True), file=out)
     else:
-        print("\nRun `python charter.py add-to-path` in this folder to put it on your PATH.", file=out)
+        print("\nPut this copy on your PATH, by its full path"
+              + _run(this_copy(folder, ["add-to-path"], windows=True), True), file=out)
     return 1
 
 
@@ -321,11 +381,15 @@ def main(check_only: bool, folder: str = LAUNCHERS, registry: Any = None) -> int
         return 1
     changed, _value = add(folder, registry)
     print(f"{'Added to' if changed else 'Already on'} your user PATH: {folder}\n")
-    print(RESTART)
+    print(RESTART + "\n\n    " + this_copy(folder, ["add-to-path", "--check"], windows=True))
     registry = registry or Registry()
     fresh = resolve(NAME, fresh_path(registry))
-    if not is_launcher(fresh, folder):
-        print(f"\nBut another `charter` comes first on PATH: {fresh}. Remove "
-              f"{os.path.dirname(fresh or '')} from PATH, or use that copy.")
-        return 1
-    return 0
+    if is_launcher(fresh, folder):
+        return 0
+    if fresh:
+        print("\nBut " + earlier_copy(fresh, folder, True, windows=True)[0].lower()
+              + earlier_copy(fresh, folder, True, windows=True)[1:])
+    else:
+        print("\nBut a new program still finds no `charter`. Check what it finds"
+              + _run(this_copy(folder, ["add-to-path", "--check"], windows=True), True))
+    return 1

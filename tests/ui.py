@@ -255,6 +255,20 @@ def build_fixture() -> dict:
     with open(os.path.join(folder, ac.METADATA), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
 
+    # A map-format mismatch, each way: the map out of date, or this copy of
+    # Charter out of date. Then the context as it was.
+    from tests.agent_context import with_map_format
+    map_text = open(os.path.join(folder, ac.CONTEXT_MAP), encoding="utf-8").read()
+    with_map_format(folder, 1)
+    out["state_map_outdated"] = console.state(session)
+    with_map_format(folder, 3)
+    out["state_charter_outdated"] = console.state(session)
+    for rel, kept in ((ac.CONTEXT_MAP, map_text), (ac.METADATA, text)):
+        with open(os.path.join(folder, rel), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(kept)
+    out["diagnostics"] = console.diagnostics(session)
+    out["diagnostics_closed"] = console.diagnostics(console.Session())
+
     # Variants of real payloads for states this folder cannot be put in here:
     # a Git checkout, a recovered write, and a computer with a folder dialog.
     valid = out["state_valid"]
@@ -284,40 +298,45 @@ class _Registry:
 
 
 def connect_payloads(folder: str) -> dict:
-    """Connect agents for a ready Agent Context, on each platform, with `charter`
-    on PATH and without it; and, on Windows, for a folder whose path `cmd /c`
-    cannot carry. The PATH a new program would get is made up, so the
-    payloads do not depend on this computer's."""
+    """Connect agents for a ready Agent Context, on each platform: with this copy
+    first on PATH, and with another copy first; for a folder only PowerShell's
+    registration command can carry; and a path no host can carry exactly. The
+    PATH a new program would get is made up, so the payloads do not depend on
+    this computer's."""
     from app import connect, on_path
     from app import manager as mg
     out = {}
     saved = os.environ.get("PATH", "")
-    # As an installed release sees it, whichever checkout runs the tests; a
-    # development checkout's own payload names its launcher by full path.
-    dev = os.path.join(tempfile.mkdtemp(prefix="charter-ui-dev-"), "worktree")
-    os.makedirs(dev)
-    open(os.path.join(dev, ".git"), "w", encoding="utf-8").close()
-    out["connect_dev_launcher"] = os.path.join(dev, "charter.cmd")
-    out["connect_windows_dev"] = connect.connection(folder, windows=True, registry=_Registry(""), launchers=dev)
-    real_dev = connect.development_checkout
-    connect.development_checkout = lambda folder=on_path.LAUNCHERS: False
+    other = tempfile.mkdtemp(prefix="charter-ui-other-")
+    open(os.path.join(other, "charter.cmd" if os.name == "nt" else "charter"), "w").close()
+    if os.name != "nt":
+        os.chmod(os.path.join(other, "charter"), 0o755)
     try:
-        for name, path in (("", on_path.LAUNCHERS), ("_needs_path", "")):
+        for name, path in (("", on_path.LAUNCHERS), ("_conflict", os.pathsep.join([other, on_path.LAUNCHERS]))):
             os.environ["PATH"] = path
             out["connect_windows" + name] = connect.connection(folder, windows=True,
-                                                               registry=_Registry(path))
+                                                               registry=_Registry(path.replace(os.pathsep, ";")))
             out["connect_posix" + name] = connect.connection(folder, windows=False,
-                                                             registry=_Registry(path))
+                                                             registry=_Registry(path.replace(os.pathsep, ";")))
+        out["connect_other_copy"] = other
+        # The header's Charter command status, in each state, from the same made-up PATHs.
+        for name, path in (("ready", on_path.LAUNCHERS), ("other", os.pathsep.join([other, on_path.LAUNCHERS])),
+                           ("missing", "")):
+            os.environ["PATH"] = path
+            out["command_" + name] = connect.command_status(windows=True, registry=_Registry(path.replace(os.pathsep, ";")),
+                                                            python=r"C:\Program Files\Python 3.12\python.exe")
+            out["command_" + name + "_posix"] = connect.command_status(windows=False)
         os.environ["PATH"] = on_path.LAUNCHERS
         odd = os.path.join(tempfile.mkdtemp(prefix="charter-ui-"), "R&D 100%")
         mg.create(odd, "Odd")
-        out["connect_files_only"] = connect.connection(odd, windows=True,
-                                                       registry=_Registry(on_path.LAUNCHERS))
+        out["connect_powershell_only"] = connect.connection(odd, windows=True,
+                                                            registry=_Registry(on_path.LAUNCHERS))
+        out["connect_files_only"] = connect.connection(odd, windows=True, registry=_Registry(on_path.LAUNCHERS),
+                                                       python="C:\\Py\nthon\\python.exe")
         shutil.rmtree(os.path.dirname(odd))
     finally:
         os.environ["PATH"] = saved
-        connect.development_checkout = real_dev
-        shutil.rmtree(os.path.dirname(dev), ignore_errors=True)
+        shutil.rmtree(other, ignore_errors=True)
     return out
 
 

@@ -7,6 +7,7 @@
                     [--prompt | --packet <destination> [--accept-git-warning]] [--json]
     charter propose --context .              (one Agent Proposal, as JSON on stdin)
     charter add-to-path [--check]
+    charter --version
 
 `python charter.py …` runs the same commands from any directory.
 """
@@ -28,7 +29,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def _report(status: Dict[str, Any]) -> List[str]:
     lines = [f"Agent Context: {status['name']}",
              f"Folder:        {status['path']}",
-             f"Agents:        {'served' if status['agents_served'] else 'refused'}",
+             f"Agents:        {'served' if status['agents_served'] else 'unavailable'}",
              "", status["headline"]]
     errors = [i for i in status["issues"] if i["level"] == "error"]
     warnings = [i for i in status["issues"] if i["level"] == "warning"]
@@ -55,15 +56,26 @@ def _report(status: Dict[str, Any]) -> List[str]:
 
 def cmd_check(args: argparse.Namespace) -> int:
     """Report whether a folder is a valid, clean Agent Context agents can be
-    served. Read-only: it writes nothing anywhere, creates no private state,
-    and recovers nothing. Exit 0 when agents are served, 1 otherwise."""
-    from . import manager
+    served, and which Charter checked it. Read-only: it writes nothing
+    anywhere, creates no private state, and recovers nothing. Exit 0 when
+    agents are served, 1 otherwise."""
+    from . import identity, manager
     folder = os.path.abspath(os.path.expanduser(args.context))
-    # `charter check` never reports Git information, so it asks Git nothing at all:
-    # a folder's own `.git/config` cannot run during a check.
+    # `charter check` never reports the folder's Git information, so it asks
+    # Git nothing about it: a folder's own `.git/config` cannot run during a
+    # check. Only this copy's own checkout is asked who it is (`identity`).
     status = manager.check(folder, git=False)
     print("\n".join(_report(status)))
+    print("\n" + "\n".join(identity.lines(identity.identity(map_status=status["map_format"]))))
     return 0 if status["agents_served"] else 1
+
+
+def cmd_version() -> int:
+    """Which copy of Charter this is: version, build, launcher, interpreter
+    and map format. Reads only."""
+    from . import identity
+    print("\n".join(identity.lines(identity.identity())))
+    return 0
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:
@@ -81,6 +93,10 @@ def cmd_add_to_path(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog=PROG, description="Charter: one trusted context "
                                                        "for every AI agent on your project.")
+    # Handled in `main` before parsing; listed here for --help.
+    p.add_argument("--version", action="store_true",
+                   help="say which copy of Charter this is: version, build, launcher, Python and "
+                        "map format")
     sub = p.add_subparsers(dest="command")
 
     s = sub.add_parser("serve", help="run the console on this computer")
@@ -135,6 +151,8 @@ def _utf8_stdio() -> None:
 def main(argv=None) -> int:
     _utf8_stdio()
     words = list(sys.argv[1:] if argv is None else argv)
+    if words == ["--version"]:
+        return cmd_version()
     if words[:1] == ["propose"]:
         # Its own contract: exactly one JSON result on stdout and nothing on
         # stderr, for a bad command line too, so argparse never sees it.

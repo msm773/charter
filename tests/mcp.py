@@ -375,9 +375,13 @@ def case_check() -> None:
               and "listed 4 tools" in said, "a valid Agent Context: exit 0, the handshake and stdio both answer")
         check(not os.path.exists(state_root) and state_root not in said,
               "no private state was created, and none is named")
-        check("  note  a newly started program" in said and "`charter`" in said
+        check("  note  `charter`, typed in a new terminal" in said
               and mcp.NOT_CHECKED_BY_CHECK in said and "did not check your agent host" in said,
-              "it says how a new program runs `charter`, and that it did not check the agent host")
+              "it says what `charter` by name runs, and that it did not check the agent host")
+        check(f"Charter {mcp.__version__}: MCP check" in said
+              and all(f"  {k}" in said for k in ("build ", "launcher ", "charter.py ", "python ", "map format "))
+              and "  context map  2 (the format this Charter generates)" in said,
+              "it identifies the running Charter: version, build, launcher, Python, and both map formats")
         write(folder, "notes.txt", b"x")
         code, said = run_check(folder)
         check(code == 1 and "context-unclean" in said and "notes.txt" in said,
@@ -691,12 +695,52 @@ def case_private_state_fails_closed() -> None:
         shutil.rmtree(folder)
 
 
+def case_map_format() -> None:
+    print("\na map-format mismatch, in both directions, is refused with its own remedy")
+    from app import mcp_activity
+    from tests.agent_context import with_map_format
+    with isolated_private_state():
+        folder = fixture()
+        for version, code, remedy in ((1, "map-outdated", "Rebuild Agent Context"),
+                                      (3, "server-outdated", "restart the agent host")):
+            with_map_format(folder, version)
+            session = Session(folder)
+            result = session.call("get_context")
+            text = result["content"][0]["text"]
+            check(result.get("isError") and text.startswith(code + ":") and remedy in text,
+                  f"map-format version {version} against this server: `{code}`, naming the remedy")
+            message = mcp.MESSAGES[code]
+            check(not any(ch.isdigit() for ch in message) and folder not in text
+                  and len([x for x in message.split(". ") if x]) <= 3,
+                  f"`{code}`: plain and short, with no version number or path")
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                exit_code = mcp.check(folder)
+            said = out.getvalue()
+            check(exit_code == 1 and f"(agents see `{code}`)" in said
+                  and f"  context map  {version} " in said,
+                  f"`--check` says which code agents see, and shows the map format this context records")
+            check(mcp_activity.recent(folder, 1)[0]["reason"] == code,
+                  f"the refusal is recorded privately as `{code}`")
+        check("not at fault" in mcp.MESSAGES["server-outdated"]
+              and "context-invalid" not in (mcp.MESSAGES["server-outdated"] + mcp.MESSAGES["map-outdated"]),
+              "a server older than the context says the context is not at fault")
+        # A genuine mismatch with an older map format is still `context-invalid`.
+        generate(folder)
+        with_map_format(folder, 1)
+        write(folder, "authoritative/a.md", read(folder, "authoritative/a.md") + b"Edited.\n")
+        result = Session(folder).call("get_context")
+        check(result["content"][0]["text"].startswith("context-invalid:"),
+              "an older map whose documents no longer match is genuinely invalid: `context-invalid`")
+        shutil.rmtree(folder)
+
+
 def run() -> None:
     case_handshake()
     case_retrieval()
     case_revalidation()
     case_settled_before_response()
     case_private_state_fails_closed()
+    case_map_format()
     case_nothing_private()
     case_activity()
     case_check()

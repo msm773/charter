@@ -13,6 +13,7 @@ import re
 import shutil
 import socket
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -142,8 +143,8 @@ def case_api() -> None:
               "a path the page does not list is refused")
         staged = console.stage(session, {"filename": "notes.md",
                                          "content_b64": "IyBTaXRlIG5vdGVzCgpUZXh0Lgo="})
-        check(staged["suggested_title"] == "Site notes" and staged["markdown"] == "Text.\n",
-              "a staged file is converted, and nothing is written")
+        check(staged["suggested_title"] == "Site notes" and staged["markdown"] == "# Site notes\n\nText.\n",
+              "a staged file is converted, its heading kept, and nothing is written")
         check(not os.path.exists(os.path.join(folder, "authority-candidates")),
               "no candidate folder ever appears in the Agent Context")
         shutil.rmtree(folder)
@@ -172,9 +173,10 @@ def case_stage_front_matter() -> None:
         check(staged["suggested_title"] == "Supplier policy"
               and staged["suggested_scope"] == "Supplier choice and onboarding.",
               "an exported governing document: its title and scope are suggested")
-        check(staged["markdown"] == "Choose suppliers with care.\n"
+        check(staged["markdown"] == "# Supplier policy\n\nChoose suppliers with care.\n"
               and not any(f"{k}:" in staged["markdown"] for k in LEGACY_KEYS),
-              "its front matter is gone from the text, and none of its other metadata is text")
+              "its front matter is gone from the text, its heading stays, and none of its other "
+              "metadata is text")
         check(staged["front_matter"] == {"removed": True, "used": ["title", "scope"],
                                          "dropped": list(LEGACY_KEYS)}
               and any("Not carried over: id, status" in n for n in staged["notes"])
@@ -206,7 +208,7 @@ def case_stage_front_matter() -> None:
         staged = stage_text(session, "odd.md", odd)
         check(staged["front_matter"]["used"] == [] and set(staged["front_matter"]["dropped"]) == {"title", "scope"}
               and staged["suggested_scope"] == "" and staged["suggested_title"] == "Heading title"
-              and staged["markdown"] == "Text.\n",
+              and staged["markdown"] == "# Heading title\n\nText.\n",
               "a multi-line title or list-valued scope is not suggested, and the block is still removed")
 
         jekyll = "---\nlayout: post\npermalink: /notes/\n---\n\nNotes text.\n"
@@ -224,8 +226,8 @@ def case_stage_front_matter() -> None:
 
         staged = stage_text(session, "plain.md", "# Plain title\n\nPlain text.\n")
         check(staged["front_matter"] is None and staged["suggested_title"] == "Plain title"
-              and staged["markdown"] == "Plain text.\n" and staged["suggested_scope"] == "",
-              "a file without front matter is converted as before")
+              and staged["markdown"] == "# Plain title\n\nPlain text.\n" and staged["suggested_scope"] == "",
+              "a leading # heading suggests the title and stays in the text, as a proposal's body keeps it")
         check(not os.path.exists(os.path.join(folder, "authority-candidates"))
               and not ps.PrivateState.default().for_context(folder).candidates(),
               "staging writes nothing")
@@ -244,6 +246,85 @@ def case_recent_while_open() -> None:
         closed = console.state(console.Session())
         check(not closed["open"] and folder in closed.get("recent", []),
               "with none open, Recent lists the same Agent Contexts")
+        shutil.rmtree(folder)
+
+
+def case_clear_recent() -> None:
+    print("\nClear Recent: the list empties, and every Agent Context and its private state stay")
+    with isolated_private_state() as root:
+        folder, other = context(), context()
+        session = console.Session()
+        console.open_context(session, {"path": other})
+        console.open_context(session, {"path": folder})
+        cs = ps.PrivateState.default().for_context(folder)
+        before = sorted(os.listdir(cs.base))
+        console.clear_recent(session, {})
+        state = console.state(session)
+        check(state["open"] and state["root"] == folder and state["recent"] == [],
+              "Clear empties Recent, and the open Agent Context stays open")
+        check(sorted(os.listdir(cs.base)) == before
+              and os.path.normcase(folder) in map(os.path.normcase, ps.PrivateState.default().known_contexts()),
+              "its private state is untouched")
+        check(console.state(console.Session())["recent"] == [], "Recent stays cleared for a later console")
+        console.open_context(console.Session(), {"path": other})
+        check(console.state(session)["recent"] == [other],
+              "opening an Agent Context again lists it again, and only it")
+        shutil.rmtree(folder)
+        shutil.rmtree(other)
+
+
+def case_recent_order() -> None:
+    print("\nRecent: the most recently opened Agent Context first")
+    with isolated_private_state():
+        first, second, third = context(), context(), context()
+        session = console.Session()
+        for folder in (first, second, third):
+            console.open_context(session, {"path": folder})
+        check(console.state(session)["recent"] == [third, second, first],
+              "the last opened heads Recent, then the one before it")
+        console.open_context(session, {"path": first})
+        check(console.state(console.Session())["recent"] == [first, third, second],
+              "opening an Agent Context again moves it to the top, for a later console too")
+        created = os.path.join(tempfile.mkdtemp(prefix="charter-new-"), "new")
+        os.makedirs(created)
+        console.create_context(session, {"path": created, "project_name": "New"})
+        check(console.state(session)["recent"][0] == session.folder, "creating one puts it first")
+        for folder in (first, second, third, os.path.dirname(created)):
+            shutil.rmtree(folder)
+
+
+def case_import_duplicate() -> None:
+    print("\nimporting an exact duplicate of a waiting proposal: named for the person, replaced in place")
+    with isolated_private_state():
+        from app import agent_proposals as apx
+        folder = context()
+        session = console.Session(folder)
+        text = json.dumps({"agent": "chat-agent", "operation": "create",
+                           "target_path": "authority-candidates/waiting.md", "reason": "Needed.",
+                           "proposed_meta": {"title": "Waiting rule"}, "proposed_body": "# Waiting rule\n\nText.\n"})
+        filed = apx.file(folder, json.loads(text), source=apx.AGENT, submitted=text.encode("utf-8"))
+        check(filed["result"] == "pending", "an agent files it through `charter propose`")
+        cs = ps.PrivateState.default().for_context(folder)
+        pending = os.path.join(cs.base, ps.PROPOSALS, apx.PENDING)
+        before = sorted(os.listdir(pending))
+        dup = console.import_file(session, {"json": text, "confirm": True})
+        check(dup["result"] == "duplicate"
+              and dup["waiting"] == {"proposal_id": filed["proposal_id"], "title": "Waiting rule"}
+              and sorted(os.listdir(pending)) == before,
+              "the same text imported is not filed: the person is told which proposal waits, by its title")
+        check(console.import_file(session, {"json": text + "\n", "confirm": True})["result"] == "pending",
+              "a trailing newline makes it a distinct proposal")
+        replaced = console.import_file(session, {"json": text, "confirm": True,
+                                                 "replace": filed["proposal_id"]})
+        listed = apx.listing(folder)
+        same = [p for p in listed["pending"] + listed["imported"] if p["proposal_id"] == filed["proposal_id"]]
+        check(replaced == {"result": "pending", "proposal_id": filed["proposal_id"]}
+              and len(same) == 1 and same[0]["source"] == apx.IMPORTED
+              and len(os.listdir(pending)) == len(before) + 1,
+              "Replace updates that proposal in place, now imported: still one, and no extra record")
+        check(console.import_file(session, {"json": text + "  ", "confirm": True,
+                                            "replace": filed["proposal_id"]})["result"] == "refused",
+              "only an identical submission can replace it")
         shutil.rmtree(folder)
 
 
@@ -287,6 +368,48 @@ def _http(port: int, method: str, path: str, body=None, header=True):
             return resp.status, resp.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
+
+
+def case_command_route() -> None:
+    print("\nthe Charter command status: its own route, independent of the Agent Context's health")
+    from app import connect
+    other = tempfile.mkdtemp(prefix="charter-other-")
+    found = {"ready": os.path.join(connect.on_path.LAUNCHERS, "charter.cmd" if os.name == "nt" else "charter"),
+             "other": os.path.join(other, "charter.cmd" if os.name == "nt" else "charter"), "missing": None}
+    real = connect.found_by_name
+    with isolated_private_state():
+        folder = context()
+        session = console.Session(folder)
+        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(session))
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            status, _ = _http(port, "GET", "/api/command", header=False)
+            check(status == 403, "it answers only the console's own page")
+            for health in ("ready", "unclean"):
+                if health == "unclean":
+                    write(folder, "notes.txt", b"mine")
+                served = json.loads(_http(port, "GET", "/api/state")[1])["status"]["agents_served"]
+                for state, path in found.items():
+                    connect.found_by_name = lambda windows, registry=None, p=path: p
+                    status, body = _http(port, "GET", "/api/command")
+                    c = json.loads(body)
+                    check(status == 200 and c["state"] == state and folder not in body.decode()
+                          and (state == "ready") == ("remedy" not in c),
+                          f"context {health} (agents {'served' if served else 'refused'}), `charter` "
+                          f"{state}: Charter command {state}, from PATH alone")
+                    after = json.loads(_http(port, "GET", "/api/state")[1])["status"]["agents_served"]
+                    check(after == served, "and the Agent Context's own status is unchanged by it")
+            connect.found_by_name = lambda windows, registry=None: found["other"]
+            d = json.loads(_http(port, "GET", "/api/diagnostics")[1])
+            check(d["on_path"]["text"] == f"another copy, from {other}" and set(d["on_path"]) == {"this_copy", "text"},
+                  "Diagnostics states which copy `charter` runs, as a fact, without the remedy")
+        finally:
+            connect.found_by_name = real
+            httpd.shutdown()
+            httpd.server_close()
+            shutil.rmtree(other, ignore_errors=True)
+        shutil.rmtree(folder)
 
 
 def case_server() -> None:
@@ -816,7 +939,7 @@ def case_text_encodings() -> None:
     from app import authority as au
     from tests.harness import govern
     text = "# Onboarding Guide\r\n\r\nNew starters read the café handbook.\r\n"
-    expected = "New starters read the café handbook.\n"
+    expected = "# Onboarding Guide\n\nNew starters read the café handbook.\n"
     with isolated_private_state():
         folder = context()
         session = console.Session(folder)
@@ -914,8 +1037,12 @@ def run() -> int:
     case_stage_front_matter()
     case_stage_leaves_nothing()
     case_recent_while_open()
+    case_clear_recent()
+    case_import_duplicate()
+    case_recent_order()
     case_change_set_count()
     case_server()
+    case_command_route()
     case_page_routes()
     case_request_boundary()
     case_busy_port()

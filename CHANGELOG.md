@@ -120,9 +120,10 @@ Git.
   **Accept as candidate** applies that preview in one step, with no second
   preview or Accept, and the notice says exactly **Proposal accepted.**, with
   no button, link or document name. **Reject proposal** is also on the compact
-  card: it shows a **Reason (optional)** field in place, without opening the
-  review, and rejects with or without a reason, never asking for one in an
-  error; a reason given is kept privately with the rejection. **Cancel** leaves
+  card: it asks once, in place, with **Reject** and **Cancel** and no reason
+  field, without opening the review; **Reject** removes the proposal and says
+  exactly **Proposal rejected.** In an expanded review the confirmation stands
+  in for the decision row, so only one Reject action shows. **Cancel** leaves
   the card as it was.
   Closing the review, opening another, or leaving Agent Proposals collapses it
   and drops anything still on its way. Expected context impact stays private advisory
@@ -170,9 +171,10 @@ Git.
   as attached advisory evidence, invalid text stays saved with validation
   feedback, and **Remove review** asks first only for a valid report.
   **Preview and Apply** shows, in one pass, any blocking problem or
-  decision-relevant warning, **Authority Effects** with each replacement's
-  scope continuity, a collapsed **Retained Governing Documents (N)**, every
-  changed file with its diff and **Read**, and the typed confirmation with
+  decision-relevant warning, **Changes to Apply**, naming each document the
+  change set changes and what happens to it, with no scope comparison or
+  retained-document list, every changed file with its diff and **Read**, the
+  regenerated map included, and the typed confirmation with
   **Apply** and **Cancel**: no Governing Now and Governing After lists, and no
   note that only explains mechanics. **Discard draft** asks once, discards the
   private draft and returns to Change Sets. The normal Change Sets view lists active drafts and any record
@@ -213,7 +215,10 @@ Git.
   included — shares the one treatment of **Read** and **Edit…**: white, ink
   text, a light outline, with no filled, danger or authority variant; disabled
   buttons stay visibly disabled. **Recent** lists the Agent
-  Contexts opened on this computer whenever the Open view is shown. The
+  Contexts opened on this computer, the most recently opened first, whenever
+  the Open view is shown; its
+  **Clear** empties only that list, never an Agent Context or its private
+  state, and opening or creating an Agent Context lists it again. The
   Context Map no longer repeats the agent guidance, which Settings shows. Retired
   and replaced documents stay in private state; the console shows no archive.
 - **Connect agents:** a guided, copy-only view, offered only while the Agent
@@ -262,6 +267,108 @@ Git.
   terminal, not the console: a summary by default, `--prompt` for the review
   prompt, `--packet` to save a large review where the person says, and
   `--json`. It writes nothing else and creates no private state.
+- **The README is a task guide.** Installing starts from the release ZIP, and
+  says what to do when another copy of Charter comes first on PATH. Getting
+  started and everyday work are numbered procedures: creating and opening an
+  Agent Context, Recent and Clear, a status table saying what to do for each
+  health and map status, every Settings guidance option with its default and
+  map heading, how Create candidate chooses a title (keeping a leading
+  heading in the text), optional scope, candidate tasks, change sets from
+  start to receipt, and Agent Proposals with the proposal JSON fields and the
+  `charter propose` exit codes. Connect Agents is one flow: the server name
+  derived from the project name, the copied commands for each host, project
+  instructions, the connection test and file access, with an installed release
+  kept apart from a development checkout.
+- **Agent Proposals are an inbox.** A proposal is temporary work awaiting a
+  decision: accepting it files, updates or retires its candidate, and accepting
+  or rejecting it removes it. No decided record, rejection reason or proposal
+  history is kept, and the change-set review prompt no longer reads one.
+  Records an earlier build kept for decided proposals are left exactly as they
+  are and never read; their intake-ledger entries are dropped the next time the
+  ledger is written. A proposal is a duplicate when its JSON text, exactly as
+  submitted — whitespace and any byte-order mark included, never parsed or
+  trimmed first — matches one still awaiting review in the same Agent Context,
+  from either `charter propose` or an import. `charter propose` refuses a
+  duplicate with a new result, `duplicate`, exit code 5, changing nothing and
+  saying nothing about the waiting proposal beyond that it exists. Importing one
+  asks “An identical proposal, “…,” is already awaiting review. Replace it?”;
+  **Replace** updates that one proposal's received time, source and content in
+  place, and **Cancel** changes nothing. A proposal filed before this change
+  never matches.
+- **One name for each agent-guidance setting.** **Context check-in**, **Assess
+  proposal impact** and **Review discovered material** are the Settings labels
+  and now also their headings in `AGENT-CONTEXT.md`, which also tells agents
+  what `duplicate` means. A map generated before this change is recognized as
+  an earlier version's and fails closed until Rebuild Agent Context regenerates
+  it.
+- **Create candidate keeps a leading heading.** A leading `# Heading` still
+  suggests the title, and now stays in the text, as an agent's proposed body
+  does.
+- **Another copy first on PATH.** `add-to-path` and `add-to-path --check` say
+  to remove the other copy's folder from PATH. They no longer suggest a bare
+  `charter add-to-path`, which would run that copy, or that adding this copy
+  again would help. Every command they give runs this copy by its full paths,
+  the same command the Charter command dialog gives: on Windows, for
+  PowerShell, the Python running Charter with this copy's `charter.py`; on
+  macOS and Linux, this copy's launcher, or the Python running Charter with
+  `charter.py` while the launcher is not executable. Never a bare `py`,
+  `python3` or `charter`.
+- **Charter command status.** While an Agent Context is open, the top bar
+  shows **Charter command ready** when `charter` in a new terminal runs this
+  installation, or **Charter command needs attention**, a warning, when it runs
+  another copy, compatible or not, or isn't found. It is independent of the
+  Agent Context's status and disables nothing. Choosing it opens a dialog that
+  names the copy found, says what a new terminal or `charter propose` would
+  do, says agents connected by full path are unaffected, and gives one
+  copy-ready command running this copy by the full paths of its Python and
+  `charter.py` (elsewhere, its launcher), then says to open a new terminal.
+  Connect Agents no longer carries a PATH warning, and Diagnostics states which
+  copy `charter` runs without repeating the remedy.
+- **Files that don't belong, in plain words.** A folder holding them is headed
+  **Charter can’t serve this Agent Context yet**, says the files aren't part of
+  the Agent Context and are left untouched, lists each by name with what to do,
+  and ends by saying Charter never moves or deletes files it did not create.
+  Agents are still refused until it is resolved.
+- **Every refusal in plain words.** No status begins "Agents are refused:" any
+  more. Each is a heading — **Charter can’t serve this Agent Context yet**,
+  **This Agent Context’s map is out of date**, or **This copy of Charter is out
+  of date** — then a line saying why and what to do, with the same conditions,
+  next actions and fail-closed behaviour. `charter check` reads
+  `Agents: unavailable` instead of `refused`, with the same exit codes.
+- **Fix…** follows **Charter command needs attention** in the top bar and
+  opens the same dialog; **Charter command ready** has none. Revise's notice says a change set replaces the document
+  with the revision, and saving unchanged Settings says "Nothing to save".
+- **Which copy of Charter is running.** `charter --version` reports the
+  version, the build (a release's build time and commit, recorded in the new
+  `app/build.json` when it is built; a development checkout's commit and
+  whether it is dirty, asked of Git read-only, without locks), the full paths of
+  the launcher, `charter.py` and Python, and the map format it generates.
+  `charter check` and `charter mcp --check` report the same, with the map
+  format the Agent Context records. The console shows it, and what `charter`
+  runs for a new terminal, only in a collapsed **Diagnostics** disclosure at
+  the end of Settings and of the Open view.
+- **Agents start this copy, by its full path.** Every generated registration
+  is one program and an exact argument list: on Windows the Python running
+  Charter with this copy's `charter.py`, elsewhere this copy's launcher — for a
+  release and a development checkout alike. No registration uses a bare
+  `charter`, `py`, `cmd /c` or another shell, so PATH cannot route an agent to
+  another copy, and paths with spaces or `% & | < > ^` work. PATH no longer
+  decides whether Connect Agents is ready; another copy first on it is named,
+  with its remedy, and nothing offered would run it. The README recommends one
+  stable Charter folder, updated in place, and says to reconnect after moving
+  Charter or changing its Python.
+- **Map-format version 2, and stale-host diagnosis.** The generated map and
+  metadata are now map-format version 2 (the Settings-name headings, the
+  `duplicate` result, and MCP-connected agents told to return proposal JSON
+  rather than run `charter propose`). A context in version 1 is out of date:
+  the console offers Rebuild, MCP refuses with `map-outdated`, and
+  `charter propose` returns `unavailable` with `map_outdated`. A context in a
+  newer version than this Charter understands is not damage: this copy says it
+  is out of date, offers no Rebuild or other write, MCP refuses with
+  `server-outdated` ("restart the agent host"), and `charter propose` returns
+  `unavailable` with `charter_outdated`. A genuinely invalid context is still
+  `context-invalid`. A Rebuild no longer raises a false "Changed Outside
+  Charter" notice for Charter's own map and metadata.
 - **Removed:** governance workspaces, published surfaces, bindings,
   publication and repair, registration and identity, configuration migration,
   capability records, every Git write (commits, recovery commits, branch

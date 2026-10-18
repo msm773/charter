@@ -58,6 +58,21 @@ def read(root: str, rel: str) -> bytes:
         return fh.read()
 
 
+def with_map_format(root: str, version: int) -> None:
+    """Rewrite a valid context's map and metadata as a Charter generating
+    map-format `version` would have: version 1's own wording for 1, the current
+    map for a newer one (whose wording this Charter cannot know). The metadata
+    records that version and hashes consistent with the files."""
+    exam = ac.examine(root)
+    text = ac.render_previous_map(exam.settings, exam.documents) if version == 1 \
+        else ac.render_map(exam.settings, exam.documents)
+    hashes = dict(exam.hashes, **{ac.CONTEXT_MAP: ac.sha256_text(text)})
+    meta = json.loads(ac.render_metadata(exam.settings, hashes))
+    meta["map_format_version"] = version
+    write(root, ac.CONTEXT_MAP, text)
+    write(root, ac.METADATA, json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+
+
 def generate(root: str, project: str = "Test project", guidance=None) -> None:
     """Write the map and metadata for the documents now in `authoritative/`, as
     Rebuild Agent Context will."""
@@ -387,13 +402,76 @@ def case_map() -> None:
           "only the context check-in is on by default")
     default = ac.render_map(ac.Settings.make("X"), [])
     check("## Agent guidance" in default and ac.CONTEXT_CHECK_LINE in default
-          and "Context-impact check" not in default, "the default map has the check-in only")
+          and "Assess proposal impact" not in default, "the default map has the check-in only")
     none = ac.render_map(ac.Settings.make("X", {"context_check_in": False}), [])
     check("## Agent guidance" not in none, "with every setting off there is no guidance section")
     every = ac.render_map(ac.Settings.make("X", {g: True for g in ac.GUIDANCE_IDS}), [])
-    check(every.index("Context check-in") < every.index("Context-impact check")
-          < every.index("Review newly discovered material"),
-          "enabled settings appear in their fixed order")
+    check(every.index("- **Context check-in.**") < every.index("- **Assess proposal impact.**")
+          < every.index("- **Review discovered material.**"),
+          "enabled settings appear in their fixed order, each headed by its Settings name")
+    check([g["label"] for g in ac.AGENT_GUIDANCE]
+          == ["Context check-in", "Assess proposal impact", "Review discovered material"]
+          and all(g["text"].startswith(f"- **{g['label']}.**") for g in ac.AGENT_GUIDANCE)
+          and "Context-impact check before a proposal" not in every
+          and "Review newly discovered material" not in every,
+          "each setting has one name: its Settings label is its map heading")
+    check("- `duplicate`: not filed, because an identical proposal is already awaiting" in every,
+          "the map tells an agent what a `duplicate` result means")
+
+    print("\nmap-format versions: older is out of date, newer means this Charter is")
+    check(ac.MAP_FORMAT_VERSION == 2 and ac.OLDER_MAP_FORMATS == (1,),
+          "this Charter generates map-format version 2 and recognizes version 1 as older")
+    root = context(guidance={g: True for g in ac.GUIDANCE_IDS})
+    exam = ac.examine(root)
+    check(exam.valid and exam.map_format == ac.FORMAT_CURRENT and exam.recorded_map_format == 2,
+          "a context it generates records map-format version 2")
+    previous = ac.render_previous_map(exam.settings, exam.documents)
+    check("Context-impact check before a proposal" in previous and "`duplicate`" not in previous
+          and "and do not know the\nfolder that holds it" in previous
+          and "do not run\n`charter propose`" in ac.render_map(exam.settings, exam.documents),
+          "version 1 had the earlier headings, no duplicate result, and let an MCP agent run "
+          "`charter propose`; version 2 tells it not to")
+    with_map_format(root, 1)
+    exam = ac.examine(root)
+    check(not exam.valid and exam.map_format == ac.FORMAT_OLDER and exam.map_outdated
+          and [i["message"] for i in exam.errors] == [ac.MAP_OUTDATED]
+          and exam.errors[0]["kind"] == ac.GENERATED_KIND and not exam.rebuild_blockers
+          and exam.settings is not None,
+          "a version-1 context is out of date, for exactly that reason: Rebuild is offered, with its settings kept")
+    check(not any(ch.isdigit() for ch in ac.MAP_OUTDATED), "and the message names no version number")
+    for rel, text in ac.render_generated(exam.settings, exam.documents, exam.texts).items():
+        write(root, rel, text)
+    check(ac.examine(root).valid, "regenerated, it is current and valid again")
+
+    with_map_format(root, 3)
+    exam = ac.examine(root)
+    check(not exam.valid and exam.charter_outdated and not exam.map_outdated
+          and [i["message"] for i in exam.errors] == [ac.CHARTER_OUTDATED]
+          and exam.errors[0]["kind"] == ac.NEWER_KIND and exam.rebuild_blockers
+          and "not at fault" in ac.CHARTER_OUTDATED and not any(ch.isdigit() for ch in ac.CHARTER_OUTDATED),
+          "a newer map format is this copy being out of date, never damage, and blocks Rebuild")
+    meta = json.loads(read(root, ac.METADATA))
+    meta["future_field"] = True
+    write(root, ac.METADATA, json.dumps(meta))
+    check(ac.examine(root).charter_outdated,
+          "a newer format's own new fields do not make it look damaged")
+    for label, value in (("version 0", 0), ("a string", "2"), ("true", True), ("a fraction", 1.5)):
+        meta = json.loads(read(root, ac.METADATA))
+        meta.pop("future_field", None)
+        meta["map_format_version"] = value
+        write(root, ac.METADATA, json.dumps(meta))
+        exam = ac.examine(root)
+        check(not exam.valid and not exam.charter_outdated and not exam.map_outdated
+              and any("not one this version of Charter recognizes" in i["message"] for i in exam.errors),
+              f"a map-format version that is {label} is invalid metadata, to be repaired")
+    generate(root, guidance={g: True for g in ac.GUIDANCE_IDS})
+    with_map_format(root, 1)
+    write(root, "authoritative/a.md", read(root, "authoritative/a.md") + b"Edited.\n")
+    exam = ac.examine(root)
+    check(not exam.valid and not exam.map_outdated
+          and any("does not match the hash" in i["message"] for i in exam.errors),
+          "an older map whose document no longer matches its hash is a real mismatch, not just out of date")
+    shutil.rmtree(root)
     root = context(guidance={"review_newly_discovered_material": True})
     check(json.loads(read(root, ac.METADATA))["agent_guidance"]["review_newly_discovered_material"]
           is True and ac.examine(root).valid, "the metadata records the settings the map renders")

@@ -42,8 +42,9 @@ EVENTS = ("connect", "tool")
 TOOLS = ("get_context", "list_governing_documents", "get_document", "get_document_section",
          "unknown")
 STATUSES = ("ok", "refused")
-REASONS = ("", "context-invalid", "context-unclean", "changed-during-read", "not-governing",
-           "unsafe-path", "heading-missing", "heading-ambiguous", "bad-arguments")
+REASONS = ("", "context-invalid", "context-unclean", "map-outdated", "server-outdated",
+           "changed-during-read", "not-governing", "unsafe-path", "heading-missing",
+           "heading-ambiguous", "bad-arguments")
 FIELDS = ("v", "ts", "session", "host", "task", "event", "tool", "status", "reason", "path",
           "title", "heading")
 

@@ -164,10 +164,9 @@ const chip = (text, kind) => el("span", { class: "chip" + (kind ? " " + kind : "
 /* A validation issue, built as nodes: a path or message is shown as the
    characters it is, never interpreted as markup; `code` in the message is
    shown as code. */
-const issueItem = (i) => el("li", { class: i.level }, [el("span", {}, [
-  el("code", { text: i.path || "folder" }),
-  ...withCode(` — ${i.message}${i.fix ? " " + i.fix : ""}`),
-])]);
+const issueItem = (i) => el("li", { class: i.level }, [el("span", {}, i.general
+  ? withCode(`${i.message}${i.fix ? " " + i.fix : ""}`)  // about the action, not one file
+  : [el("code", { text: i.path || "folder" }), ...withCode(` — ${i.message}${i.fix ? " " + i.fix : ""}`)])]);
 
 /* Every scope field — Create candidate, Revise… and Edit… — is the same
    compact control: the label Scope and this one helper, with no information
@@ -407,6 +406,7 @@ async function refresh() {
   state = await call("/api/state");
   renderShell();
   if (!state.open) { closeDocument(); renderStart(); show("open"); return; }
+  await loadCommand();
   announceRecovery();
   renderKnowledge();
   renderIntakeForm();
@@ -574,10 +574,95 @@ function renderShell() {
   /* One context status label, always: ready, or unavailable with the problem
      and next safe step named in the status above every view. */
   if (open) bar.appendChild(s.agents_served ? chip("Agent context ready", "ok") : chip("Agent context unavailable", "stale"));
+  renderCommand();
   $("btnSwitch").hidden = !open;
   syncStartForms(!!state.folder_picker);
   renderContextStatus();
 }
+
+/* The Charter command status, after the context's and independent of it
+   (UI Standards): whether the default `charter` command — what a new terminal,
+   or an agent running `charter propose`, finds — runs this installation. Needs
+   attention is a warning, never the context's problem, and disables nothing;
+   it is a button that opens the remedy dialog. */
+let commandStatus = null;
+let commandOpener = null;
+
+async function loadCommand() {
+  try { commandStatus = await call("/api/command"); } catch (err) { commandStatus = null; }
+  renderCommand();
+}
+
+function renderCommand() {
+  const box = $("barCommand");
+  box.textContent = "";
+  if (!state || !state.open || !commandStatus) return;
+  if (commandStatus.state === "ready") { box.appendChild(chip("Charter command ready", "ok")); return; }
+  box.appendChild(el("button", { type: "button", class: "chip warn chip-button", id: "btnCommandStatus",
+    "aria-haspopup": "dialog", text: "Charter command needs attention",
+    onclick: (event) => openCommandDialog(event.currentTarget) }));
+  // The explicit action, immediately after the status: the same dialog (UI Standards).
+  box.appendChild(el("button", { type: "button", class: "btn ghost small", id: "btnCommandFix",
+    "aria-haspopup": "dialog", text: "Fix…", onclick: (event) => openCommandDialog(event.currentTarget) }));
+}
+
+/* The remedy, in a focused dialog over the page: which copy the `charter`
+   command finds, or that it finds none; what that means for a new terminal
+   and `charter propose`; that agents connected by full path are unaffected;
+   and one copy-ready command that runs this copy by its full paths. */
+async function openCommandDialog(opener) {
+  await loadCommand();  // what PATH holds now, not when the page loaded
+  const c = commandStatus;
+  if (!c || c.state === "ready") {
+    if (c) toast("The charter command runs this copy of Charter now.");
+    return;
+  }
+  commandOpener = opener && opener.id ? opener.id : null;
+  const other = c.state === "other";
+  const code = (text) => el("code", { text });
+  const words = (text) => document.createTextNode(text);
+  const where = c.changes_path ? `In ${c.shell}, put this copy on your PATH:`
+    : "In a terminal, run this; it says what to add to your shell startup file:";
+  const close = el("button", { class: "btn ghost small close", text: "Close", onclick: closeCommandDialog });
+  const viewer = $("docViewer");
+  viewer.textContent = "";
+  viewer.appendChild(el("article", { class: "reader command-dialog", role: "dialog", "aria-modal": "true",
+    "aria-labelledby": "commandTitle", id: "commandDialog" }, [
+    el("header", {}, [el("div", { class: "reader-heading" }, [
+      el("h3", { id: "commandTitle", text: "Charter Command Needs Attention" })]), close]),
+    el("div", { class: "reader-body" }, [
+      el("p", { id: "commandFound" }, other
+        ? [words("The "), code("charter"), words(" command runs another copy of Charter, from "), code(c.other_folder), words(".")]
+        : [words("The "), code("charter"), words(" command is not found on PATH.")]),
+      el("p", { id: "commandImpact" }, [words("A new terminal, or an agent that runs "), code("charter propose"),
+        words(other ? " in this folder, would use that copy, not the one managing this Agent Context."
+          : " in this folder, cannot run Charter.")]),
+      el("p", { id: "commandSafe" }, withCode("Agents set up through Connect Agents run this copy by its full path, so they are unaffected.")),
+      el("p", { id: "commandStep" }, other
+        ? [words("Remove "), code(c.other_folder), words(" from your PATH. Then: " + where[0].toLowerCase() + where.slice(1))]
+        : [words(where)]),
+      copyBlock("commandRemedy", "", c.remedy, "Copy command", ""),
+      el("p", { id: "commandAfter" }, withCode("Afterwards, open a new terminal, and restart any agent host whose agents run `charter propose`.")),
+    ]),
+  ]));
+  viewer.hidden = false;
+  setBackgroundInert(true);
+  close.focus();
+}
+
+function closeCommandDialog() {
+  const opener = commandOpener;
+  commandOpener = null;
+  $("docViewer").textContent = "";
+  $("docViewer").hidden = true;
+  setBackgroundInert(false);
+  // Opening re-renders the status, so the control that opened it is found
+  // again by its id: the status, or Fix….
+  const back = (opener && $(opener)) || $("btnCommandStatus");
+  if (back && back.focus) back.focus();
+}
+
+const commandDialogOpen = () => !!$("commandDialog");
 
 /* Git is the person's own and secondary: a compact, read-only summary in the
    sidebar — the branch, and the count of context files Git reports as
@@ -609,18 +694,23 @@ function renderContextStatus() {
   const parts = [];
   if (!s.agents_served) {
     const card = el("section", { class: "status-card refused", id: "refusedCard" }, [
-      el("h3", {}, withCode(s.headline)),
+      el("h3", {}, withCode(s.headline_title || s.headline)),
+      s.headline_detail ? el("p", { class: "status-detail", id: "refusedDetail", text: s.headline_detail }) : null,
     ]);
     const errors = s.issues.filter((i) => i.level === "error");
     if (errors.length) {
       const list = el("ul", { class: "issues" });
-      errors.forEach((i) => list.appendChild(issueItem(i)));
+      // A file that does not belong: its name first, in bold, then what to do.
+      errors.forEach((i) => list.appendChild(i.kind === "stray" && i.path
+        ? el("li", { class: "error stray-item" }, [el("strong", { text: i.path }),
+          document.createTextNode(` ${i.message}${i.fix ? " " + i.fix : ""}`)])
+        : issueItem(i)));
       card.appendChild(list);
     }
     if (s.strays.length) {
       card.appendChild(el("p", { class: "hint", id: "straysNote", text: "Charter never moves "
-        + "or deletes a file it did not write. Move each file listed out of the folder, or delete it, "
-        + "then choose any page in the navigation: Charter checks the folder again each time." }));
+        + "or deletes files it did not create. After resolving the files listed above, choose any "
+        + "navigation item to check the folder again." }));
     }
     if (s.rebuild.available) {
       card.appendChild(el("div", { class: "actions" }, [el("button", { class: "btn", id: "btnRebuildFromStatus",
@@ -974,7 +1064,7 @@ function renderReader() {
 /* While a modal surface (the reader) is open, the rail and main content are
    inert, so Tab and a screen reader stay within the dialog. */
 function setBackgroundInert(on) {
-  for (const sel of [".rail", "#main"]) {
+  for (const sel of [".skip-link", ".rail", "#main"]) {
     const node = document.querySelector(sel);
     if (node) setInert(node, on);
   }
@@ -994,12 +1084,14 @@ async function reloadReader() {
 
 $("docViewer").addEventListener("click", (event) => {
   if (event.target !== $("docViewer")) return;  // the backdrop, not the page
-  if (comparing) closeComparison(); else closeDocument();
+  if (commandDialogOpen()) closeCommandDialog();
+  else if (comparing) closeComparison(); else closeDocument();
 });
 if (document.addEventListener) {
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (reading) closeDocument();
+    if (commandDialogOpen()) closeCommandDialog();
+    else if (reading) closeDocument();
     else if (comparing) closeComparison();  // a comparison overlay is open
     else if (panelOpener) closePanel();  // a form/preview panel is open
   });
@@ -1069,8 +1161,8 @@ async function startRevision(doc) {
   if (!draft) return;
   const lead = el("div", { class: "note authority", id: "reviseNotice" }, [
     el("strong", { text: "Filing creates a new authority candidate — not context." }),
-    el("div", { text: `“${draft.title}” keeps governing at ${draft.path}, unchanged, until you revise it `
-      + "with the candidate in a change set." }),
+    el("div", { text: `“${draft.title}” keeps governing at ${draft.path}, unchanged, until a change set `
+      + "you apply replaces it with the candidate." }),
   ]);
   review = null;
   formPanel(
@@ -1224,8 +1316,9 @@ function intakeRequest() {
 /* --------------------------------------------------------- Agent Proposals */
 
 /* Untrusted requests for a person's review. Accepting one only files,
-   updates or retires an authority candidate, after a preview; rejecting one
-   records why. An agent's name, reason and expected impact are its claims. */
+   updates or retires an authority candidate, after a preview; either decision
+   removes it, and nothing about it is kept. An agent's name, reason and
+   expected impact are its claims. */
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 let proposalData = null;
 
@@ -1289,7 +1382,7 @@ function proposalCard(p) {
   const open = el("button", { class: "btn small proposal-open", text: "Review proposal…",
     "aria-describedby": `proposalTitle-${key}`, "aria-expanded": "false", "aria-controls": `proposalDetail-${key}`,
     onclick: () => openProposalReview(p, card) });
-  /* Rejecting needs no review: the compact card asks for a reason inline. */
+  /* Rejecting needs no review: the compact card asks for one confirmation inline. */
   const reject = el("button", { class: "btn ghost small proposal-reject-open", id: `proposalReject-${key}`,
     text: "Reject proposal", "aria-describedby": `proposalTitle-${key}`, "aria-controls": `proposalDetail-${key}`,
     onclick: () => openCardRejection(p, card) });
@@ -1315,7 +1408,7 @@ let proposalReview = null;  // { card, p }: the one card being reviewed or rejec
 let proposalReviewSeq = 0;
 
 /* Close the expanded review or the card's own rejection: the card is compact
-   again and everything prepared — its preview, a rejection reason being typed,
+   again and everything prepared — its preview, a rejection being confirmed,
    an answer still on its way — is discarded. */
 function collapseProposalReview() {
   proposalReviewSeq++;
@@ -1334,7 +1427,7 @@ function collapseProposalReview() {
 }
 
 /* Reject proposal, straight from the compact card: no review opens. The card
-   asks for a concise reason in place; confirming records it, and Cancel
+   asks for one confirmation in place; Reject removes the proposal, and Cancel
    leaves the card as it was. */
 function openCardRejection(p, card) {
   collapseProposalReview();
@@ -1416,35 +1509,36 @@ async function proposalPreview(p, seq, change, accept) {
   accept.addEventListener("click", (event) => applyPlan("accept-proposal", request, plan, event.currentTarget, true, {}));
 }
 
-/* Reject proposal: an optional reason, in the same card. Confirming rejects
-   the proposal with or without one; a reason given is kept privately with the
-   rejection and not shown in normal views. Nothing else changes. */
+/* Reject proposal: one confirmation, in the same card, with no reason field
+   (UI Standards). Reject removes the proposal from the inbox; nothing about it
+   is kept. In an expanded review the confirmation stands in for the decision
+   row, so only one Reject action is ever shown; Cancel brings the row back. */
 function startProposalRejection(p, detail, seq, onCancel) {
-  if (seq !== proposalReviewSeq || detail.querySelector("#proposalRejectReason")) return;
-  const reason = el("textarea", { id: "proposalRejectReason", rows: 2 });
-  const confirmButton = el("button", { class: "btn", id: "btnConfirmReject", text: "Reject proposal",
+  if (seq !== proposalReviewSeq || detail.querySelector("#proposalRejectForm")) return;
+  const decisions = detail.querySelector(".proposal-decisions");
+  const confirmButton = el("button", { class: "btn", id: "btnConfirmReject", type: "button", text: "Reject",
     onclick: async (event) => {
-      /* The reason is optional: rejected either way, and kept privately only when given. */
-      const why = reason.value.trim();
-      const request = Object.assign({ proposal_id: p.proposal_id }, why ? { reason: why } : {});
+      const request = { proposal_id: p.proposal_id };
       let plan;
       try { plan = await call("/api/plan", { kind: "reject-proposal", request }); }
       catch (err) { toast(err.message, true); return; }
       if (seq !== proposalReviewSeq) return;
       await applyPlan("reject-proposal", request, plan, event.currentTarget, true, {});
     } });
-  const form = el("div", { class: "proposal-reject", id: "proposalRejectForm" }, [
-    el("div", { class: "field" }, [el("label", { for: "proposalRejectReason", text: "Reason (optional)" }), reason]),
+  const form = el("div", { class: "proposal-reject", id: "proposalRejectForm", role: "group",
+    "aria-label": "Reject this proposal" }, [
     el("div", { class: "actions" }, [confirmButton,
-      el("button", { class: "btn ghost", id: "btnCancelReject", type: "button", text: "Cancel", onclick: () => {
+      el("button", { class: "btn", id: "btnCancelReject", type: "button", text: "Cancel", onclick: () => {
         if (onCancel) { onCancel(); return; }
         form.remove();
+        if (decisions) decisions.hidden = false;
         const decline = detail.querySelector("#btnRejectProposal");
         if (decline && decline.focus) decline.focus();
       } })]),
   ]);
+  if (decisions) decisions.hidden = true;
   detail.querySelector(".proposal-reject-slot").appendChild(form);
-  if (reason.focus) reason.focus();
+  if (confirmButton.focus) confirmButton.focus();
 }
 
 function unexpectedRow(u) {
@@ -1508,7 +1602,7 @@ function startImport(prefill) {
     ]),
     el("div", { class: "field" }, [el("label", { for: "importJson", text: "Agent proposal JSON" }), box]),
     result,
-    el("div", { class: "actions" }, [
+    el("div", { class: "actions import-actions" }, [
       el("button", { class: "btn ghost", id: "btnCheckImport", text: "Check proposal", onclick: async () => {
         const text = box.value;
         invalidate();
@@ -1564,12 +1658,19 @@ async function checkImport(text, result, seq) {
   return true;
 }
 
-async function fileImport(text, button, seq) {
+async function fileImport(text, button, seq, replace) {
   button.disabled = true;
   let filed;
-  try { filed = await call("/api/proposals/import", { json: text, confirm: true }); }
-  catch (err) { button.disabled = false; toast(err.message, true); return; }
+  try {
+    filed = await call("/api/proposals/import",
+      Object.assign({ json: text, confirm: true }, replace ? { replace } : {}));
+  } catch (err) { button.disabled = false; toast(err.message, true); return; }
   if (seq !== importSeq) return;
+  if (filed.result === "duplicate" && filed.waiting && !replace) {
+    button.disabled = false;
+    askToReplace(text, filed.waiting, seq);
+    return;
+  }
   if (filed.result !== "pending") {
     button.disabled = false;  // the person can correct and try again
     toast(filed.result === "refused" ? filed.problems.map((p) => p.message).join(" ") : filed.problem.message, true);
@@ -1578,7 +1679,33 @@ async function fileImport(text, button, seq) {
   importPanel = null;
   closeReview();
   await refreshQuiet();
-  toast("Imported the agent proposal, for review. It is not context.");
+  toast(replace ? "Replaced the waiting proposal with this one, for review. It is not context."
+    : "Imported the agent proposal, for review. It is not context.");
+}
+
+/* An exact duplicate of a proposal still awaiting review is never filed as a
+   second one. The panel asks, in place of its own actions, whether to replace
+   the waiting proposal with this submission; Cancel changes nothing. */
+function askToReplace(text, waiting, seq) {
+  const panel = importPanel;
+  if (!panel) return;
+  const actions = panel.querySelector(".import-actions");
+  const prompt = el("div", { class: "note warn import-duplicate", id: "importDuplicate", role: "alert" }, [
+    el("p", { id: "importDuplicateText",
+      text: `An identical proposal, “${waiting.title},” is already awaiting review. Replace it?` }),
+  ]);
+  const close = () => { prompt.remove(); if (actions) actions.hidden = false; };
+  const replaceButton = el("button", { class: "btn", id: "btnReplaceImport", type: "button", text: "Replace",
+    onclick: () => fileImport(text, replaceButton, seq, waiting.proposal_id) });
+  prompt.appendChild(el("div", { class: "actions" }, [replaceButton,
+    el("button", { class: "btn", id: "btnCancelReplace", type: "button", text: "Cancel", onclick: () => {
+      close();
+      const again = panel.querySelector("#btnFileImport");
+      if (again && again.focus) again.focus();
+    } })]));
+  if (actions) actions.hidden = true;
+  panel.querySelector("#importResult").appendChild(prompt);
+  if (replaceButton.focus) replaceButton.focus();
 }
 
 /* ---------------------------------------------------------- connect agents */
@@ -1657,13 +1784,8 @@ function connectMcp(c) {
   }
   mcp.push(el("p", { id: "connectMcpInstruction",
     text: "Configure the Charter MCP server for your agent." }));
-  if (c.connect === "needs-path") {
-    mcp.push(el("div", { class: "connect-prerequisite", id: "connectPrerequisite" }, [
-      el("div", { class: "note warn", id: "connectLauncher" }, withCode(c.launcher.note)),
-      copyBlock("connectAddToPath", "Before Connecting: Add Charter to Your PATH", c.launcher.fix,
-        "Copy command", c.launcher.restart),
-    ]));
-  }
+  /* Hosts start this copy by its full path, so PATH decides nothing here: what
+     the `charter` command runs is the header's Charter command status's to say. */
   const content = connectHostPanels(c);
   const panels = {};
   CONNECT_HOSTS.forEach(([key, label]) => {
@@ -1684,6 +1806,7 @@ function connectMcp(c) {
   mcp.push(el("fieldset", { class: "connect-hosts", id: "connectHosts" },
     [el("legend", { class: "sr-only", text: "Choose an agent host" })].concat(radios)));
   CONNECT_HOSTS.forEach(([key]) => mcp.push(panels[key]));
+  if (c.install_note) mcp.push(el("p", { class: "hint", id: "connectInstallNote" }, withCode(c.install_note)));
   return mcp;
 }
 
@@ -1886,37 +2009,33 @@ function renderReview() {
 
 /* Preview and Apply for a change set: what a person needs to decide, once
    each, in this order — anything that blocks applying or bears on the
-   decision; Authority Effects, with each replacement's scope continuity; the
-   retained documents, collapsed; every changed file, with its diff and Read;
-   and the typed confirmation. No before-and-after lists, and no note that
-   repeats these or only explains mechanics (UI Standards). */
-const EFFECT_LINE = { replace: "Replaced", "govern-alongside": "Governs alongside", withdraw: "Withdrawn",
-  revise: "Revised" };
+   decision; Changes to Apply, each document the change set changes and what
+   happens to it in plain words; every changed file, with its diff and Read;
+   and the typed confirmation. No scope comparison, retained-document list or
+   before-and-after lists, and no note that repeats these or only explains
+   mechanics (UI Standards). */
+function changeToApply(e) {
+  const replaces = e.effect === "replace" || e.effect === "revise";
+  const title = replaces || e.effect === "govern-alongside" ? e.candidate_title || e.title : e.title;
+  const action = replaces ? `Replaces “${e.title}”`
+    : e.effect === "govern-alongside" ? "Governs alongside" : e.effect === "withdraw" ? "Withdrawn" : e.effect;
+  return el("li", { class: "cs-change", "data-path": e.document, "data-effect": e.effect }, [
+    el("span", { class: "title", text: title }), document.createTextNode(" — "),
+    el("span", { class: "cs-change-action", text: action })]);
+}
 
 function renderChangeSetPreview(panel, plan, options) {
   const cs = options.changeSet;
-  const effects = (cs.effects || []).filter((e) => e.effect !== "retain");
-  const retained = (cs.effects || []).filter((e) => e.effect === "retain");
+  const changes = (cs.effects || []).filter((e) => e.effect !== "retain");
   const inner = el("div", { class: "inner cs-preview", id: "csPreviewBody" });
   const issues = plan.issues || [];
   if (issues.length) inner.appendChild(el("ul", { class: "issues", id: "planProblems" }, issues.map(issueItem)));
   (plan.notes || []).forEach((n) => inner.appendChild(el("div", { class: "note warn cs-preview-warning" }, withCode(n))));
 
-  inner.appendChild(el("section", { class: "cs-section", id: "csAuthorityEffects", "aria-labelledby": "csAuthorityEffectsTitle" }, [
-    el("h4", { id: "csAuthorityEffectsTitle", text: "Authority Effects" }),
-    el("ul", { class: "cs-list cs-effects" }, effects.map((e) => el("li", { class: "cs-item cs-effect", "data-path": e.document }, [
-      el("div", { class: "title-row" }, [el("span", { class: "title", text: e.title }),
-        chip(EFFECT_LINE[e.effect] || e.effect, e.effect === "withdraw" ? "stale" : e.effect === "govern-alongside" ? "ok" : "authority")]),
-      e.effect === "replace" || e.effect === "revise" ? el("div", { class: "hint cs-effect-by", text: `By “${e.candidate_title}”` }) : null,
-      e.effect === "replace" || e.effect === "revise" ? scopeContinuity(e) : null,
-    ]))),
+  inner.appendChild(el("section", { class: "cs-section", id: "csChangesToApply", "aria-labelledby": "csChangesToApplyTitle" }, [
+    el("h4", { id: "csChangesToApplyTitle", text: "Changes to Apply" }),
+    el("ul", { class: "cs-changes" }, changes.map(changeToApply)),
   ]));
-  if (retained.length) {
-    inner.appendChild(disclosure(groupLabel("Retained Governing Documents", retained.length),
-      [el("ul", { class: "cs-list", id: "csPreviewRetained" }, retained.map((e) => el("li", { class: "cs-item" }, [
-        el("span", { class: "title", text: e.title })])))],
-      { id: "csPreviewRetainedBody", buttonId: "csPreviewRetainedToggle", class: "cs-retained" }));
-  }
 
   const readPlanned = (path, opener) => openPreview({ source: "plan", kind: review.kind,
     request: review.request, plan_id: plan.plan_id, path }, opener);
@@ -1941,17 +2060,6 @@ function renderChangeSetPreview(panel, plan, options) {
     ]),
     inner,
   ]));
-}
-
-/* A replacement's scope continuity: the candidate's scope, the scope it
-   replaces, and the resulting scope — a blank candidate scope said to inherit. */
-function scopeContinuity(e) {
-  const inherits = !e.scope_proposed && e.scope_before;
-  return el("dl", { class: "scope-compare cs-effect-scope" }, [
-    el("dt", { text: "Current scope" }), el("dd", { text: e.scope_before || "None stated" }),
-    el("dt", { text: "Candidate's scope" }), el("dd", { text: e.scope_proposed || (inherits ? "Blank — inherits the current scope" : "None stated") }),
-    el("dt", { text: "Resulting scope" }), el("dd", { text: (e.scope_after || "None stated") + (inherits ? " (inherited)" : "") }),
-  ]);
 }
 
 /* The governing set before and after: what agents read now, and would read. */
@@ -2044,16 +2152,17 @@ async function applyPlan(kind, request, plan, button, confirm, options = {}) {
     focusAfter(currentViewHeading());
   }
   const followUp = (applied && applied.follow_up) || [];
-  /* Accepting a proposal says exactly “Proposal accepted.”: no action, link,
-     document name or other detail. Anything that failed after the acceptance
-     was recorded is its own error, never added to that notice. */
-  if (kind === "accept-proposal") {
-    toast(followUp.length ? followUp.join(" ") : "Proposal accepted.", followUp.length > 0);
+  /* Deciding a proposal says exactly “Proposal accepted.” or “Proposal
+     rejected.”: no action, link, document name or other detail. Anything that
+     failed after the decision was recorded is its own error, never added to
+     that notice. */
+  if (kind === "accept-proposal" || kind === "reject-proposal") {
+    toast(followUp.length ? followUp.join(" ")
+      : kind === "accept-proposal" ? "Proposal accepted." : "Proposal rejected.", followUp.length > 0);
     return;
   }
   const message = doneMessage(plan) + (kind === "add" || kind === "revise"
-    ? " Filed as an authority candidate — not context." : kind === "reject-proposal"
-    ? " The proposal is rejected, with your reason." : kind === "changeset"
+    ? " Filed as an authority candidate — not context." : kind === "changeset"
     ? " Every declared outcome was applied as one action; its receipt is kept privately."
     : options && options.returnTo ? " Back to the change set: refresh it to use the edited candidate." : "");
   const lands = options && options.returnTo ? "" : landsIn(kind);
@@ -2379,9 +2488,6 @@ function changeSetHeader(cs, active, previewing) {
 /* Preview and apply: the plan's own preview, beneath, is the screen. */
 function changeSetPreviewing() {
   return el("div", { class: "inner cs-previewing", id: "csPreviewing" }, [
-    el("p", { class: "note", text: "Below is everything this change set does: the governing set before and after, "
-      + "every authority effect, and every file it writes with its diff. Nothing is written until you type "
-      + "the phrase once and apply." }),
     el("div", { class: "actions" }, [el("button", { class: "btn ghost", id: "csBackToBuild",
       text: "← Back to Build Change Set", onclick: closeReview })]),
   ]);
@@ -3218,7 +3324,34 @@ function startRebuild() {
 
 /* ----------------------------------------------------------------- settings */
 
+/* Diagnostics: which copy of Charter this is — version, build, launcher,
+   Python, map formats, and what `charter` by name runs, as a fact — collapsed
+   at the end of Settings and of the Open view. Never in a header, footer or
+   status, and never the PATH remedy, which is the Charter command dialog's
+   alone (UI Standards). */
+async function renderDiagnostics(id) {
+  const box = $(id);
+  if (!box) return;
+  let d;
+  try { d = await call("/api/diagnostics"); } catch (err) { box.textContent = ""; return; }
+  const i = d.identity;
+  const rows = [["Version", i.version], ["Build", i.build_text], ["Launcher", i.launcher],
+    ["charter.py", i.script], ["Python", i.python], ["Map format", `${i.map_format} (generated by this Charter)`]];
+  if ("context_map_format" in i) {
+    rows.push(["This Agent Context's map format", i.context_map_format === null ? "not recorded"
+      : `${i.context_map_format}${d.relation ? ` (${d.relation})` : ""}`]);
+  }
+  rows.push(["`charter` on PATH", d.on_path.text]);
+  const list = el("dl", { class: "diagnostics-list" },
+    rows.reduce((out, [k, v]) => out.concat([el("dt", {}, withCode(k)), el("dd", { text: v })]), []));
+  const content = [list];
+  box.textContent = "";
+  box.appendChild(el("section", { class: "record-group", "aria-labelledby": id + "Toggle" }, [
+    disclosure("Diagnostics", content, { id: id + "Body", buttonId: id + "Toggle" })]));
+}
+
 function renderSettings() {
+  renderDiagnostics("settingsDiagnostics");
   const box = $("settingsForm");
   box.textContent = "";
   if (!state.open) return;
@@ -3399,6 +3532,7 @@ async function peekFolder() {
 
 /* Agent Contexts this computer has opened before, one click to fill the folder. */
 function renderStart() {
+  renderDiagnostics("openDiagnostics");
   const box = $("recentContexts");
   box.textContent = "";
   if (state.closed_because) showFieldError("contextError", state.closed_because);
@@ -3406,11 +3540,26 @@ function renderStart() {
   if (legacy) box.appendChild(legacy);
   const recent = state.recent || [];
   if (!recent.length) return;
-  box.appendChild(el("h3", { text: "Recent" }));
-  box.appendChild(el("ul", { class: "recent" }, recent.map((p) => el("li", {}, [
+  box.appendChild(el("div", { class: "recent-head" }, [
+    el("h3", { id: "recentTitle", text: "Recent" }),
+    el("button", { type: "button", class: "btn small", id: "btnClearRecent", text: "Clear",
+      "aria-label": "Clear the Recent list", onclick: clearRecent })]));
+  box.appendChild(el("ul", { class: "recent", "aria-labelledby": "recentTitle" }, recent.map((p) => el("li", {}, [
     el("button", { type: "button", class: "linkish", text: p, onclick: () => {
       $("contextPath").value = p; showFieldError("contextError", ""); $("contextPath").focus(); peekFolder();
     } })]))));
+}
+
+/* Clear forgets only the list: every Agent Context, open or not, and its
+   private state stay as they are. Opening one again lists it again. */
+async function clearRecent() {
+  try {
+    await call("/api/recent/clear", {});
+    state.recent = (await call("/api/state")).recent || [];
+  } catch (err) { toast(err.message, true); return; }
+  renderStart();
+  $("contextPath").focus();
+  toast("Recent list cleared. No Agent Context was changed.");
 }
 
 async function browseFolder() {

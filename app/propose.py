@@ -11,6 +11,10 @@ outcome — a bad command line included:
     pending       filed for review; exit 0
     refused       not filed; correct each problem and submit again; exit 3
     unavailable   not filed; submit again unchanged only if `retryable`; exit 4
+    duplicate     not filed; an identical proposal already awaits review; exit 5
+
+A duplicate is decided on standard input exactly as given — every byte,
+whitespace and any byte-order mark included — never on the parsed JSON.
 
 See `agent_proposals` for the fields and the rules.
 """
@@ -24,7 +28,7 @@ from typing import Any, Dict, List, Optional
 from . import agent_proposals as apx
 from . import host_state as hs
 
-EXIT = {"pending": 0, "refused": 3, "unavailable": 4}
+EXIT = {"pending": 0, "refused": 3, "unavailable": 4, "duplicate": 5}
 
 USAGE = """usage: charter propose --context <agent-context-folder>
 
@@ -33,8 +37,10 @@ review. Run it in the folder that holds AGENT-CONTEXT.md, as `charter propose
 --context .`. AGENT-CONTEXT.md describes the fields.
 
 It prints one JSON object whose `result` is `pending` (filed; exit 0),
-`refused` (not filed: correct each problem; exit 3) or `unavailable` (not
-filed; submit again unchanged only if `retryable` is true; exit 4).
+`refused` (not filed: correct each problem; exit 3), `unavailable` (not
+filed; submit again unchanged only if `retryable` is true; exit 4) or
+`duplicate` (not filed: an identical proposal is already awaiting review;
+change its text, or ask a person to replace it in the console; exit 5).
 """
 
 
@@ -65,7 +71,10 @@ def submit(argv: List[str], data: bytes) -> Dict[str, Any]:
     except ValueError:
         return apx.refused_result([apx._problem("not_json", "Standard input is not one JSON "
                                                             "object.")])
-    return apx.file(os.path.abspath(os.path.expanduser(folder)), raw, source=apx.AGENT)
+    # The duplicate identity is of the bytes exactly as given, before the
+    # mark and surrounding whitespace were set aside for parsing.
+    return apx.file(os.path.abspath(os.path.expanduser(folder)), raw, source=apx.AGENT,
+                    submitted=bytes(data))
 
 
 def main(argv: List[str]) -> int:

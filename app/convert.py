@@ -331,7 +331,8 @@ def to_markdown(filename: str, data: bytes) -> Tuple[str, List[str]]:
 
 
 def strip_leading_title(markdown: str) -> Tuple[str, str]:
-    """Pull a leading H1 out of the body; it becomes the document title."""
+    """A leading H1 and the body after it. The heading suggests the document's
+    title; Create candidate keeps it in the text."""
     lines = markdown.split("\n")
     for index, line in enumerate(lines):
         if not line.strip():

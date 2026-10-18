@@ -128,8 +128,12 @@ def case_open() -> None:
             pass
         checked = mg.check(folder)
         check(checked["interrupted"] and not checked["agents_served"]
-              and "interrupted" in checked["headline"],
-              "an interrupted write is reported, and agents are refused")
+              and "interrupted" in checked["headline"]
+              and (checked["headline_title"], checked["headline_detail"]) == mg.INTERRUPTED
+              and checked["headline_title"] == "Charter can’t serve this Agent Context yet"
+              and checked["headline_detail"] == ("A Charter write to this folder was interrupted. Open the "
+                                                 "Agent Context in Charter to recover it."),
+              "an interrupted write is reported, in plain words, and agents are refused")
         status = mg.open_context(folder)
         check(status["recovered"] and status["agents_served"] and not status["interrupted"],
               "opening recovers it, and agents are served again")
@@ -137,8 +141,17 @@ def case_open() -> None:
         write(folder, "drafts/idea.md", b"# idea\n")
         status = mg.open_context(folder)
         check(not status["agents_served"] and status["strays"] == ["drafts/"]
-              and "left untouched" in status["headline"],
+              and "leaves them untouched" in status["headline"],
               "a stray is named, agents are refused, and the stray is left alone")
+        stray = [i for i in status["issues"] if i["path"] == "drafts/"][0]
+        check(status["headline_title"] == "Charter can’t serve this Agent Context yet"
+              and status["headline_detail"] == ("This folder contains files that are not part of the Agent "
+                                                "Context. Charter leaves them untouched.")
+              and status["headline"] == status["headline_title"] + ". " + status["headline_detail"]
+              and stray["message"] == "isn’t part of this Agent Context."
+              and stray["fix"] == "Move it out of the context folder or delete it, then try again."
+              and "Agents are refused" not in status["headline"],
+              "in plain words: Charter can’t serve it yet, why, and for the file, what to do")
         shutil.rmtree(os.path.join(folder, "drafts"))
         check(raises(au.ActionRefused, mg.open_context, os.path.join(folder, "missing")),
               "a folder that does not exist cannot be opened")
@@ -159,8 +172,12 @@ def case_outside_edit_and_rebuild() -> None:
         status = mg.open_context(folder)
         check(status["state"] == ac.INVALID and not status["agents_served"],
               "an edited governing document leaves the context invalid: agents are refused")
-        check(status["rebuild"]["available"] and "Rebuild Agent Context" in status["headline"],
-              "and Rebuild Agent Context is offered")
+        check(status["rebuild"]["available"] and "Rebuild Agent Context" in status["headline"]
+              and status["headline_title"] == mg.NOT_YET
+              and status["headline_detail"] == ("The map and metadata don’t match the governing documents. "
+                                                "Check that the documents are what you intend, then use "
+                                                "Rebuild Agent Context."),
+              "and Rebuild Agent Context is offered, the mismatch said plainly")
         check(status["outside"]["paths"] == ["authoritative/a.md"],
               "the edited document is named as changed outside Charter")
 
@@ -199,6 +216,80 @@ def case_outside_edit_and_rebuild() -> None:
         shutil.rmtree(folder)
 
 
+def case_plain_refusals() -> None:
+    print("\nwhy agents are not served, in plain words: a heading, then what it means and what to do")
+    with isolated_private_state():
+        folder = context()
+        write(folder, "authoritative/a.md", b"no front matter\n")
+        status = mg.check(folder, git=False)
+        check(not status["agents_served"] and status["state"] == ac.INVALID
+              and (status["headline_title"], status["headline_detail"]) == mg.NOT_VALID
+              and status["headline_detail"] == ("Something in this folder isn’t valid. Each problem, and how "
+                                                "to fix it, is listed below."),
+              "a document problem nothing can rebuild past: the problems are listed below")
+        check(status["headline"] == status["headline_title"] + ". " + status["headline_detail"],
+              "`charter check` and Connect agents get the heading and its detail as one line")
+        shutil.rmtree(folder)
+    every = [mg.INTERRUPTED, mg.PRIVATE_UNUSABLE, mg.CHARTER_OUTDATED, mg.LEGACY, mg.MAP_OUTDATED,
+             mg.MISMATCH, mg.NOT_VALID, (mg.STRAY_TITLE, mg.STRAY_DETAIL)]
+    check(not any("Agents are refused" in t + d or "Agents are not served" in t + d for t, d in every)
+          and "Agents are refused" not in ac.MAP_OUTDATED + ac.LEGACY_MAP,
+          "no status, or the map's own messages, says “Agents are refused” any more")
+
+
+def case_map_format_updates() -> None:
+    print("\nafter an update: an older map is rebuilt, quietly; a newer one is never written")
+    from tests.agent_context import with_map_format
+    with isolated_private_state():
+        folder = context()
+        mg.open_context(folder)
+        with_map_format(folder, 1)
+        cs = ps.PrivateState.default().for_context(folder)
+        # As this computer last saw it, before the update: Charter's own map.
+        exam = ac.examine(folder)
+        cs.record_observed(ac.context_fingerprint(exam.hashes), exam.hashes, "charter", [])
+        status = mg.open_context(folder)
+        check(not status["agents_served"] and "out of date" in status["headline"]
+              and status["headline_title"] == "This Agent Context’s map is out of date"
+              and status["headline_detail"].startswith("An earlier version of Charter generated it, so Charter "
+                                                       "can’t serve the context until it’s rebuilt.")
+              and status["rebuild"]["available"] and not status["outside"]["changed_outside"],
+              "an older map format is out of date: Rebuild is offered, and nothing is called an outside change")
+        documents = {k: v for k, v in snapshot(folder).items() if k.startswith("authoritative/")}
+        p = mg.rebuild_plan(folder)
+        status = mg.rebuild_apply(folder, p.plan_id, True)
+        check(status["agents_served"] and not status["outside"]["changed_outside"]
+              and status["outside"]["message"] == ""
+              and {k: v for k, v in snapshot(folder).items() if k.startswith("authoritative/")} == documents,
+              "after Rebuild it is served, and Charter recognizes its own output: no false outside-change notice")
+        check(not mg.check(folder)["outside"]["changed_outside"], "nor on a later check")
+
+        # A document edited outside Charter is still news after a Rebuild.
+        write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited in an editor.\n"))
+        p = mg.rebuild_plan(folder)
+        status = mg.rebuild_apply(folder, p.plan_id, True)
+        check(status["agents_served"] and status["outside"]["changed_outside"]
+              and status["outside"]["paths"] == ["authoritative/a.md"]
+              and ac.CONTEXT_MAP not in status["outside"]["paths"],
+              "a document changed outside Charter is still named after a Rebuild; Charter's own files are not")
+
+        with_map_format(folder, 3)
+        before = snapshot(folder)
+        status = mg.open_context(folder)
+        check(not status["agents_served"] and "newer version of Charter" in status["headline"]
+              and "not at fault" in status["headline"] and not status["rebuild"]["available"]
+              and status["headline_title"] == "This copy of Charter is out of date"
+              and status["headline_detail"].startswith("A newer version of Charter generated this Agent "
+                                                       "Context, so this copy can’t check or serve it."),
+              "a newer map format: this copy is out of date, the context is not at fault, and no Rebuild is offered")
+        p = mg.rebuild_plan(folder)
+        check(p.blocked and raises(au.ActionRefused, mg.rebuild_apply, folder, p.plan_id, True),
+              "Rebuild is refused outright")
+        check(raises(au.ActionRefused, mg.settings_plan, folder, project_name="Other")
+              and snapshot(folder) == before, "and so is every other write: the folder is untouched")
+        shutil.rmtree(folder)
+
+
 def as_earlier_name(folder: str) -> None:
     """Make a valid Agent Context's map and metadata exactly what Agent Context
     Manager, Charter's earlier name, generated for it, and record that, as
@@ -229,7 +320,8 @@ def case_earlier_name_map() -> None:
               and [i["message"] for i in exam.errors] == [ac.LEGACY_MAP],
               "it is not valid, for exactly one reason: the earlier name generated the map")
         status = mg.open_context(folder)
-        check(not status["agents_served"] and "Charter's earlier name" in status["headline"]
+        check(not status["agents_served"] and "Charter’s earlier name" in status["headline"]
+              and status["headline_title"] == mg.NOT_YET
               and "governing documents are unchanged" in status["headline"]
               and status["rebuild"]["available"] and not status["rebuild"]["blockers"],
               "agents are refused, the person is told why in words, and Rebuild is offered")
@@ -277,7 +369,9 @@ def case_earlier_name_map() -> None:
         exam = ac.examine(folder)
         status = mg.check(folder, git=False)
         check(not exam.legacy_map and len(exam.errors) > 1
-              and "earlier name" not in status["headline"],
+              and "earlier name" not in status["headline"]
+              and status["headline_title"] == mg.NOT_YET
+              and status["headline_detail"] in (mg.MISMATCH[1], mg.NOT_VALID[1]),
               "with a document also edited, it is not only an earlier-name map: the ordinary "
               "headline, every problem listed")
         shutil.rmtree(folder)
@@ -401,8 +495,13 @@ def case_settings() -> None:
         status = mg.settings_apply(folder, p.plan_id, True,
                                    agent_guidance={"proposal_context_impact_check": True})
         check(status["agents_served"] and status["settings"]["agent_guidance"]
-              ["proposal_context_impact_check"] and "Context-impact check" in
-              read(folder, ac.CONTEXT_MAP).decode(), "and the map then carries its instruction")
+              ["proposal_context_impact_check"] and "- **Assess proposal impact.**" in
+              read(folder, ac.CONTEXT_MAP).decode(),
+              "and the map then carries its instruction, headed by its Settings name")
+        same = mg.settings_plan(folder, agent_guidance={"proposal_context_impact_check": True})
+        check(same.blocked and not same.changes
+              and same.problems == ["Nothing to save: these are already this Agent Context's settings."],
+              "saving unchanged settings says plainly that there is nothing to save")
         check(not status["outside"]["changed_outside"], "a settings change is Charter's own")
         p = mg.settings_plan(folder, project_name="Renamed")
         mg.settings_apply(folder, p.plan_id, True, project_name="Renamed")
@@ -657,7 +756,10 @@ def case_untrusted_private_state() -> None:
         report = mg.check(folder, git=False)
         with open(cs.path(ps.CONTEXT_RECORD), "rb") as fh:
             untouched = fh.read() == b"{broken"
-        check(not report["agents_served"] and "cannot be used" in report["headline"]
+        check(not report["agents_served"]
+              and report["headline_title"] == "Charter can’t serve this Agent Context yet"
+              and report["headline_detail"].startswith("Charter’s local records for this folder can’t be "
+                                                       "used, so it can’t tell whether a write was interrupted.")
               and untouched and snapshot(folder) == before,
               "`charter check` agrees with MCP: agents refused, changing nothing")
         write(cs.base, ps.CONTEXT_RECORD, json.dumps({"version": 1, "folder": folder + "-x"}))
@@ -748,6 +850,8 @@ def run() -> None:
     case_nested_context_refused()
     case_long_path_refused_cleanly()
     case_outside_edit_and_rebuild()
+    case_plain_refusals()
+    case_map_format_updates()
     case_earlier_name_map()
     case_rebuild_refusals()
     case_rebuild_generated_damage()

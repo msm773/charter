@@ -97,10 +97,11 @@ def case_unchanged() -> None:
           "`AGENT-CONTEXT.md`, `.agent-context.json` and `authoritative/`")
     check(mcp.TOOL_NAMES == ("get_context", "list_governing_documents", "get_document",
                              "get_document_section")
-          and set(mcp.MESSAGES) == {"context-invalid", "context-unclean", "changed-during-read",
-                                    "not-governing", "unsafe-path", "heading-missing",
-                                    "heading-ambiguous", "bad-arguments"},
-          "the four MCP tools and eight refusal codes")
+          and set(mcp.MESSAGES) == {"context-invalid", "context-unclean", "map-outdated",
+                                    "server-outdated", "changed-during-read", "not-governing",
+                                    "unsafe-path", "heading-missing", "heading-ambiguous",
+                                    "bad-arguments"},
+          "the four MCP tools and ten refusal codes")
     check(ac.context_fingerprint({}) == hashlib.sha256(b"acm-context-fingerprint/1\n").hexdigest(),
           "the context fingerprint keeps `acm-context-fingerprint/1`, so fingerprints do not change")
     check("acm" in ps.OBSERVED_SOURCES and "charter" in ps.OBSERVED_SOURCES,

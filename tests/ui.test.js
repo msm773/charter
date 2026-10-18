@@ -35,8 +35,10 @@ parseInto(document, document.body, html);
 global.document = document;
 
 const calls = [];
+const DUPLICATE_MARK = " ";  // trailing whitespace: a distinct text, answered as a duplicate by this stand-in
 let currentState = fixture.state_closed;
 let connectAnswer = fixture.connect_ready;
+let commandAnswer = fixture.command_ready;  // the header's Charter command status
 let csNext = null;  // the change-set payload the next change-set call answers with
 let csListAnswer = null;  // the change-set index, when not fixture.cs_list
 let stageAnswer = fixture.stage;  // what converting the next file answers
@@ -64,6 +66,8 @@ global.fetch = async (url, options) => {
   const refuse = (status, error) => ({ ok: false, status, json: async () => ({ error }) });
   if (url === "/api/state") return answer(currentState);
   if (url === "/api/connect") return answer(connectAnswer);
+  if (url === "/api/command") return answer(commandAnswer);
+  if (url === "/api/diagnostics") return answer(currentState.open ? fixture.diagnostics : fixture.diagnostics_closed);
   if (url === "/api/open") {
     if (body.path.endsWith("missing")) return refuse(400, fixture.open_missing_error);
     currentState = fixture.state_valid;
@@ -74,6 +78,10 @@ global.fetch = async (url, options) => {
     return answer({ created: body.path, name: body.project_name || "new-context", headline: "" });
   }
   if (url === "/api/pick-folder") return answer({ path: "/work", cancelled: false });
+  if (url === "/api/recent/clear") {
+    currentState = Object.assign({}, currentState, { recent: [] });
+    return answer({ cleared: true });
+  }
   if (url === "/api/peek") {
     // A read-only look: a chosen folder already holding a context answers with
     // its name; an empty or missing folder is offered to create.
@@ -129,7 +137,14 @@ global.fetch = async (url, options) => {
     importCheckDelay = null;
     return gate ? gate.then(() => checked) : checked;
   }
-  if (url === "/api/proposals/import") return answer({ result: "pending", proposal_id: "p-imported" });
+  if (url === "/api/proposals/import") {
+    // An exact duplicate of a waiting proposal is named, not filed, until the person replaces it.
+    if (body.json.endsWith(DUPLICATE_MARK) && !body.replace) {
+      return answer({ result: "duplicate", problem: { code: "duplicate", message: "Identical." },
+        waiting: { proposal_id: "p-waiting", title: "Waiting rule" } });
+    }
+    return answer({ result: "pending", proposal_id: body.replace || "p-imported" });
+  }
   return refuse(404, "no route " + url);
 };
 global.FileReader = class {
@@ -172,6 +187,11 @@ const labelsIn = (root) => root.querySelectorAll("label").map((l) => l.textConte
 const fieldsIn = (root) => root.querySelectorAll("input").concat(root.querySelectorAll("textarea"));
 const labelFor = (root, id) => root.querySelectorAll("label").find((l) => l.getAttribute("for") === id);
 const insideOf = (node, root) => { for (let n = node; n; n = n.parentNode) if (n === root) return true; return false; };
+/* Hidden for a person: the node, or anything around it up to `root`, is hidden. */
+const hiddenWithin = (node, root) => {
+  for (let n = node; n && n !== root; n = n.parentNode) if (n.hidden) return true;
+  return false;
+};
 const lastCall = (url) => calls.filter((c) => c.url === url).pop();
 const lastPlan = () => lastCall("/api/plan");
 const requestKeys = () => JSON.stringify(Object.keys(lastPlan().body.request).sort());
@@ -329,6 +349,27 @@ for (const file of ["markdown.js", "app.js"]) {
   await click($("wordmark"));
   check($("recentContexts").querySelectorAll("button").some((b) => b.textContent === fixture.folder),
     "and still after navigating away and back");
+
+  console.log("\nClear empties only the Recent list, and it stays empty");
+  const clear = $("btnClearRecent");
+  check(clear && clear.textContent === "Clear" && clear.className === "btn small"
+    && clear.parentNode.querySelector("h3").textContent === "Recent",
+    "a non-empty Recent list offers Clear beside its heading, with the shared button treatment");
+  const beforeClear = calls.length;
+  await click(clear);
+  await settle();
+  const clearCalls = calls.slice(beforeClear).map((c) => c.url);
+  check(clearCalls.includes("/api/recent/clear")
+    && !clearCalls.some((u) => /\/api\/(open|create|apply|changeset)/.test(u)),
+    "Clear asks only to clear the list: nothing is opened, created or applied");
+  check(!$("recentContexts").querySelector("h3") && !$("btnClearRecent") && !$("view-open").hidden
+    && $("barPath").textContent === fixture.state_valid.root,
+    "the list and its Clear are gone, and the open Agent Context stays open");
+  await navTo("governing");
+  await click($("wordmark"));
+  check(!$("recentContexts").querySelector("h3") && !$("btnClearRecent"),
+    "Recent stays cleared after navigating away and back, and offers no Clear while empty");
+  currentState = fixture.state_valid;
   await navTo("governing");
 
   console.log("\nThe Charter wordmark and Open Agent Context… open the same view");
@@ -1006,6 +1047,17 @@ for (const file of ["markdown.js", "app.js"]) {
     && $("reviseNotice").textContent.indexOf(`keeps governing at ${fixture.governing}, unchanged`) !== -1
     && calls.filter((c) => c.url === "/api/plan").length === plansBeforeRevise,
     "it says the document keeps governing, and plans nothing by itself");
+  check(/keeps governing at .+, unchanged, until a change set you apply replaces it with the candidate\.$/
+      .test($("reviseNotice").textContent)
+    && !/revise it with the candidate in a change set/.test($("reviseNotice").textContent),
+    "it says a change set replaces the document with the revision, never that a change set revises it");
+  const issueItem = vm.runInThisContext("issueItem");
+  const general = issueItem({ level: "error", path: "", general: true, fix: "",
+    message: "Nothing to save: these are already this Agent Context's settings." });
+  const located = issueItem({ level: "error", path: "", message: "A stray file.", fix: "" });
+  check(general.textContent === "Nothing to save: these are already this Agent Context's settings."
+    && !general.querySelector("code") && /^folder — /.test(located.textContent),
+    "a plan's own problem, such as saving unchanged settings, reads as a plain sentence, never “folder — …”");
   check(compactScope($("review"), "formField-scope", "formHint-scope"),
     "Revise…'s scope field is the compact Scope control: its label, one helper, no information icon or placeholder");
   $("formField-scope").value = "Bookings and holds";
@@ -1358,7 +1410,8 @@ for (const file of ["markdown.js", "app.js"]) {
   check($("barState").textContent === "Agent context unavailable" && $("barState").querySelector(".chip").classList.contains("stale")
     && $("metaAgents").textContent === "Unavailable",
     "the header and rail say Agent context unavailable, in the error treatment");
-  check($("refusedCard") && /Rebuild Agent Context/.test($("refusedCard").querySelector("h3").textContent)
+  check($("refusedCard") && $("refusedCard").querySelector("h3").textContent === "Charter can’t serve this Agent Context yet"
+    && /Rebuild Agent Context/.test($("refusedDetail").textContent)
     && $("refusedCard").querySelectorAll(".issues li").length > 0, "the status says why, and what to do next");
   check($("btnRebuildFromStatus") && !$("btnRebuildContext").hidden, "Rebuild Agent Context is offered");
   check($("outsideNotice") && /authoritative\/a\.md/.test($("outsideNotice").textContent) && !$("btnAcknowledge"),
@@ -1403,8 +1456,73 @@ for (const file of ["markdown.js", "app.js"]) {
 
   console.log("\nA stray: named, left alone, and no Rebuild");
   await show("state_unclean");
-  check(/notes\.txt/.test($("refusedCard").textContent) && /never moves or deletes a file it did not write/.test($("straysNote").textContent)
-    && !$("btnRebuildFromStatus"), "the stray is named, the person told it is left alone, and Rebuild is not offered");
+  check(/notes\.txt/.test($("refusedCard").textContent) && !$("btnRebuildFromStatus"),
+    "the stray is named, and Rebuild is not offered");
+  check($("refusedCard").querySelector("h3").textContent === "Charter can’t serve this Agent Context yet"
+    && $("refusedDetail").textContent === "This folder contains files that are not part of the Agent Context. Charter leaves them untouched.",
+    "its heading says Charter can’t serve the context yet; the next line says why, and that the files are left untouched");
+  const strayRow = $("refusedCard").querySelector(".stray-item");
+  check(strayRow && strayRow.querySelector("strong").textContent === "notes.txt"
+    && strayRow.textContent === "notes.txt isn’t part of this Agent Context. Move it out of the context folder or delete it, then try again.",
+    "each file: its name in bold, that it isn’t part of this Agent Context, and what to do");
+  check($("straysNote").textContent === "Charter never moves or deletes files it did not create. After resolving the files listed above, choose any navigation item to check the folder again."
+    && !/Agents are refused|Agents are not served/.test($("refusedCard").textContent)
+    && $("barState").textContent === "Agent context unavailable",
+    "the closing guidance, with no “Agents are refused”; the header still reads Agent context unavailable");
+
+  console.log("\nA map in an older format: out of date, with Rebuild");
+  await show("state_map_outdated");
+  check($("barState").textContent === "Agent context unavailable"
+    && $("refusedCard").querySelector("h3").textContent === "This Agent Context’s map is out of date"
+    && /^An earlier version of Charter generated it, so Charter can’t serve the context until it’s rebuilt\./.test($("refusedDetail").textContent)
+    && !!$("btnRebuildFromStatus") && $("contextMapState").textContent === "Map out of date"
+    && !/\b\d\b/.test($("refusedCard").querySelector("h3").textContent),
+    "the status says the map is out of date and offers Rebuild, naming no version number");
+
+  console.log("\nA map in a newer format: this copy of Charter is out of date, and nothing is offered to write");
+  await show("state_charter_outdated");
+  const newer = $("refusedCard").textContent;
+  check($("barState").textContent === "Agent context unavailable"
+    && /newer version of Charter/.test(newer) && $("refusedCard").querySelector("h3").textContent === "This copy of Charter is out of date"
+    && /so this copy can’t check or serve it/.test($("refusedDetail").textContent) && !/Agents are refused/.test(newer)
+    && /not at fault/.test(newer) && !/damaged|corrupt/i.test(newer),
+    "the status says this copy of Charter is out of date, and that the context is not at fault");
+  check(!$("btnRebuildFromStatus") && $("btnRebuildContext").hidden && !$("rebuildBlockedNote")
+    && $("contextMapState").textContent === "Map not checked",
+    "it offers no Rebuild, or anything else that would write, and the map is not checked by this copy");
+  check(!/\b\d+\.\d+/.test(newer) && !/version 3|version 2/.test(newer),
+    "and names no version number: those are in Diagnostics");
+
+  console.log("\nDiagnostics: which copy of Charter, collapsed at the end of Settings and of Open");
+  await show("state_valid");
+  await navTo("settings");
+  await settle();
+  const sd = $("settingsDiagnostics");
+  const view = $("view-settings");
+  check(!!sd && view.children.indexOf(sd) === view.children.length - 1
+    && $("settingsDiagnosticsToggle").textContent === "Diagnostics"
+    && $("settingsDiagnosticsToggle").getAttribute("aria-expanded") === "false" && $("settingsDiagnosticsBody").hidden,
+    "Settings ends with a Diagnostics disclosure, collapsed by default");
+  const terms = sd.querySelectorAll("dt").map((d) => d.textContent);
+  check(["Version", "Build", "Launcher", "charter.py", "Python", "Map format", "This Agent Context's map format",
+    "charter on PATH"].every((t) => terms.includes(t))
+    && sd.textContent.indexOf(fixture.diagnostics.identity.version) !== -1
+    && sd.textContent.indexOf(fixture.diagnostics.identity.python) !== -1,
+    "it shows the version, build, launcher, charter.py, Python, both map formats and what PATH finds");
+  await click($("settingsDiagnosticsToggle"));
+  check(!$("settingsDiagnosticsBody").hidden, "and opens on request");
+  check(document.querySelector(".topbar").textContent.indexOf(fixture.diagnostics.identity.version) === -1
+    && document.querySelector("nav.rail").textContent.indexOf(fixture.diagnostics.identity.version) === -1
+    && $("contextStatus").textContent.indexOf(fixture.diagnostics.identity.version) === -1,
+    "no header, rail or status line shows the version");
+  await click($("btnSwitch"));
+  await settle();
+  const od = $("openDiagnostics");
+  check(!!od && $("view-open").children.indexOf(od) === $("view-open").children.length - 1
+    && $("openDiagnosticsToggle").getAttribute("aria-expanded") === "false"
+    && od.querySelectorAll("dt").map((d) => d.textContent).includes("Version"),
+    "the Open view ends with the same Diagnostics, collapsed");
+  await navTo("governing");
 
   console.log("\nLost metadata: the settings last known on this computer, to confirm or change");
   await show("state_lost_metadata");
@@ -1621,6 +1739,9 @@ for (const file of ["markdown.js", "app.js"]) {
         && !buttons[1].classList.contains("proposal-reject") && buttons[1].classList.contains("proposal-reject-open");
     }) && /display:\s*grid/.test(rule(css, ".proposal-reject")),
     "Review proposal… and Reject proposal sit side by side in the one row; the button no longer takes the rejection form's block layout");
+  check(/display:\s*none/.test(rule(css, ".proposal .actions[hidden]"))
+    && /gap:\s*\.5rem/.test(rule(css, ".proposal .actions")) && /display:\s*flex/.test(rule(css, ".proposal .actions")),
+    "a hidden compact row really is hidden, so an expanded card shows one Reject proposal, and its decisions are spaced apart");
   check(!$("proposalsImportedGroup").querySelector(".hint") && $("proposalsImportedTitle").textContent === "Imported by You",
     "Imported by You is its heading alone, with no explanatory sentence");
   check(/background:\s*#fff/.test(rule(css, ".btn")) && /border:\s*1px solid var\(--rule-strong\)/.test(rule(css, ".btn"))
@@ -1721,24 +1842,41 @@ for (const file of ["markdown.js", "app.js"]) {
     "the notice says exactly “Proposal accepted.”: no button, link, document name or other detail");
   clearToasts();
 
-  console.log("\nRejecting: in the same card, with a reason");
+  console.log("\nRejecting: one confirmation in the same card, with no reason field");
   const staleNow = cardOf(fixture.proposal_stale);
   await click(buttonSaying(staleNow, "Review proposal…"));
   check($("btnAcceptProposal").disabled && !$("btnRejectProposal").disabled
     && /cannot be accepted as written/.test($("proposalReviewStale").textContent)
     && $(`proposalReason-${fixture.proposal_stale}`).textContent === "Purpose: Refine the idea.",
     "a stale proposal says why, cannot be accepted, and can still be rejected — its purpose shown in full first");
+  const visibleRejects = (card) => card.querySelectorAll("button").filter((b) => /^Reject/.test(b.textContent)
+    && !hiddenWithin(b, card));
+  check(visibleRejects(staleNow).map((b) => b.textContent).join("|") === "Reject proposal",
+    "expanded, the review shows exactly one Reject action");
   await click($("btnRejectProposal"));
-  check(!!$("proposalRejectReason") && insideOf($("proposalRejectReason"), staleNow) && !$("review").firstChild
-    && labelFor(staleNow, "proposalRejectReason").textContent === "Reason (optional)",
-    "Reject proposal asks why, inside the same card");
-  $("proposalRejectReason").value = "Not now.";
+  check(!!$("proposalRejectForm") && insideOf($("proposalRejectForm"), staleNow) && !$("review").firstChild
+    && !$("proposalRejectReason") && !staleNow.querySelector("textarea")
+    && !/Reason/.test(staleNow.querySelector(".proposal-detail").textContent),
+    "Reject proposal asks for one confirmation inside the same card, with no reason field");
+  check(staleNow.querySelector(".proposal-decisions").hidden
+    && visibleRejects(staleNow).map((b) => b.textContent).join("|") === "Reject"
+    && $("btnConfirmReject").textContent === "Reject" && $("btnCancelReject").textContent === "Cancel",
+    "while it asks, the confirmation stands in for the decision row: one Reject action, and Cancel");
+  await click($("btnCancelReject"));
+  check(!$("proposalRejectForm") && !staleNow.querySelector(".proposal-decisions").hidden
+    && visibleRejects(staleNow).map((b) => b.textContent).join("|") === "Reject proposal"
+    && !calls.some((c) => c.url === "/api/plan" && c.body.kind === "reject-proposal"),
+    "Cancel brings the decision row back, having rejected nothing");
+  await click($("btnRejectProposal"));
   await click($("btnConfirmReject"));
-  check(lastPlan().body.kind === "reject-proposal" && lastPlan().body.request.reason === "Not now."
-    && lastPlan().body.request.proposal_id === fixture.proposal_stale
+  check(lastPlan().body.kind === "reject-proposal"
+    && JSON.stringify(lastPlan().body.request) === JSON.stringify({ proposal_id: fixture.proposal_stale })
     && lastCall("/api/apply").body.kind === "reject-proposal" && lastCall("/api/apply").body.confirm === true
     && !$("confirmPhrase"),
-    "confirming rejects it with that reason, recorded ordinarily");
+    "Reject rejects it, sending no reason, confirmed ordinarily");
+  check(toastNow().textContent === "Proposal rejected." && !toastNow().querySelectorAll("button").length
+    && !toastNow().querySelectorAll("a").length && toastNow().getAttribute("role") === "status",
+    "the notice says exactly “Proposal rejected.”: no button, link, document name or other detail");
   clearToasts();
 
   console.log("\nReject proposal, straight from the compact card");
@@ -1748,51 +1886,38 @@ for (const file of ["markdown.js", "app.js"]) {
   const directDetail = directCard.querySelector(".proposal-detail");
   const plansBeforeDirect = calls.filter((c) => c.url === "/api/plan").length;
   await click(buttonSaying(directCard, "Reject proposal"));
-  check(!directDetail.hidden && !!$("proposalRejectReason") && insideOf($("proposalRejectReason"), directCard)
-    && labelFor(directCard, "proposalRejectReason").textContent === "Reason (optional)"
+  check(!directDetail.hidden && !!$("proposalRejectForm") && insideOf($("proposalRejectForm"), directCard)
+    && !directCard.querySelector("textarea")
     && !directCard.classList.contains("is-expanded") && directCard.classList.contains("is-rejecting")
     && !directDetail.querySelector(".file-list") && !$("btnAcceptProposal") && !$("review").firstChild
     && calls.filter((c) => c.url === "/api/plan").length === plansBeforeDirect,
-    "it asks for a concise reason inside the card, without opening the review or previewing acceptance");
+    "it asks for one confirmation inside the card, without opening the review or previewing acceptance");
   check(directCard.querySelector(".proposal-open-row").hidden
-    && directDetail.querySelectorAll("button").map((b) => b.textContent).join("|") === "Reject proposal|Cancel",
-    "while the reason is asked for, the card offers only Reject proposal and Cancel");
+    && directDetail.querySelectorAll("button").map((b) => b.textContent).join("|") === "Reject|Cancel",
+    "while it asks, the card offers only Reject and Cancel");
   await click($("btnCancelReject"));
   check(directDetail.hidden && !directDetail.firstChild && !directCard.classList.contains("is-rejecting")
     && !directCard.querySelector(".proposal-open-row").hidden && !calls.some((c) => c.url === "/api/plan"
       && c.body.kind === "reject-proposal" && c.body.request.proposal_id === fixture.proposal_titled),
     "Cancel leaves the card compact again, having rejected nothing");
   await click(buttonSaying(directCard, "Reject proposal"));
-  $("proposalRejectReason").value = "Typed, then left";
   await navTo("governing");
   await navTo("proposals");
   const directAgain = cardOf(fixture.proposal_titled);
-  check(directAgain.querySelector(".proposal-detail").hidden && !$("proposalRejectReason")
+  check(directAgain.querySelector(".proposal-detail").hidden && !$("proposalRejectForm")
     && !document.querySelectorAll(".proposal.is-rejecting").length,
-    "leaving Agent Proposals discards a reason being typed");
+    "leaving Agent Proposals discards a rejection being confirmed");
   await click(buttonSaying(directAgain, "Reject proposal"));
   await click(buttonSaying(cardOf(fixture.proposal_untitled), "Review proposal…"));
   check(!directAgain.classList.contains("is-rejecting") && document.querySelectorAll(".proposal.is-expanded").length === 1,
     "opening another card's review closes the rejection: one card at a time");
   await click(buttonSaying(cardOf(fixture.proposal_untitled), "Close review"));
   await click(buttonSaying(directAgain, "Reject proposal"));
-  $("proposalRejectReason").value = "  ";
   await click($("btnConfirmReject"));
   check(lastPlan().body.kind === "reject-proposal" && lastPlan().body.request.proposal_id === fixture.proposal_titled
     && !("reason" in lastPlan().body.request) && lastCall("/api/apply").body.kind === "reject-proposal"
-    && !document.querySelectorAll(".toast.error").length,
-    "with no reason, it is still rejected, and no error asks for one");
-  clearToasts();
-  await navTo("governing");
-  await navTo("proposals");
-  const directThird = cardOf(fixture.proposal_titled);
-  await click(buttonSaying(directThird, "Reject proposal"));
-  $("proposalRejectReason").value = "Not needed.";
-  await click($("btnConfirmReject"));
-  check(lastPlan().body.kind === "reject-proposal" && lastPlan().body.request.reason === "Not needed."
-    && lastPlan().body.request.proposal_id === fixture.proposal_titled
-    && lastCall("/api/apply").body.kind === "reject-proposal" && lastCall("/api/apply").body.confirm === true,
-    "confirming rejects it with that reason, recorded ordinarily");
+    && !document.querySelectorAll(".toast.error").length && toastNow().textContent === "Proposal rejected.",
+    "from the compact card too: rejected with no reason, saying exactly “Proposal rejected.”");
   clearToasts();
 
   console.log("\nImport Agent Proposal: the fallback for an agent that could not file its own JSON");
@@ -1843,6 +1968,34 @@ for (const file of ["markdown.js", "app.js"]) {
     && /Imported the agent proposal, for review\. It is not context\./.test(toastNow().textContent)
     && !/\bp-[\w-]+/.test(toastNow().textContent),
     "Import files exactly the checked JSON, as the person's own action, and says so without an internal id");
+  clearToasts();
+
+  console.log("\nImporting an exact duplicate of a waiting proposal: Replace or Cancel");
+  const duplicateText = fixture.import_returned + "\n" + DUPLICATE_MARK;
+  await click($("btnImportProposal"));
+  type($("importJson"), duplicateText);
+  await click($("btnCheckImport"));
+  const importsBefore = calls.filter((c) => c.url === "/api/proposals/import").length;
+  await click($("btnFileImport"));
+  check($("importDuplicateText") && $("importDuplicateText").textContent
+      === "An identical proposal, “Waiting rule,” is already awaiting review. Replace it?"
+    && $("btnReplaceImport").textContent === "Replace" && $("btnCancelReplace").textContent === "Cancel",
+    "an identical waiting proposal is named by its title, with Replace and Cancel");
+  check($("btnFileImport").parentNode.hidden
+    && $("importDuplicate").querySelectorAll("button").map((b) => b.textContent).join("|") === "Replace|Cancel"
+    && !/Imported/.test((toastNow() || { textContent: "" }).textContent),
+    "it stands in for the panel's own actions, and nothing was filed");
+  await click($("btnCancelReplace"));
+  check(!$("importDuplicate") && !$("btnFileImport").parentNode.hidden && $("importJson").value === duplicateText
+    && calls.filter((c) => c.url === "/api/proposals/import").length === importsBefore + 1
+    && !calls.some((c) => c.url === "/api/proposals/import" && c.body.replace),
+    "Cancel changes nothing: the panel and its JSON are as they were, and nothing was replaced");
+  await click($("btnFileImport"));
+  await click($("btnReplaceImport"));
+  check(lastCall("/api/proposals/import").body.replace === "p-waiting"
+    && lastCall("/api/proposals/import").body.json === duplicateText && !$("importJson")
+    && /Replaced the waiting proposal/.test(toastNow().textContent),
+    "Replace replaces that waiting proposal with this submission, and the panel closes");
   clearToasts();
 
   console.log("\nCancel clears and closes Import Agent Proposal");
@@ -2086,29 +2239,32 @@ for (const file of ["markdown.js", "app.js"]) {
     "the second screen, with no before-and-after lists");
   const previewBody = $("csPreviewBody");
   const order = previewBody.children.map((n) => n.getAttribute("id") === "planProblems" ? "problems"
-    : n.classList.contains("cs-preview-warning") ? "warning" : n.getAttribute("id") === "csAuthorityEffects" ? "effects"
-    : n.classList.contains("cs-retained") ? "retained" : n.classList.contains("file-list") ? "files"
+    : n.classList.contains("cs-preview-warning") ? "warning" : n.getAttribute("id") === "csChangesToApply" ? "changes"
+    : n.classList.contains("file-list") ? "files"
     : n.querySelector("#confirmPhrase") ? "confirm" : n.classList.contains("actions") ? "actions" : n.tagName);
   const firstOf = (k) => order.indexOf(k);
-  check(firstOf("effects") >= 0 && firstOf("files") > firstOf("effects") && firstOf("confirm") > firstOf("files")
-    && firstOf("actions") === order.length - 1 && (firstOf("retained") === -1 || (firstOf("retained") > firstOf("effects")
-      && firstOf("retained") < firstOf("files")))
-    && ["problems", "warning"].every((k) => firstOf(k) === -1 || firstOf(k) < firstOf("effects")),
-    "one pass, in order: problems and warnings, Authority Effects, retained documents, files, then the typed confirmation");
-  const effectLines = $("csAuthorityEffects").querySelectorAll(".cs-effect");
-  const csEffects = fixture.cs_refreshed.effects.filter((e) => e.effect !== "retain");
-  check($("csAuthorityEffects").querySelector("h4").textContent === "Authority Effects" && effectLines.length === csEffects.length
-    && effectLines.every((li, i) => li.querySelector(".title-row .title").textContent === csEffects[i].title
-      && li.querySelector(".title-row .chip").textContent.length > 0),
-    "Authority Effects lists each changed governing document by title, its declared effect right after it");
-  const replaced = effectLines.find((li) => /Replaced/.test(li.querySelector(".chip").textContent));
-  check(!replaced || (/Current scope[\s\S]*Candidate's scope[\s\S]*Resulting scope/.test(replaced.querySelector(".cs-effect-scope").textContent)
-      && /^By “/.test(replaced.querySelector(".cs-effect-by").textContent)),
-    "a replacement shows its candidate and its scope continuity: current, candidate's and resulting scope");
-  const retainedCount = fixture.cs_refreshed.effects.filter((e) => e.effect === "retain").length;
-  check(retainedCount === 0 || ($("csPreviewRetainedToggle").textContent === `Retained Governing Documents (${retainedCount})`
-    && $("csPreviewRetainedToggle").getAttribute("aria-expanded") === "false" && $("csPreviewRetainedBody").hidden),
-    "every retained document is behind a collapsed Retained Governing Documents (N) disclosure");
+  check(firstOf("changes") >= 0 && firstOf("files") === firstOf("changes") + 1 && firstOf("confirm") > firstOf("files")
+    && firstOf("actions") === order.length - 1
+    && ["problems", "warning"].every((k) => firstOf(k) === -1 || firstOf(k) < firstOf("changes")),
+    "one pass, in order: problems and warnings, Changes to Apply, files, then the typed confirmation");
+  const csEffects = fixture.cs_refreshed.effects;
+  const changeLines = $("csChangesToApply").querySelectorAll("li");
+  const lineFor = (effect) => changeLines.find((li) => li.getAttribute("data-effect") === effect);
+  const ofEffect = (effect) => csEffects.find((e) => e.effect === effect);
+  check($("csChangesToApply").querySelector("h4").textContent === "Changes to Apply"
+    && changeLines.length === csEffects.filter((e) => e.effect !== "retain").length
+    && ["replace", "govern-alongside", "withdraw"].every((k) => !!lineFor(k)),
+    "Changes to Apply has one line for each document the change set changes, and none for a retained one");
+  check(lineFor("replace").textContent === `${ofEffect("replace").candidate_title} — Replaces “${ofEffect("replace").title}”`
+    && lineFor("govern-alongside").textContent === `${ofEffect("govern-alongside").candidate_title} — Governs alongside`
+    && lineFor("withdraw").textContent === `${ofEffect("withdraw").title} — Withdrawn`,
+    "each line names the document by title and says what happens to it: replaces a named document, governs alongside, or withdrawn");
+  const retainedTitle = ofEffect("retain").title;
+  check(!/scope|Retained|Authority Effects|Current|Resulting/i.test($("csChangesToApply").textContent)
+    && !$("csPreviewRetainedToggle") && !previewBody.querySelector(".scope-compare")
+    && !$("csChangesToApply").textContent.includes(retainedTitle)
+    && !/Retained Governing Documents|Authority Effects|Candidate's scope|Resulting scope/.test($("review").textContent),
+    "no scope comparison, no retained-document list, and no Authority Effects section");
   check(previewBody.querySelectorAll(".file-item").length === fixture.cs_plan.changes.length - fixture.cs_plan.changes.filter((c) => c.action === "delete" && fixture.cs_plan.changes.some((o) => o.moved_from === c.path)).length
     && previewBody.querySelectorAll(".file-path").some((n) => n.textContent === "AGENT-CONTEXT.md"),
     "every changed file is a row with its diff, the regenerated map included");
@@ -2395,8 +2551,9 @@ for (const file of ["markdown.js", "app.js"]) {
     const server = JSON.parse($("connectConfig").textContent).mcpServers[payload.server_name];
     const launched = [server.command].concat(server.args).join(" ");
     check($("connectConfig").textContent === payload.config_text
-      && launched === (name === "Windows" ? "cmd /c " : "") + "charter mcp --context " + payload.folder,
-      `${name}: the MCP configuration runs charter mcp --context <folder>`);
+      && launched.endsWith(" mcp --context " + payload.folder) && server.command === payload.command
+      && server.command !== "charter" && server.command !== "cmd",
+      `${name}: the MCP configuration runs this copy by its full path: mcp --context <folder>`);
     payload.shells.forEach((s) => check($("connectClaude-" + s.shell).textContent === s.claude_code
       && /^claude mcp add charter-/.test(s.claude_code) && s.claude_code.indexOf("--scope") === -1,
       `${name}: the claude mcp add command for ${s.label} is shown exactly, at Claude Code's default local scope`));
@@ -2504,52 +2661,43 @@ for (const file of ["markdown.js", "app.js"]) {
   check(fixture.connect_ready.ready && fixture.connect_ready.folder === fixture.state_valid.root,
     "the console's own answer for the open, valid Agent Context is ready");
 
-  console.log("\nMCP needs charter on PATH: the Agent Context is ready, the agent setup is not");
-  for (const [name, payload] of [["Windows", fixture.connect_windows_needs_path],
-    ["macOS and Linux", fixture.connect_posix_needs_path]]) {
-    connectAnswer = payload;
-    await navTo("governing");
-    await navTo("connect");
-    check(payload.connect === "needs-path" && $("connectStatus").dataset.connect === "needs-path"
-      && $("connectStatusText").textContent === "Agent Context ready. Add Charter to your PATH before a new agent host can connect."
-      && !/ready to connect/i.test($("connectStatus").textContent),
-      `${name}: “Agent Context ready. Add Charter to your PATH…”, never “ready to connect”`);
-    check(!!$("connectPrerequisite") && $("connectAddToPath").textContent === "charter add-to-path"
-      && /quit and reopen the agent host/.test($("connectAddToPathBlock").textContent)
-      && /cannot run/.test($("connectLauncher").textContent),
-      `${name}: charter add-to-path is offered to copy, saying the host must be restarted afterwards`);
-    check($("connectConfig").textContent === payload.config_text
-      && payload.shells.every((s) => $("connectClaude-" + s.shell).textContent === s.claude_code)
-      && $("connectInstruction").textContent === payload.instruction,
-      `${name}: the copy-ready configuration, commands and file instruction stay visible`);
-    check(connectView().textContent.indexOf("charter add-to-path") < connectView().textContent.indexOf(payload.config_text.slice(0, 20)),
-      `${name}: the prerequisite comes before the configuration`);
+  console.log("\nHosts start this copy by its full path: PATH never blocks connecting");
+  for (const [name, payload] of [["Windows", fixture.connect_windows], ["macOS and Linux", fixture.connect_posix]]) {
+    const server = payload.config.mcpServers[payload.server_name];
+    check(payload.connect === "ready" && !["charter", "py", "cmd"].includes(server.command)
+      && !server.args.includes("/c") && /[\\/]/.test(server.command),
+      `${name}: the registration is a program by its full path with exact arguments, never a bare charter, py or cmd /c`);
   }
-  Object.defineProperty(global, "navigator", { configurable: true,
-    value: { clipboard: { writeText: async (t) => { global.__copied = t; } } } });
-  clearToasts();
-  await click($("btnCopyConnectAddToPath"));
-  check(global.__copied === "charter add-to-path" && /Nothing was written/.test(toastNow().textContent),
-    "Copy copies charter add-to-path, and runs nothing");
-  clearToasts();
-
-  console.log("\nA development checkout: setup names its own launcher by full path");
-  connectAnswer = fixture.connect_windows_dev;
+  check(/python/i.test(fixture.connect_windows.command) && /charter\.py$/.test(fixture.connect_windows.args[0]),
+    "Windows: the program is the Python running Charter, its first argument this copy's charter.py");
+  connectAnswer = fixture.connect_windows;
   await navTo("governing");
   await navTo("connect");
-  const devLauncher = fixture.connect_dev_launcher;
+  check(!$("connectStatus") && !$("connectPathConflict") && !$("connectPrerequisite") && !$("connectAddToPath")
+    && /Keep Charter in one folder/.test($("connectInstallNote").textContent)
+    && /move Charter, or change the Python/.test($("connectInstallNote").textContent),
+    "ready, with no PATH prerequisite, and a short note: update Charter in place; reconnect if it or its Python moves");
 
-  check(fixture.connect_windows_dev.connect === "ready" && !$("connectStatus") && !$("connectAddToPath")
-    && !$("connectPrerequisite") && !!$("connectConfig"),
-    "it is ready whatever PATH holds: no add-to-path prerequisite");
-  check($("connectConfig").textContent === fixture.connect_windows_dev.config_text
-    && JSON.parse($("connectConfig").textContent).mcpServers[fixture.connect_windows_dev.server_name].args[1] === devLauncher
-    && fixture.connect_windows_dev.shells.every((s) => $("connectClaude-" + s.shell).textContent.indexOf(devLauncher) !== -1),
-    "the configuration and every command run that checkout's own launcher, never a bare `charter`");
-  connectAnswer = fixture.connect_windows;
+  console.log("\nAnother copy first on PATH: Connect Agents says nothing about it");
+  connectAnswer = fixture.connect_windows_conflict;
+  await navTo("governing");
+  await navTo("connect");
+  check(fixture.connect_windows_conflict.connect === "ready" && !$("connectPathConflict") && !!$("connectConfig")
+    && $("view-connect").textContent.indexOf(fixture.connect_other_copy) === -1
+    && !/Remove .+ from your PATH|add-to-path|Charter command/.test($("view-connect").textContent),
+    "the full-path setup is offered as always, with no PATH warning or remedy: the header's Charter command status has it");
   clearToasts();
 
-  console.log("\nWindows, a path cmd /c cannot carry: file access, and the MCP limitation");
+  console.log("\nA folder Command Prompt cannot type: PowerShell's command only");
+  connectAnswer = fixture.connect_powershell_only;
+  await navTo("governing");
+  await navTo("connect");
+  check(fixture.connect_powershell_only.connect === "ready" && !!$("connectClaude-powershell") && !$("connectClaude-cmd")
+    && !!$("connectConfig"),
+    "a path with % or &: MCP is offered, with the PowerShell registration command and the exact configuration");
+  connectAnswer = fixture.connect_windows;
+
+  console.log("\nA path no host can carry exactly: file access, and the MCP limitation");
   connectAnswer = fixture.connect_files_only;
   await navTo("governing");
   await navTo("connect");
@@ -2557,8 +2705,7 @@ for (const file of ["markdown.js", "app.js"]) {
     && /^Agent Context ready for file access\./.test($("connectStatusText").textContent)
     && !/ready to connect/i.test($("connectStatus").textContent),
     "it says the Agent Context is ready for file access, not ready to connect");
-  check(!!$("connectMcpLimitation") && /cmd \/c/.test($("connectMcpLimitation").textContent)
-    && /No MCP configuration is offered/.test($("connectMcpLimitation").textContent),
+  check(!!$("connectMcpLimitation") && /No MCP configuration is offered/.test($("connectMcpLimitation").textContent),
     "it gives the concrete MCP limitation");
   check(!$("connectConfig") && !$("connectClaude-powershell") && !$("connectClaude-cmd")
     && !$("connectCodex") && !$("connectPointer") && !$("connectCheckToggle") && !$("connectAddToPath")
@@ -2609,6 +2756,123 @@ for (const file of ["markdown.js", "app.js"]) {
     && /max-width:\s*none/.test(rule(css, ".connect-method .disclosure-body"))
     && /minmax\(0, 1fr\)/.test(rule(css, "#connectBody")) && /auto-fit/.test(rule(css, ".connect-shells")),
     "the lede uses the full width; the body and the shell commands still reflow on a narrow screen");
+
+  console.log("\nThe Charter command status: in the header, independent of the context's");
+  const commandChip = () => $("barCommand").firstChild;
+  for (const [answer, label, tone] of [[fixture.command_ready, "Charter command ready", "ok"],
+    [fixture.command_other, "Charter command needs attention", "warn"],
+    [fixture.command_missing, "Charter command needs attention", "warn"]]) {
+    commandAnswer = answer;
+    await vm.runInThisContext("refresh")();
+    await settle();
+    check(commandChip() && commandChip().textContent === label && commandChip().classList.contains(tone)
+      && $("barState").textContent === "Agent context ready"
+      && $("barCommand").textContent.indexOf("Agent context") === -1 && !$("refusedCard"),
+      `\`charter\` ${answer.state}: “${label}”, in the ${tone === "ok" ? "positive" : "warning"} treatment, beside an unchanged “Agent context ready”`);
+  }
+  check(commandChip().tagName === "BUTTON" && commandChip().getAttribute("type") === "button"
+    && commandChip().getAttribute("aria-haspopup") === "dialog" && commandChip().getAttribute("tabindex") !== "-1",
+    "needs attention is a real button, so the keyboard reaches and activates it, and it says it opens a dialog");
+  const fix = $("btnCommandFix");
+  check(fix && fix.tagName === "BUTTON" && fix.textContent === "Fix…" && fix.getAttribute("type") === "button"
+    && fix.classList.contains("btn") && fix.classList.contains("small") && !fix.classList.contains("chip")
+    && fix.getAttribute("aria-haspopup") === "dialog" && $("barCommand").children.length === 2
+    && $("barCommand").children[0] === commandChip() && $("barCommand").children[1] === fix,
+    "Fix… follows immediately after the amber status: a compact button in the shared treatment, saying it opens a dialog");
+  check(/cursor:\s*pointer/.test(rule(css, ".chip-button")) && /border-color/.test(rule(css, ".chip-button:hover"))
+    && /background/.test(rule(css, ".btn:hover")) && /outline:\s*2px solid/.test(rule(css, ":focus-visible")),
+    "both have hover and visible keyboard focus: the chip its own hover, Fix… the shared button's, both the shared focus ring");
+  await click(fix);
+  await settle();
+  check($("commandDialog") && $("commandTitle").textContent === "Charter Command Needs Attention"
+    && document.activeElement && document.activeElement.textContent === "Close",
+    "Fix… opens the same remedy dialog");
+  document.dispatch("keydown", { key: "Escape" });
+  check(!$("commandDialog") && document.activeElement && document.activeElement.id === "btnCommandFix",
+    "closing it returns focus to Fix…, the control that opened it");
+  commandAnswer = fixture.command_ready;
+  await vm.runInThisContext("refresh")();
+  await settle();
+  check(commandChip().tagName === "SPAN" && !$("btnCommandStatus") && !$("btnCommandFix")
+    && $("barCommand").children.length === 1,
+    "ready is a plain green status, with nothing to open and no Fix…");
+
+  commandAnswer = fixture.command_other;
+  await vm.runInThisContext("refresh")();
+  await settle();
+  check(!$("btnNewChangeSet").disabled && !$("btnAddDocument").disabled && !$("btnImportProposal").disabled,
+    "needs attention disables nothing: change sets, candidates and proposals stay available");
+  await click($("btnCommandStatus"));
+  await settle();
+  const dialog = $("commandDialog");
+  check(lastCall("/api/command") && dialog && dialog.getAttribute("role") === "dialog"
+    && dialog.getAttribute("aria-modal") === "true" && $("commandTitle").textContent === "Charter Command Needs Attention"
+    && document.querySelector(".rail").inert === true && document.querySelector(".skip-link").inert === true
+    && document.activeElement && document.activeElement.textContent === "Close",
+    "it opens a focused dialog, asking PATH afresh: modal, the page behind inert (skip link included), focus on Close");
+  check($("commandFound").textContent === `The charter command runs another copy of Charter, from ${fixture.command_other.other_folder}.`
+    && /would use that copy, not the one managing this Agent Context/.test($("commandImpact").textContent)
+    && /charter propose/.test($("commandImpact").textContent)
+    && /Connect Agents run this copy by its full path, so they are unaffected/.test($("commandSafe").textContent),
+    "it names the other copy's folder, what a new terminal or `charter propose` would do, and that full-path agents are unaffected");
+  check($("commandStep").textContent === `Remove ${fixture.command_other.other_folder} from your PATH. Then: in PowerShell, put this copy on your PATH:`
+    && $("commandRemedy").textContent === fixture.command_other.remedy
+    && /^& '[^']*python\.exe' '?[^']*charter\.py'? add-to-path$/.test($("commandRemedy").textContent)
+    && !/(^|\s)(py|charter|cmd)(\s|$)/.test($("commandRemedy").textContent)
+    && $("commandRemedy").textContent.indexOf(fixture.command_other.other_folder) === -1
+    && !!$("btnCopyCommandRemedy"),
+    "the remedy: remove that folder, then one copy-ready PowerShell command by full paths, nothing bare, nothing that runs the other copy");
+  check(/^Afterwards, open a new terminal/.test($("commandAfter").textContent), "and to open a new terminal afterwards");
+  Object.defineProperty(global, "navigator", { configurable: true,
+    value: { clipboard: { writeText: async (t) => { global.__copied = t; } } } });
+  await click($("btnCopyCommandRemedy"));
+  check(global.__copied === fixture.command_other.remedy, "Copy command copies exactly that command");
+  clearToasts();
+  document.dispatch("keydown", { key: "Escape" });
+  check(!$("commandDialog") && $("docViewer").hidden && !document.querySelector(".rail").inert
+    && document.activeElement && document.activeElement.id === "btnCommandStatus",
+    "Escape closes it, releasing the page, and focus returns to the status");
+  await click($("btnCommandStatus"));
+  await settle();
+  await click(buttonSaying($("commandDialog"), "Close"));
+  check(!$("commandDialog") && document.activeElement && document.activeElement.id === "btnCommandStatus",
+    "Close closes it too, focus back on the status");
+
+  commandAnswer = fixture.command_missing;
+  await vm.runInThisContext("refresh")();
+  await settle();
+  await click($("btnCommandStatus"));
+  await settle();
+  check($("commandFound").textContent === "The charter command is not found on PATH."
+    && /cannot run Charter/.test($("commandImpact").textContent)
+    && $("commandStep").textContent === "In PowerShell, put this copy on your PATH:"
+    && $("commandRemedy").textContent === fixture.command_missing.remedy && /Afterwards, open a new terminal/.test($("commandAfter").textContent),
+    "`charter` not found: said so, with the same full-path remedy and new-terminal step");
+  await click(buttonSaying($("commandDialog"), "Close"));
+
+  commandAnswer = fixture.command_other_posix;
+  await vm.runInThisContext("refresh")();
+  await settle();
+  if ($("btnCommandStatus")) {
+    await click($("btnCommandStatus"));
+    await settle();
+    check($("commandRemedy").textContent === fixture.command_other_posix.remedy
+      && /it says what to add to your shell startup file/.test($("commandStep").textContent),
+      "macOS and Linux: this copy's launcher by full path, which says what to add to the shell startup file");
+    await click(buttonSaying($("commandDialog"), "Close"));
+  }
+  commandAnswer = fixture.command_other;
+  currentState = fixture.state_unclean || currentState;
+  await vm.runInThisContext("refresh")();
+  await settle();
+  check(!fixture.state_unclean || ($("barState").textContent === "Agent context unavailable"
+    && commandChip().textContent === "Charter command needs attention"),
+    "an unavailable context and a command needing attention are two separate statuses, each its own");
+  currentState = fixture.state_valid;
+  commandAnswer = fixture.command_ready;
+  await vm.runInThisContext("refresh")();
+  await settle();
+  clearToasts();
 
   console.log("\nUnknown origin is said on Governing documents only");
   const beforeOrigin = currentState;

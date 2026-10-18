@@ -325,10 +325,41 @@ def case_process() -> None:
               "even a bad command line gets one JSON result")
         out = subprocess.run([sys.executable, os.path.join(ROOT, "charter.py"), "propose", "--help"],
                              capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
-        check(out.returncode == 0 and b"charter propose --context" in out.stdout and out.stderr == b"",
-              "`charter propose --help` explains it")
+        check(out.returncode == 0 and b"charter propose --context" in out.stdout and out.stderr == b""
+              and b"`duplicate`" in out.stdout and b"exit 5" in out.stdout,
+              "`charter propose --help` explains it, `duplicate` and exit 5 included")
         with isolated_private_state(tmp):
             check(len(pending_files(folder)) == 1, "exactly one record was filed")
+
+        print("\nthe real command: an exact duplicate of a waiting proposal")
+
+        def private_bytes() -> dict:
+            out = {}
+            for d, _dirs, names in os.walk(os.path.join(tmp, "state")):
+                for n in names:
+                    with open(os.path.join(d, n), "rb") as fh:
+                        out[os.path.relpath(os.path.join(d, n), tmp)] = fh.read()
+            return out
+        before = private_bytes()
+        out = run(json.dumps(good).encode(), folder, "--context", ".")
+        dup = json.loads(out.stdout)
+        check(out.returncode == 5 and out.stderr == b"" and out.stdout.count(b"\n") == 1
+              and dup == {"result": "duplicate", "problem": {"code": "duplicate", "message": dup["problem"]["message"]}}
+              and "change the proposal's text" in dup["problem"]["message"]
+              and "replace the waiting proposal" in dup["problem"]["message"],
+              "the same bytes again: `duplicate`, exit 5, telling the agent to change the text or ask a person")
+        check("proposal_id" not in out.stdout.decode() and "From the CLI" not in out.stdout.decode()
+              and "p-" not in dup["problem"]["message"],
+              "it reveals nothing about the waiting proposal beyond its existence")
+        check(private_bytes() == before, "and changes nothing: every private file is byte for byte as it was")
+        for label, data in (("a trailing newline", json.dumps(good).encode() + b"\n"),
+                            ("a byte-order mark", b"\xef\xbb\xbf" + json.dumps(good).encode()),
+                            ("other spacing", json.dumps(good, indent=2).encode())):
+            out = run(data, folder, "--context", ".")
+            check(out.returncode == 0 and json.loads(out.stdout)["result"] == "pending",
+                  f"{label} makes the same proposal distinct: filed, exit 0")
+        with isolated_private_state(tmp):
+            check(len(pending_files(folder)) == 4, "four distinct records wait, and no duplicate was filed")
 
 
 def case_candidate_name_privacy() -> None:
@@ -471,6 +502,35 @@ def case_retryable() -> None:
         shutil.rmtree(folder)
 
 
+def case_map_format_mismatch() -> None:
+    print("\na map-format mismatch: nothing filed, nothing written, and why")
+    from tests.agent_context import with_map_format
+    with isolated_private_state() as root:
+        folder, _candidate = setup()
+        good = {"agent": "cli-test", "operation": "create", "target_path": "authority-candidates/mm.md",
+                "reason": "r", "proposed_body": "x\n"}
+
+        def private_bytes() -> dict:
+            out = {}
+            for d, _dirs, names in os.walk(root):
+                for n in names:
+                    with open(os.path.join(d, n), "rb") as fh:
+                        out[os.path.relpath(os.path.join(d, n), root)] = fh.read()
+            return out
+        for version, code, words in ((1, "map_outdated", "rebuild it"),
+                                     (3, "charter_outdated", "out of date")):
+            with_map_format(folder, version)
+            before = private_bytes()
+            result = submit(folder, good)
+            check(result["result"] == "unavailable" and result["retryable"] is False
+                  and result["problem"]["code"] == code and words in result["problem"]["message"]
+                  and "nothing was filed" in result["problem"]["message"],
+                  f"map-format version {version}: `unavailable`, not retryable, `{code}`, saying why")
+            check(private_bytes() == before and pending_files(folder) == [],
+                  "and nothing was written: no record, ledger entry or private state")
+        shutil.rmtree(folder)
+
+
 def run() -> None:
     case_create()
     case_amend_and_retire()
@@ -480,6 +540,7 @@ def run() -> None:
     case_candidate_name_privacy()
     case_piped_non_ascii()
     case_process()
+    case_map_format_mismatch()
     print(f"\n{OK} All propose checks passed.")
 
 

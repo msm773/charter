@@ -22,6 +22,7 @@ Run: python -m tests.launchers
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -115,7 +116,7 @@ def case_bash_launcher() -> None:
         ctx = os.path.join(tmp, "not-a-context")
         os.mkdir(ctx)
         out = run_bash(bash, prefix + f'cd "{unix_path(bash, ctx)}" && "{charter}" check --context .', env)
-        check(b"Agents:        refused" in out.stdout and out.stderr == b"" and out.returncode == 1,
+        check(b"Agents:        unavailable" in out.stdout and out.stderr == b"" and out.returncode == 1,
               "`charter check` output passes straight through, with its own exit status, 1")
         good = valid_context(tmp)
         out = run_bash(bash, prefix + f'"{charter}" check --context "{unix_path(bash, good)}"', env)
@@ -182,7 +183,7 @@ def case_cmd_launcher() -> None:
 
         out = subprocess.run(["cmd", "/c", os.path.join(bin_dir, "charter.cmd"), "check", "--context", "."],
                              cwd=ctx, stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
-        check(out.returncode == 1 and b"Agents:        refused" in out.stdout and out.stderr == b"",
+        check(out.returncode == 1 and b"Agents:        unavailable" in out.stdout and out.stderr == b"",
               "`charter.cmd check --context .` passes its report and exit status, 1, through")
         out = subprocess.run(["cmd", "/c", os.path.join(bin_dir, "charter.cmd"), "check", "--context", good],
                              cwd=tmp, stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
@@ -396,6 +397,12 @@ def case_posix_path_guidance() -> None:
               and "chmod +x " + shlex.quote(launcher) in said,
               f"`add-to-path`, off PATH: exit 1, the export line for {rc}, the desktop note naming "
               f"{note}, and the chmod its non-executable launcher needs")
+        interpreted = on_path.this_copy(odd, ["add-to-path", "--check"], windows=False)
+        check(interpreted == " ".join(shlex.quote(a) for a in (
+                  os.path.abspath(sys.executable), os.path.join(odd, "charter.py"), "add-to-path", "--check"))
+              and "\n    " + interpreted + "\n" in said and "`charter add-to-path" not in said,
+              "while the launcher is not executable, the check to run afterwards is this Python with "
+              "this copy's charter.py, each by its full path")
         code, said = run(odd, "/usr/bin:/bin", False, shell="/usr/bin/zsh")
         check("add this line to ~/.zshrc" in said and "~/.bashrc" not in said,
               "for zsh, the line goes in ~/.zshrc")
@@ -407,8 +414,10 @@ def case_posix_path_guidance() -> None:
               "not `not found`")
         os.chmod(launcher, 0o755)
         code, said = run(odd, "/usr/bin:/bin", True)
-        check(code == 1 and "does not include it" in said and "python3 charter.py add-to-path" in said,
-              "`--check`, off PATH: exit 1, and how to get the line to add")
+        check(code == 1 and "does not include it" in said
+              and "\n    " + shlex.quote(launcher) + " add-to-path\n" in said
+              and "python3 charter.py" not in said,
+              "`--check`, off PATH: exit 1, and this copy's launcher, by its full path, for the line to add")
         code, said = run(odd, odd + ":/usr/bin:/bin", True)
         check(code == 0 and f"This shell runs:      {launcher}" in said,
               "`--check`, on PATH and executable: exit 0")
@@ -529,7 +538,7 @@ def case_fresh_discovery_of_the_release() -> None:
     import io
     import winreg
     from app import on_path
-    from tests.package import NAME, members, release_bytes
+    from tests.package import NAME, members, release_file
     powershell = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32",
                               "WindowsPowerShell", "v1.0", "powershell.exe")
     with tempfile.TemporaryDirectory(prefix="charter-launch-") as tmp:
@@ -539,10 +548,8 @@ def case_fresh_discovery_of_the_release() -> None:
         for rel in members():
             target = os.path.join(release, *rel.split("/"))
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            with open(os.path.join(ROOT, *rel.split("/")), "rb") as fh:
-                data = release_bytes(rel, fh.read())
             with open(target, "wb") as fh:
-                fh.write(data)
+                fh.write(release_file(rel))
         reg = FakeRegistry(r"C:\NoSuchTools", winreg.REG_EXPAND_SZ, on_path.Registry().machine_path())
         check(on_path.resolve("charter", on_path.fresh_path(reg)) is None,
               "before: a new program finds no `charter`")
@@ -581,6 +588,247 @@ def case_fresh_discovery_of_the_release() -> None:
         out = io.StringIO()
         check(on_path.report(release, reg, out) == 1 and "Another `charter` comes first" in out.getvalue(),
               "a different `charter` earlier on PATH is reported, not passed over")
+        said = out.getvalue()
+        check(f"Remove {other} from your PATH" in said and "`charter add-to-path`" not in said
+              and "use that copy" not in said and "from that copy" not in said,
+              "and the fix is to remove that folder from PATH, never a bare `charter` command")
+
+
+def displayed(said: str) -> list:
+    """The commands a message gives to copy: each on a line of its own, indented."""
+    return [line[4:] for line in said.splitlines() if line.startswith("    ") and line.strip()]
+
+
+def bare(command: str, *full: str) -> bool:
+    """Whether a command, its full paths taken out, still runs something by
+    name: `py`, `python`, `python3`, `charter` or `cmd /c`."""
+    for path in sorted(full, key=len, reverse=True):
+        command = command.replace(path, "")
+    return bool(re.search(r"(^|[\s&'\"])(py|python3?|charter|cmd)(\.exe)?(\s|$)|/c\b", command))
+
+
+def case_path_remedies_use_full_paths() -> None:
+    print("\n`add-to-path` and `--check` give remedies that run this copy by its full paths")
+    sys.path.insert(0, ROOT)
+    import contextlib
+    import io
+    from app import connect, on_path
+    folder = os.path.join(tempfile.gettempdir(), "Charter release's copy", "charter 2")
+    python = os.path.join(tempfile.gettempdir(), "Py Thon 3", "python.exe")
+    script = os.path.join(folder, "charter.py")
+    launcher = os.path.join(folder, "charter")
+
+    win = on_path.this_copy(folder, ["add-to-path", "--check"], windows=True, python=python)
+    check(win == "& " + " ".join(on_path.powershell_arg(a) for a in (python, script, "add-to-path", "--check"))
+          and win.startswith("& '" + python + "' '" + script.replace("'", "''") + "' ")
+          and not bare(win, on_path.powershell_arg(python), on_path.powershell_arg(script)),
+          "Windows: the Python running Charter and this copy's charter.py, each by its full path and "
+          "quoted for PowerShell, spaces and all, run with `&`")
+    posix = on_path.this_copy(folder, ["add-to-path"], windows=False, python=python)
+    check(posix == shlex.quote(launcher) + " add-to-path" and not bare(posix, shlex.quote(launcher)),
+          "macOS and Linux: this copy's launcher by its full path, quoted for the shell")
+    for windows in (True, False):
+        for already in (True, False):
+            text = on_path.earlier_copy(os.path.join("C:\\Old" if windows else "/old", "charter"),
+                                        folder, already, windows=windows)
+            commands = displayed(text)
+            check(len(commands) == (1 if already else 2)
+                  and all(c == on_path.this_copy(folder, c.split()[-1:] if c.endswith("add-to-path")
+                                                 else ["add-to-path", "--check"], windows)
+                          for c in commands)
+                  and all(not bare(c, on_path.powershell_arg(on_path.interpreter()), on_path.powershell_arg(script),
+                                   shlex.quote(launcher)) for c in commands)
+                  and not re.search(r"`(charter add-to-path|py |python3? )", text),
+                  f"{'Windows' if windows else 'elsewhere'}, {'on PATH' if already else 'not on PATH'}: "
+                  "another copy first is answered with this copy's own full-path commands only")
+
+    if os.name != "nt":
+        print("  skip: `--check` against the registry is Windows only")
+        return
+    import winreg
+    with tempfile.TemporaryDirectory(prefix="charter-remedy-") as tmp:
+        here = os.path.join(tmp, "Charter release's copy", "charter 2")
+        os.makedirs(here)
+        with open(os.path.join(here, "charter.cmd"), "w", encoding="utf-8") as fh:
+            fh.write("@echo off\r\n")
+        other = os.path.join(tmp, "other")
+        os.mkdir(other)
+        with open(os.path.join(other, "charter.cmd"), "w", encoding="utf-8") as fh:
+            fh.write("@echo off\r\n")
+        listing = sorted(os.listdir(here)), os.environ.get("PATH")
+        mine = os.path.join(here, "charter.py")
+        for label, reg, already in (
+                ("`charter` not found", FakeRegistry(r"C:\NoSuchTools", winreg.REG_EXPAND_SZ), False),
+                ("another copy first, this one off PATH", FakeRegistry(other, winreg.REG_EXPAND_SZ), False),
+                ("another copy first, this one on PATH too",
+                 FakeRegistry(other + ";" + here, winreg.REG_EXPAND_SZ), True)):
+            out = io.StringIO()
+            code = on_path.report(here, reg, out)
+            said = out.getvalue()
+            commands = displayed(said)
+            put = on_path.this_copy(here, ["add-to-path"], windows=True)
+            check(code == 1 and reg.writes == 0 and reg.announced == 0
+                  and (put in commands) == (not already) and commands
+                  and all(not bare(c, on_path.powershell_arg(on_path.interpreter()), on_path.powershell_arg(mine))
+                          for c in commands)
+                  and "in PowerShell:" in said and "`charter add-to-path" not in said,
+                  f"`--check`, {label}: exit 1, nothing written or announced, and every command given "
+                  "runs this Python with this copy's charter.py by full path")
+        reg = FakeRegistry(r"C:\NoSuchTools", winreg.REG_EXPAND_SZ)
+        with contextlib.redirect_stdout(io.StringIO()):
+            on_path.main(True, folder=here, registry=reg)
+        check(reg.writes == 0 and reg.announced == 0 and (sorted(os.listdir(here)), os.environ.get("PATH")) == listing,
+              "`add-to-path --check` writes nothing: no PATH, no announcement, no file")
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            code = on_path.main(False, folder=here, registry=FakeRegistry(other, winreg.REG_EXPAND_SZ))
+        commands = [c for c in displayed(said.getvalue()) if "add-to-path" in c]
+        check(code == 1 and len(commands) == 2
+              and all(c == on_path.this_copy(here, ["add-to-path", "--check"], windows=True) for c in commands),
+              "`add-to-path`, with another copy first: the checks it gives run this copy by full path")
+        with found_nowhere() as nowhere:
+            check(connect.command_status(windows=True, registry=nowhere, launchers=here)["remedy"]
+                  == on_path.this_copy(here, ["add-to-path"], windows=True),
+                  "the Charter command dialog gives the same command as `--check`")
+
+
+class found_nowhere:
+    """A registry under which no new program finds `charter`."""
+
+    def __enter__(self):
+        import winreg
+        return FakeRegistry(r"C:\NoSuchTools", winreg.REG_EXPAND_SZ)
+
+    def __exit__(self, *exc):
+        return False
+
+
+def case_windows_remedy_runs_in_powershell() -> None:
+    print("\nthe remedies `--check` displays run in a real PowerShell exactly as shown")
+    if os.name != "nt":
+        print("  skip: not Windows")
+        return
+    import io
+    import json
+    import winreg
+    from app import on_path
+    from tests.package import NAME, members, release_file
+    powershell = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32",
+                              "WindowsPowerShell", "v1.0", "powershell.exe")
+    real = on_path.Registry()
+
+    def ps(line: str) -> subprocess.CompletedProcess:
+        return subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command",
+                               "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + line + "; exit $LASTEXITCODE"],
+                              cwd=tempfile.gettempdir(), stdin=subprocess.DEVNULL, capture_output=True,
+                              timeout=120)
+
+    before = real.user_path()
+    with tempfile.TemporaryDirectory(prefix="charter-ps-") as tmp:
+        # A stand-in charter.py that says what it was given, so the displayed
+        # `add-to-path` runs as shown and changes no PATH.
+        stand_in = os.path.join(tmp, "Stand in's copy", "charter 2")
+        os.makedirs(stand_in)
+        with open(os.path.join(stand_in, "charter.py"), "w", encoding="utf-8") as fh:
+            fh.write("import json, os, sys\n"
+                     "print(json.dumps([os.path.abspath(sys.executable), os.path.abspath(__file__)] + sys.argv[1:]))\n")
+        out = io.StringIO()
+        on_path.report(stand_in, FakeRegistry(r"C:\NoSuchTools", winreg.REG_EXPAND_SZ), out)
+        shown = [c for c in displayed(out.getvalue()) if c.endswith(" add-to-path")]
+        check(len(shown) == 1, f"`--check` displays one `add-to-path` command: {shown}")
+        done = ps(shown[0])
+        got = json.loads(done.stdout.decode("utf-8") or "null")
+        check(done.returncode == 0 and got == [os.path.abspath(sys.executable),
+                                               os.path.join(stand_in, "charter.py"), "add-to-path"],
+              f"PowerShell runs this Python with this copy's charter.py and `add-to-path`, exactly: {shown[0]}")
+
+        # The release as unpacked, under a path with a space and an apostrophe:
+        # its displayed `--check` runs for real, and reads only.
+        release = os.path.join(tmp, "Charter release's copy", NAME)
+        for rel in members():
+            target = os.path.join(release, *rel.split("/"))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as fh:
+                fh.write(release_file(rel))
+        listing = sorted(os.path.join(dp, n) for dp, _d, files in os.walk(release) for n in files)
+        os.mkdir(os.path.join(tmp, "other"))
+        with open(os.path.join(tmp, "other", "charter.cmd"), "w", encoding="utf-8") as fh:
+            fh.write("@echo off\r\n")
+        out = io.StringIO()
+        on_path.report(release, FakeRegistry(os.path.join(tmp, "other"), winreg.REG_EXPAND_SZ), out)
+        shown = [c for c in displayed(out.getvalue()) if c.endswith(" add-to-path --check")]
+        check(len(shown) == 1, f"`--check` displays one check to run afterwards: {shown}")
+        done = ps(shown[0])
+        said = done.stdout.decode("utf-8", "replace")
+        check(done.returncode in (0, 1) and f"Launchers:            {release}" in said
+              and "Your user PATH:" in said,
+              f"PowerShell runs this copy's own `--check`, by its full paths: {shown[0]}")
+        after = sorted(os.path.join(dp, n) for dp, _d, files in os.walk(release) for n in files
+                       if "__pycache__" not in dp)
+        check(after == [p for p in listing if "__pycache__" not in p] and real.user_path() == before,
+              "and it wrote nothing: the release's files and the real user PATH are as they were")
+
+
+def case_identity() -> None:
+    print("\n`charter --version`, and `charter check`, say which copy of Charter this is")
+    sys.path.insert(0, ROOT)
+    from app import __version__
+    from app import agent_context as ac
+    from app import identity
+    from tests.package import NAME, members, release_file
+
+    def version_of(charter_py: str) -> tuple:
+        done = subprocess.run([sys.executable, charter_py, "--version"], stdin=subprocess.DEVNULL,
+                              capture_output=True, timeout=60)
+        return done.returncode, done.stdout.decode("utf-8", "replace")
+
+    git_dir = os.path.join(ROOT, ".git")
+    if os.path.isfile(git_dir):  # a worktree's `.git` names its own Git folder
+        with open(git_dir, encoding="utf-8") as fh:
+            pointed = fh.read().strip().split("gitdir:", 1)[-1].strip()
+        git_dir = pointed if os.path.isabs(pointed) else os.path.join(ROOT, pointed)
+    index = os.path.join(git_dir, "index") if os.path.isfile(os.path.join(git_dir, "index")) else None
+    before = open(index, "rb").read() if index else None
+    code, said = version_of(os.path.join(ROOT, "charter.py"))
+    lines = said.splitlines()
+    check(code == 0 and lines[0] == f"Charter {__version__}"
+          and f"launcher     {os.path.join(ROOT, 'charter.cmd' if os.name == 'nt' else 'charter')}" in said
+          and f"charter.py   {os.path.join(ROOT, 'charter.py')}" in said
+          and f"python       {os.path.abspath(sys.executable)}" in said
+          and f"map format   {ac.MAP_FORMAT_VERSION} (generated by this Charter)" in said,
+          "exit 0: the version, launcher, charter.py, Python and map format, each by its full path")
+    if identity.development_checkout(ROOT):
+        check("build        development checkout" in said
+              and ("commit unavailable" in said or re.search(r"commit [0-9a-f]{7,}, (dirty: uncommitted changes|clean)", said)),
+              "this checkout says it is a development checkout, with its commit and whether it is dirty")
+    if index:
+        check(open(index, "rb").read() == before and not os.path.exists(os.path.join(git_dir, "index.lock")),
+              "asking Git who this checkout is writes nothing: the index is byte for byte the same, and no lock is left")
+
+    with tempfile.TemporaryDirectory(prefix="charter id ") as tmp:
+        release = os.path.join(tmp, "Program Files", NAME)
+        bare = os.path.join(tmp, "copied by hand")
+        for rel in members():
+            for where in (release, bare):
+                if where == bare and rel.endswith("build.json"):
+                    continue
+                target = os.path.join(where, *rel.split("/"))
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(target, "wb") as fh:
+                    fh.write(release_file(rel))
+        code, said = version_of(os.path.join(release, "charter.py"))
+        check(code == 0 and re.search(r"build        release, built \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", said)
+              and f"launcher     {os.path.join(release, 'charter.cmd' if os.name == 'nt' else 'charter')}" in said,
+              "a release, in a folder with spaces, reports its build time and its own launcher")
+        code, said = version_of(os.path.join(bare, "charter.py"))
+        check(code == 0 and "build        unknown build" in said,
+              "a copy with no build record and no checkout says its build is unknown, rather than guessing")
+        context = valid_context(tmp)
+        done = subprocess.run([sys.executable, os.path.join(release, "charter.py"), "check", "--context", context],
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        out = done.stdout.decode("utf-8", "replace")
+        check(done.returncode == 0 and f"Charter {__version__}" in out and "build        release" in out
+              and f"context map  {ac.MAP_FORMAT_VERSION} (the format this Charter generates)" in out,
+              "`charter check` reports the same identity, with the map format the Agent Context records")
 
 
 def run() -> None:
@@ -594,6 +842,9 @@ def run() -> None:
     case_check_is_read_only()
     case_add_to_path_edits_the_user_path()
     case_fresh_discovery_of_the_release()
+    case_path_remedies_use_full_paths()
+    case_windows_remedy_runs_in_powershell()
+    case_identity()
     print(f"\n{OK} All launcher checks passed.")
 
 

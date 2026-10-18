@@ -1001,27 +1001,12 @@ def load_for_apply(ctx: Ctx, draft_id: Any, draft_revision: Any) -> Dict[str, An
     return draft
 
 
-def _proposal_reason(ctx: Ctx, doc: Document) -> str:
-    """For a candidate filed from an accepted Agent Proposal: that proposal's
-    reason, which a review prompt fences as untrusted material."""
-    m = re.match(r"^Agent Proposal (p-[\w-]+) ", str(doc.meta.get("source") or ""))
-    if not m:
-        return ""
-    try:
-        record = hs.read_json(ctx.cs.path(ps.PROPOSALS, "accepted", m.group(1) + ".json"), None)
-    except hs.HostStateError:
-        return ""
-    reason = ((record or {}).get("proposal") or {}).get("reason") if isinstance(record, dict) else ""
-    return reason if isinstance(reason, str) else ""
-
-
 def candidate_material(ctx: Ctx, draft: Dict[str, Any], now: Now) -> List[Dict[str, Any]]:
     """The included candidates as they are now: what a prompt fences and what
     a report's citations are checked against."""
     return [{"path": p, "title": now.candidates[p].title,
              "scope": str(now.candidates[p].meta.get("scope") or ""),
-             "sha256": now.sha(p), "text": now.text(p),
-             "reason": _proposal_reason(ctx, now.candidates[p])}
+             "sha256": now.sha(p), "text": now.text(p)}
             for p in draft["candidates"] if p in now.candidates]
 
 

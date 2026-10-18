@@ -47,6 +47,8 @@
   <div class="topbar">
     <span class="path" id="barPath">No Agent Context open</span>
     <span id="barState"></span>
+    <!-- What the default `charter` command runs: independent of the context's status. -->
+    <span id="barCommand"></span>
     <span class="spacer"></span>
     <button class="btn ghost small" id="btnSwitch" type="button">Open Agent Context…</button>
   </div>
@@ -83,6 +85,8 @@
       </div>
       <div id="recentContexts"></div>
     </section>
+    <!-- Which copy of Charter this is: collapsed, at the end, never in a header or status. -->
+    <div class="diagnostics" id="openDiagnostics"></div>
   </section>
 
   <!-- governing documents ------------------------------------------------- -->
@@ -229,6 +233,7 @@
     </div>
     <p class="lede" id="settingsIntro">Settings are reflected in AGENT-CONTEXT.md, which agents read.</p>
     <div id="settingsForm"></div>
+    <div class="diagnostics" id="settingsDiagnostics"></div>
   </section>
 
   <div id="review"></div>

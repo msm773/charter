@@ -10,15 +10,17 @@ this user's PATH; it writes nothing anywhere. Charter never
 creates or changes `AGENTS.md`, `CLAUDE.md`, a host's configuration or an MCP
 registration, and never runs a command it shows.
 
-What it says is limited to what it checked: the folder, and whether a newly
-started program can run `charter`. It never says a host is configured or that an
-agent has read the context, since it cannot know either.
+What it says is limited to what it checked: the folder. It never says a host is
+configured or that an agent has read the context, since it cannot know either.
 
 The text is offered only while the folder is ready: valid, clean, with no
 interrupted Charter write, so agents are served. Otherwise the
-reason is given instead, and nothing to copy. A ready folder is not yet ready
-for MCP while a newly started program cannot run `charter`, or, on Windows, while
-its path is one `cmd /c` cannot carry; each is said plainly.
+reason is given instead, and nothing to copy. A path no host configuration can
+carry gets file access only, said plainly.
+
+What the default `charter` command runs is not Connect agents' to say: the
+header's Charter command status reports it (`command_status`), with its remedy
+in a dialog of its own (UI Standards).
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ from typing import Any, Callable, Dict, List, Optional
 from . import agent_context as ac
 from . import manager as mg
 from . import on_path
+from . import identity
 from .docs import slugify
 
 # Connect agents holds only the immediate actions: choose a host, copy its
@@ -38,6 +41,11 @@ from .docs import slugify
 # and the trust boundary are the README's.
 
 CONFIG_NOTE = "Add this using your host's MCP instructions."
+
+# Product Specification §6: where Charter lives, and what moving it means.
+INSTALL_NOTE = ("These start this copy of Charter by its full path. Keep Charter in one folder and "
+                "update it there: registrations keep working. If you move Charter, or change the "
+                "Python it runs with, connect your agents again.")
 
 CODEX_NOTE = "Add this to your Codex configuration, then restart Codex."
 
@@ -47,26 +55,17 @@ POINTER_NOTE = ("Copy this into the project instructions or system context your 
 
 FILES_NOTE = "Requires direct read access to the Agent Context folder. See the README for guidance."
 
-RESTART_NOTE = (
-    "Afterwards, quit and reopen the agent host, every window of it: a program that is already "
-    "running keeps the PATH it started with. `charter add-to-path --check` says what a newly started "
-    "program runs as `charter`.")
-
 # Never says a host is configured, or that an agent retrieved or follows the context.
 READY = "This context is ready to connect."
-NEEDS_PATH = "Agent Context ready. Add Charter to your PATH before a new agent host can connect."
-OTHER_COPY = ("Agent Context ready. Another copy of Charter comes first on your PATH: a new agent host "
-              "would run that one, not this one.")
-FILES_ONLY = ("Agent Context ready for file access. MCP access cannot be set up for this folder on "
-              "Windows.")
+FILES_ONLY = "Agent Context ready for file access. MCP access cannot be set up for this folder."
 
-# Characters that Command Prompt acts on wherever they are, or when a host
-# passes the folder to `cmd /c` without quotes: no configuration through
-# `cmd /c` can carry them reliably.
+# Characters Command Prompt acts on wherever they are, quoted or not: a
+# registration command typed there cannot carry them reliably, so only
+# PowerShell's form is offered for a path that holds one.
 CMD_UNSAFE = set("%&|<>^\"")
 
 # PowerShell takes these as they are when unquoted; anything else is quoted.
-_PS_PLAIN = re.compile(r"[A-Za-z0-9_.:\\/-]+")
+_PS_PLAIN = on_path.PS_PLAIN
 # Command Prompt: quoted unless it is plain.
 _CMD_PLAIN = _PS_PLAIN
 
@@ -82,13 +81,7 @@ def server_name(project_name: str) -> str:
 
 # --- quoting -----------------------------------------------------------------
 
-def powershell_arg(arg: str) -> str:
-    """One argument as typed at a PowerShell prompt. Quoted unless it is plain,
-    and always for `--`: PowerShell drops a bare `--` passed to a script, and
-    a `claude` installed by npm is one."""
-    if arg == "--" or not _PS_PLAIN.fullmatch(arg):
-        return "'" + arg.replace("'", "''") + "'"
-    return arg
+powershell_arg = on_path.powershell_arg
 
 
 def cmd_arg(arg: str) -> str:
@@ -107,51 +100,44 @@ def command_line(parts: List[str], quote: Callable[[str], str]) -> str:
     return " ".join(quote(p) for p in parts)
 
 
-# --- readiness ---------------------------------------------------------------
+# --- the Charter command -------------------------------------------------------
 
-def _launcher(windows: bool, registry: Any = None) -> Dict[str, Any]:
-    """Whether a newly started program finds this copy's `charter` by name, as an
-    agent host must. Reads PATH; changes nothing."""
+COMMAND_READY, COMMAND_OTHER, COMMAND_MISSING = "ready", "other", "missing"
+
+
+def found_by_name(windows: bool, registry: Any = None) -> Optional[str]:
+    """What a newly started program runs as `charter`: on Windows, by the PATH
+    Windows gives it; elsewhere, by this process's. Reads; changes nothing."""
     try:
         if windows and os.name == "nt":
-            found = on_path.resolve(on_path.NAME,
-                                    on_path.fresh_path(registry or on_path.Registry()))
-        else:
-            found = on_path.resolve(on_path.NAME, os.environ.get("PATH", ""))
+            return on_path.resolve(on_path.NAME, on_path.fresh_path(registry or on_path.Registry()))
+        return on_path.resolve(on_path.NAME, os.environ.get("PATH", ""))
     except OSError:
-        found = None
-    ok = on_path.is_launcher(found, on_path.LAUNCHERS)
-    # macOS and many Linux systems have no `python` command, only `python3`.
-    python = "python" if windows else "python3"
-    if ok:
-        note = "New programs run this copy of Charter as `charter`."
-    elif found:
-        note = (f"A newly started program runs another copy of Charter as `charter`, from "
-                f"{os.path.dirname(found)}. Remove that folder from PATH, or run `{python} charter.py "
-                f"add-to-path` in {on_path.LAUNCHERS}.")
-    else:
-        note = ("A newly started program cannot run `charter` yet, and an agent host starts the MCP "
-                "server by that name. Run `charter add-to-path` in a terminal. If the terminal does not "
-                f"find `charter` either, run `{python} charter.py add-to-path` in {on_path.LAUNCHERS}.")
-    return {"on_path": ok, "found": found or "", "note": note, "fix": "charter add-to-path",
-            "restart": RESTART_NOTE}
+        return None
 
 
-def development_checkout(folder: str = on_path.LAUNCHERS) -> bool:
-    """Whether this copy of Charter runs from a source checkout or worktree — its
-    launchers' folder is a Git working tree — rather than an installed release,
-    which has no `.git`."""
-    return os.path.exists(os.path.join(folder, ".git"))
-
-
-def explicit_launcher(windows: bool, folder: str = on_path.LAUNCHERS) -> str:
-    """This copy's own launcher, by its full path: `charter.cmd` on Windows,
-    `charter` elsewhere."""
-    return os.path.join(folder, "charter.cmd" if windows else on_path.NAME)
-
-
-DEV_LAUNCHER_NOTE = ("This is a development checkout, so the setup names its own launcher by its full path: "
-                     "PATH never chooses another copy of Charter.")
+def command_status(windows: Optional[bool] = None, registry: Any = None,
+                   python: Optional[str] = None, launchers: Optional[str] = None) -> Dict[str, Any]:
+    """The header's Charter command status (UI Standards): whether the default
+    `charter` command — what a new terminal, or an agent running `charter
+    propose`, finds on PATH — runs this installation. `ready` only when it does;
+    another copy, compatible or not, is `other`, and none is `missing`. Either
+    comes with the remedy: one command that runs this copy by its full paths —
+    on Windows the Python running Charter with this copy's `charter.py`, as
+    typed in PowerShell, elsewhere this copy's launcher (`on_path.this_copy`)
+    — never a bare `charter` or `py`, which PATH could route to another copy.
+    Writes nothing."""
+    windows = (os.name == "nt") if windows is None else windows
+    launchers = on_path.LAUNCHERS if launchers is None else launchers
+    found = found_by_name(windows, registry)
+    if on_path.is_launcher(found, launchers):
+        return {"state": COMMAND_READY, "found": found}
+    # The same command `charter add-to-path --check` gives.
+    remedy = on_path.this_copy(launchers, ["add-to-path"], windows, python or identity.interpreter())
+    return {"state": COMMAND_OTHER if found else COMMAND_MISSING, "found": found or "",
+            "other_folder": os.path.dirname(found) if found else "", "this_copy": launchers,
+            "shell": "PowerShell" if windows else "Terminal", "remedy": remedy,
+            "changes_path": windows}
 
 
 def _not_ready(status: Dict[str, Any]) -> List[str]:
@@ -215,28 +201,24 @@ def codex_toml(name: str, command: str, args: List[str]) -> str:
 
 def connection(folder: str, windows: Optional[bool] = None, registry: Any = None,
                status: Optional[Dict[str, Any]] = None,
-               launchers: Optional[str] = None) -> Dict[str, Any]:
+               launchers: Optional[str] = None, python: Optional[str] = None) -> Dict[str, Any]:
     """What Connect agents shows for `folder`. Writes nothing.
 
-    From a development checkout or worktree (`launchers`, this copy's own
-    launcher folder, is a Git working tree), the setup runs that checkout's
-    launcher by its full path, so PATH ordering can never route an agent to
-    another copy. An installed release names `charter`, which its
-    `add-to-path` puts on PATH.
+    Every setup runs this copy by its full path, so PATH can never route an
+    agent to another copy, and PATH plays no part here.
 
     `ready` is whether the Agent Context itself is ready: when it is not, the
     reasons are given and there is nothing to copy. `connect` says what an
     agent can do with a ready one:
 
       ready          file access, and MCP once pasted into a host
-      needs-path     file access; the MCP text is shown, but a newly started
-                     agent host cannot run `charter` until it is on PATH
-      files-only     Windows, a path `cmd /c` cannot carry: file access only,
-                     and the concrete MCP limitation instead of MCP text"""
+      files-only     a path holding a control character, which no host
+                     configuration can carry: file access only, and the
+                     concrete MCP limitation instead of MCP text"""
     windows = (os.name == "nt") if windows is None else windows
     folder = _native(folder) if not windows or os.name == "nt" else folder
     launchers = on_path.LAUNCHERS if launchers is None else launchers
-    explicit = explicit_launcher(windows, launchers) if development_checkout(launchers) else ""
+    python = python or identity.interpreter()
     status = status or mg.check(folder, git=False)
     base = {"folder": folder, "map": os.path.join(folder, ac.CONTEXT_MAP),
             "state": status["state"],
@@ -246,60 +228,51 @@ def connection(folder: str, windows: Optional[bool] = None, registry: Any = None
     files = dict(base, ready=True, reasons=[], project_name=status["name"],
                  instruction=instruction(folder), files_note=FILES_NOTE,
                  verify_prompt=VERIFY_PROMPT)
-    # The launcher leads the `cmd /c` command line, where quotes cannot protect
-    # a space either: Command Prompt strips the first and last quote it sees.
-    if windows and explicit and (CMD_UNSAFE | {" "}) & set(explicit):
-        bad = " ".join(sorted((CMD_UNSAFE | {" "}) & set(explicit))).replace("  ", " a space ").strip() or "a space"
-        return dict(files, connect="files-only", status_text=FILES_ONLY, mcp_limitation=(
-            f"This development checkout's path contains {bad}. On Windows an agent host starts its "
-            "launcher through `cmd /c`, which cannot carry such a path reliably, so no MCP configuration "
-            "is offered from it. Agents can read the folder's files as below; for MCP access, run Charter "
-            "from a checkout whose path has no spaces and none of % & | < > ^ \"."))
-    if windows and CMD_UNSAFE & set(folder):
-        bad = " ".join(sorted(CMD_UNSAFE & set(folder)))
-        return dict(files, connect="files-only", status_text=FILES_ONLY, mcp_limitation=(
-            f"This folder's path contains {bad}. On Windows an agent host starts `charter` through "
-            "`cmd /c`, and Command Prompt treats these characters specially wherever they are, so "
-            "the MCP server would not be given this folder. No MCP configuration is offered for "
-            "it. Agents can read the folder's files as below; for MCP access, move or rename the "
-            "folder so its path has none of % & | < > ^ \", then open it again."))
 
+    # One program and an exact list of arguments, never a command line for a
+    # shell (Product Specification §6): on Windows the Python running Charter
+    # with this copy's charter.py, elsewhere this copy's launcher, each by its
+    # full path, so PATH can never route an agent to another copy.
     name = server_name(status["name"])
     args = ["mcp", "--context", folder]
-    program = explicit or on_path.NAME
-    command, launch = ("cmd", ["/c", program] + args) if windows else (program, args)
+    if windows:
+        command, launch = python, [os.path.join(launchers, on_path.NAME + ".py")] + args
+    else:
+        command, launch = os.path.join(launchers, on_path.NAME), args
+    unusable = [p for p in [command] + launch if not p or any(ord(c) < 32 for c in p)]
+    if unusable:
+        return dict(files, connect="files-only", status_text=FILES_ONLY, mcp_limitation=(
+            "A path the agent host would need holds a line break or another control character, "
+            "which no host configuration can carry exactly. No MCP configuration is offered. "
+            "Agents can read the folder's files as below; for MCP access, use a folder whose path "
+            "has none."))
     config = {"mcpServers": {name: {"command": command, "args": launch}}}
     # Claude Code's default scope, local: this project only, for this person.
+    # The host stores the program and arguments exactly; only the command a
+    # person types to register it passes through their shell.
     register = ["claude", "mcp", "add", name, "--", command] + launch
-    check = [program] + args + ["--check"]
+    check = [command] + launch + ["--check"]
     if windows:
-        shells = [
-            {"shell": "powershell", "label": "PowerShell",
-             "claude_code": command_line(register, powershell_arg),
-             "check": command_line(check, powershell_arg)},
-            {"shell": "cmd", "label": "Command Prompt",
-             "claude_code": command_line(register, cmd_arg),
-             "check": command_line(check, cmd_arg)},
-        ]
+        shells = [{"shell": "powershell", "label": "PowerShell",
+                   "claude_code": command_line(register, powershell_arg),
+                   "check": command_line(check, powershell_arg)}]
+        # Command Prompt cannot carry % & | < > ^ " reliably, quoted or not:
+        # where a path holds one, only PowerShell's form is offered.
+        if not any(CMD_UNSAFE & set(p) for p in register):
+            shells.append({"shell": "cmd", "label": "Command Prompt",
+                           "claude_code": command_line(register, cmd_arg),
+                           "check": command_line(check, cmd_arg)})
     else:
         shells = [{"shell": "posix", "label": "Terminal",
                    "claude_code": command_line(register, posix_arg),
                    "check": command_line(check, posix_arg)}]
-    if explicit:
-        # The full path is the program: whatever PATH holds cannot change which copy runs.
-        launcher = {"on_path": True, "found": explicit, "explicit": True, "note": DEV_LAUNCHER_NOTE,
-                    "fix": "", "restart": ""}
-    else:
-        launcher = dict(_launcher(windows, registry), explicit=False)
-    state, text = (("ready", READY) if launcher["on_path"] else
-                   ("needs-path", OTHER_COPY if launcher["found"] else NEEDS_PATH))
-    quote_plain = lambda a: a if _PS_PLAIN.fullmatch(a) else f'"{a}"'
+    # PATH decides nothing here: a host starts this copy by its full path.
     return dict(
-        files, connect=state, status_text=text, server_name=name,
+        files, connect="ready", status_text=READY, server_name=name,
         codex_toml=codex_toml(name, command, launch), codex_note=CODEX_NOTE,
         pointer=mcp_pointer(name), pointer_note=POINTER_NOTE,
-        command=command, args=launch, launch_line=" ".join([quote_plain(program), "mcp", "--context",
-                                                            quote_plain(folder)]),
+        command=command, args=launch, launch_line=command_line([command] + launch, powershell_arg
+                                                               if windows else posix_arg),
         config=config, config_text=json.dumps(config, indent=2, ensure_ascii=False) + "\n",
-        config_note=CONFIG_NOTE,
-        shells=shells, launcher=launcher)
+        config_note=CONFIG_NOTE, install_note=INSTALL_NOTE,
+        shells=shells)

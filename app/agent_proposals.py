@@ -12,6 +12,8 @@ command prints exactly one result object:
     state, under a `proposal_id` Charter assigned;
   * `refused` — nothing was filed: the request is invalid or stale, with one
     problem per field;
+  * `duplicate` — nothing was filed: a proposal with exactly the same text is
+    already awaiting a decision in this Agent Context;
   * `unavailable` — nothing was filed because intake could not run now; only
     then, and only when `retryable` is true, may it be submitted again unchanged.
 
@@ -22,16 +24,28 @@ or retire; optional `proposed_meta` with only `title` and `scope`, for a create
 or amend; and optional advisory `expected_context_impact`. Any other field is
 refused. Staleness is decided by content hashes alone.
 
-Filed records live only in private state, never in the Agent Context. Each is
-also entered, with the hash of its bytes, in a private intake ledger. A file
-found among the records that the ledger does not vouch for — written some other
-way, changed since, or unreadable — is never treated as a proposal: it is shown
-to the person as unexpected local material and left unchanged.
+Agent Proposals are an operational inbox (Product Specification §3.2): each is
+temporary work awaiting a person's decision. Filed records live only in private
+state, never in the Agent Context. Each is also entered, with the hash of its
+bytes, in a private intake ledger. A file found among the records that the
+ledger does not vouch for — written some other way, changed since, or
+unreadable — is never treated as a proposal: it is shown to the person as
+unexpected local material and left unchanged.
 
 A person may import a proposal an agent returned as JSON instead; it is checked
 exactly as the command checks it, and filed as imported. Accepting a proposal
 files, updates or retires an authority candidate, after a previewed ordinary
-confirmation; it never changes governing context. Rejecting it records why.
+confirmation; it never changes governing context. Accepting or rejecting it
+removes the proposal: Charter keeps no proposal history, no decided record and
+no rejection reason.
+
+A proposal is a duplicate when the text submitted for it — the JSON exactly as
+given, whitespace and any byte-order mark included, never parsed or trimmed
+first — is character for character the text of a proposal still awaiting a
+decision in the same Agent Context, from either source. Decided proposals are
+gone, so they never match. `charter propose` refuses a duplicate, changing
+nothing; in the console a person may instead replace the waiting proposal in
+place.
 """
 from __future__ import annotations
 
@@ -56,7 +70,10 @@ FIELDS = ("agent", "operation", "target_path", "reason", "proposed_body", "repla
 REQUIRED = ("agent", "operation", "target_path", "reason")
 META_KEYS = ("title", "scope")
 
-PENDING, ACCEPTED, REJECTED = "pending", "accepted", "rejected"
+PENDING = "pending"
+# Where an earlier Charter kept decided records. Nothing reads or writes them
+# now: they are left as they are, never treated as proposals or history.
+LEGACY_DECIDED = ("accepted", "rejected")
 LEDGER = "intake.json"
 RECORD_VERSION = 1
 AGENT, IMPORTED = "agent", "imported"
@@ -89,6 +106,25 @@ def pending_result(proposal_id: str) -> Dict[str, Any]:
 
 def refused_result(problems: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"result": "refused", "problems": problems}
+
+
+DUPLICATE_MESSAGE = ("An identical proposal is already awaiting review in this Agent Context, so "
+                     "this one was not filed. Do not submit it again unchanged: change the "
+                     "proposal's text, or ask a person to replace the waiting proposal in "
+                     "Charter's console.")
+
+
+def duplicate_result() -> Dict[str, Any]:
+    """Nothing about the waiting proposal beyond that it exists: not its id,
+    title, source or time."""
+    return {"result": "duplicate", "problem": {"code": "duplicate", "message": DUPLICATE_MESSAGE}}
+
+
+def submission_identity(submitted: Any) -> str:
+    """The identity of a submission's text exactly as given: the SHA-256 of
+    its UTF-8 bytes, with nothing trimmed, decoded or re-serialized."""
+    data = submitted if isinstance(submitted, (bytes, bytearray)) else str(submitted).encode("utf-8")
+    return hashlib.sha256(bytes(data)).hexdigest()
 
 
 def unavailable_result(exc: Unavailable) -> Dict[str, Any]:
@@ -126,6 +162,19 @@ def open_target(folder: str, state: Optional[ps.PrivateState] = None) -> Target:
                           "This folder is not an Agent Context: run the command in the folder "
                           "that holds AGENT-CONTEXT.md.", retryable=False)
     exam = ac.examine(folder)
+    # A map-format mismatch is named, never filed against (Product Specification
+    # §6): decided before private state is touched, so nothing is written.
+    if exam.charter_outdated:
+        raise Unavailable("charter_outdated", "This Agent Context was generated by a newer version of "
+                                              "Charter than the one this command ran, so nothing was "
+                                              "filed. That copy of Charter is out of date: return the "
+                                              "proposal JSON for a person to import, and tell them.",
+                          retryable=False)
+    if exam.map_outdated:
+        raise Unavailable("map_outdated", "This Agent Context's map was generated by an earlier "
+                                          "version of Charter, so nothing was filed. A person must "
+                                          "rebuild it in Charter first; until then, return the "
+                                          "proposal JSON for a person to import.", retryable=False)
     if not exam.valid:
         raise Unavailable("context_invalid", "This Agent Context is not valid now, so proposals "
                                              "cannot be checked against it. A person must correct "
@@ -411,10 +460,40 @@ def write_failure(exc: BaseException) -> "Unavailable":
                        retryable=False)
 
 
+def _write_ledger(cs: ps.ContextState, ledger: Dict[str, Any]) -> None:
+    hs.write_json_atomic(cs.path(ps.PROPOSALS, LEDGER), {"version": RECORD_VERSION, "records": ledger})
+
+
+def _active_ledger(cs: ps.ContextState) -> Dict[str, Any]:
+    """The ledger's entries for proposals still awaiting a decision. Entries
+    whose record is gone — decided, or kept by an earlier Charter for decided
+    proposals — vouch for nothing and are dropped when the ledger is next
+    written. Call with the intake lock held: the ledger vouches for a record
+    before the record is written."""
+    folder = cs.path(ps.PROPOSALS, PENDING)
+    return {pid: entry for pid, entry in _ledger(cs).items()
+            if os.path.isfile(os.path.join(folder, pid + ".json"))}
+
+
+def find_duplicate(cs: ps.ContextState, identity: str) -> Optional[Dict[str, Any]]:
+    """The waiting proposal submitted with exactly this text, or None. A
+    record filed before Charter kept submission identities never matches."""
+    filed, _unexpected = records(cs)
+    return next((r for r in filed if r.get("submitted_sha256") == identity), None)
+
+
+def _busy() -> Unavailable:
+    return Unavailable("intake_busy", "Another proposal is being filed. Submit this one again, "
+                                      "unchanged.", retryable=True)
+
+
 def file(folder: str, raw: Any, source: str = AGENT,
-         state: Optional[ps.PrivateState] = None) -> Dict[str, Any]:
-    """Check one proposal and file it as an untrusted private review record.
-    Returns the one result object."""
+         state: Optional[ps.PrivateState] = None, submitted: Any = None) -> Dict[str, Any]:
+    """Check one proposal and file it as an untrusted private review record,
+    unless it duplicates one still awaiting a decision. `submitted` is the
+    text exactly as given; without it, the record keeps no identity and is
+    never matched. Returns the one result object."""
+    identity = submission_identity(submitted) if submitted is not None else ""
     try:
         target = open_target(folder, state)
         proposal, problems = check(raw, target)
@@ -423,26 +502,80 @@ def file(folder: str, raw: Any, source: str = AGENT,
         cs = target.cs
         with cs.lock("intake", INTAKE_TIMEOUT) as held:
             if not held:
-                raise Unavailable("intake_busy", "Another proposal is being filed. Submit this "
-                                                 "one again, unchanged.", retryable=True)
+                raise _busy()
+            if identity and find_duplicate(cs, identity) is not None:
+                return duplicate_result()  # nothing written
             proposal_id = new_id()
             while os.path.exists(cs.path(ps.PROPOSALS, PENDING, proposal_id + ".json")):
                 proposal_id = new_id()
             record = {"version": RECORD_VERSION, "proposal_id": proposal_id, "source": source,
                       "received": _now(), "proposal": proposal}
+            if identity:
+                record["submitted_sha256"] = identity
             data = _record_bytes(record)
-            ledger = _ledger(cs)
+            ledger = _active_ledger(cs)
             # The ledger vouches for the record before the record exists: a write
             # cut short leaves no record, or one the ledger does not match.
             ledger[proposal_id] = {"sha256": hashlib.sha256(data).hexdigest(), "source": source}
-            hs.write_json_atomic(cs.path(ps.PROPOSALS, LEDGER),
-                                 {"version": RECORD_VERSION, "records": ledger})
+            _write_ledger(cs, ledger)
             hs.write_json_atomic(cs.path(ps.PROPOSALS, PENDING, proposal_id + ".json"), record)
         return pending_result(proposal_id)
     except Unavailable as exc:
         return unavailable_result(exc)
     except (ps.PrivateStateError, hs.HostStateError, OSError) as exc:
         return unavailable_result(write_failure(exc))
+
+
+def replace(folder: str, raw: Any, proposal_id: Any, source: str = IMPORTED,
+            state: Optional[ps.PrivateState] = None, submitted: Any = None) -> Dict[str, Any]:
+    """Replace a waiting proposal with an identical submission, in place: the
+    same proposal, now with this submission's received time, source and
+    checked content. No second proposal, and no record of what it replaced.
+    Refused unless `proposal_id` still awaits a decision with exactly the
+    submitted text."""
+    if submitted is None:
+        return refused_result([_problem("not_duplicate", "Only an identical proposal can replace one.")])
+    identity = submission_identity(submitted)
+    try:
+        target = open_target(folder, state)
+        proposal, problems = check(raw, target)
+        if problems:
+            return refused_result(problems)
+        cs = target.cs
+        with cs.lock("intake", INTAKE_TIMEOUT) as held:
+            if not held:
+                raise _busy()
+            waiting = find_duplicate(cs, identity)
+            if waiting is None or waiting["proposal_id"] != proposal_id:
+                return refused_result([_problem(
+                    "not_duplicate", "That proposal is no longer awaiting review with exactly this "
+                                     "text. Check the proposal again.")])
+            record = {"version": RECORD_VERSION, "proposal_id": proposal_id, "source": source,
+                      "received": _now(), "proposal": proposal, "submitted_sha256": identity}
+            data = _record_bytes(record)
+            ledger = _active_ledger(cs)
+            ledger[proposal_id] = {"sha256": hashlib.sha256(data).hexdigest(), "source": source}
+            _write_ledger(cs, ledger)
+            hs.write_json_atomic(cs.path(ps.PROPOSALS, PENDING, proposal_id + ".json"), record)
+        return pending_result(proposal_id)
+    except Unavailable as exc:
+        return unavailable_result(exc)
+    except (ps.PrivateStateError, hs.HostStateError, OSError) as exc:
+        return unavailable_result(write_failure(exc))
+
+
+def forget_decided(cs: ps.ContextState) -> None:
+    """After a decision removed a proposal's record, drop its ledger entry, so
+    nothing vouches for, or remembers, a decided proposal. Best effort: an
+    entry left behind is dropped when the ledger is next written."""
+    try:
+        with cs.lock("intake", INTAKE_TIMEOUT) as held:
+            if held:
+                active = _active_ledger(cs)
+                if active != _ledger(cs):
+                    _write_ledger(cs, active)
+    except (ps.PrivateStateError, hs.HostStateError, OSError):
+        pass
 
 
 # --- reviewing ---------------------------------------------------------------------------
@@ -584,32 +717,3 @@ def trusted(cs: ps.ContextState, proposal_id: Any) -> Tuple[Dict[str, Any], str]
             with open(path, "rb") as fh:
                 return record, fh.read().decode("utf-8")
     raise ValueError("There is no such pending proposal.")
-
-
-# Where a decided record's time goes until it is written: the preview, and the
-# plan it is identified by, must not change merely because the clock moved.
-DECIDED_AT = "@@CHARTER-DECIDED-AT@@"
-
-
-def _record_text(out: Dict[str, Any]) -> str:
-    return json.dumps(out, ensure_ascii=False, indent=1, sort_keys=True) + "\n"
-
-
-def decided(record: Dict[str, Any], decision: str, **detail: Any) -> str:
-    """The record as it is kept once a person has decided it, its time left
-    for `stamp` to fill in when it is written."""
-    out = {k: v for k, v in record.items() if k != "source"}
-    out["source"] = record.get("source", AGENT)
-    out["decision"] = dict({"decision": decision, "decided": DECIDED_AT}, **detail)
-    return _record_text(out)
-
-
-def stamp(text: str) -> str:
-    """A decided record with the time it is written. Only the decision's own
-    time is set: nothing an agent wrote is touched."""
-    out = json.loads(text)
-    decision = out.get("decision") if isinstance(out, dict) else None
-    if not isinstance(decision, dict) or decision.get("decided") != DECIDED_AT:
-        return text
-    decision["decided"] = _now()
-    return _record_text(out)

@@ -905,7 +905,8 @@ def _refused(cs: ContextState, why: str) -> TransactionError:
     record = os.path.join(cs.path(ps_STAGING, JOURNAL_KIND), JOURNAL_FILE)
     return TransactionError(
         f"Charter's record of an interrupted write cannot be trusted ({why}), so it will not "
-        "guess how to undo it, and changed nothing. Agents are refused until this is resolved. "
+        "guess how to undo it, and changed nothing. Charter can’t serve this Agent Context until "
+        "this is resolved. "
         "Check the Agent Context's files, delete any `.charter-txn-` or `.acm-txn-` file in it "
         f"yourself, and then remove the record, {record}.", restored=False)
 

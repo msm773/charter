@@ -38,6 +38,8 @@ Layout, under the state root:
         observed.json         the context as Charter last saw it
         staging/              private staging for writes in progress
         locks/                cross-process locks
+    recent-cleared.json       folders cleared from the console's Recent list
+    recent-opened.json        when each folder was last opened, to order Recent
 """
 from __future__ import annotations
 
@@ -46,6 +48,7 @@ import os
 import re
 import stat
 import sys
+import time
 import unicodedata
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
@@ -62,6 +65,10 @@ CHANGESETS = "changesets"
 STAGING = "staging"
 LOCKS = "locks"
 SUBFOLDERS = (CANDIDATES, ARCHIVE, PROPOSALS, CHANGESETS, STAGING, LOCKS)
+# Beside `contexts/`: the folders the person cleared from the Recent list.
+RECENT_CLEARED = "recent-cleared.json"
+# Beside it: when each folder was last opened in the console, to order Recent.
+RECENT_OPENED = "recent-opened.json"
 
 # The proposal schema's logical prefix for a candidate. It names no folder in
 # the Agent Context and none an agent can read.
@@ -422,6 +429,63 @@ class PrivateState:
                 found.append(record["folder"])
         return found
 
+    # --- the Recent list ---
+
+    def _cleared_recent(self) -> List[str]:
+        """The folders the person cleared from Recent. A record that cannot be
+        read clears nothing: Recent is a convenience, never a safeguard."""
+        try:
+            data = hs.read_json(os.path.join(self._read_root(), RECENT_CLEARED), None)
+        except hs.HostStateError:
+            return []
+        folders = data.get("folders") if isinstance(data, dict) else None
+        return [f for f in folders if isinstance(f, str)] if isinstance(folders, list) else []
+
+    def _opened_recent(self) -> Dict[str, int]:
+        """When each folder was last opened or created in the console, by its
+        case-folded path, in nanoseconds. Unreadable, it orders nothing."""
+        try:
+            data = hs.read_json(os.path.join(self._read_root(), RECENT_OPENED), None)
+        except hs.HostStateError:
+            return {}
+        opened = data.get("opened") if isinstance(data, dict) else None
+        if not isinstance(opened, dict):
+            return {}
+        return {os.path.normcase(f): t for f, t in opened.items()
+                if isinstance(f, str) and isinstance(t, int) and not isinstance(t, bool)}
+
+    def recent_contexts(self) -> List[str]:
+        """The known folders, less those cleared from Recent since last opened,
+        the most recently opened first; any never opened since Recent kept
+        times follow, in their earlier order."""
+        cleared = {os.path.normcase(f) for f in self._cleared_recent()}
+        opened = self._opened_recent()
+        listed = [f for f in self.known_contexts() if os.path.normcase(f) not in cleared]
+        return sorted(listed, key=lambda f: -opened.get(os.path.normcase(f), -1))
+
+    def clear_recent(self) -> None:
+        """Clear Recent. Only this one record changes: every Agent Context and
+        its private state stay exactly as they are."""
+        self.ensure()
+        folders = sorted(set(self._cleared_recent()) | set(self.known_contexts()))
+        hs.write_json_atomic(os.path.join(self._root, RECENT_CLEARED),
+                             {"version": RECORD_VERSION, "folders": folders})
+
+    def note_opened(self, folder: str) -> None:
+        """The person opened or created `folder`: it heads Recent, listed again
+        if it had been cleared. Only the two Recent records change."""
+        folder = hs.canonical(folder)
+        key = os.path.normcase(folder)
+        self.ensure()
+        opened = self._opened_recent()
+        opened[key] = max([time.time_ns()] + [t + 1 for t in opened.values()])
+        hs.write_json_atomic(os.path.join(self._root, RECENT_OPENED),
+                             {"version": RECORD_VERSION, "opened": opened})
+        cleared = self._cleared_recent()
+        kept = [f for f in cleared if os.path.normcase(f) != key]
+        if len(kept) != len(cleared):
+            hs.write_json_atomic(os.path.join(self._root, RECENT_CLEARED),
+                                 {"version": RECORD_VERSION, "folders": kept})
 
 class ContextState:
     """The private state of one Agent Context folder."""

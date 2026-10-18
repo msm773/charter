@@ -74,7 +74,17 @@ def enclosing_context(folder: str, include_self: bool = False) -> str:
         probe = parent
 
 FORMAT_VERSION = 1
-MAP_FORMAT_VERSION = 1
+# The form of the generated map and metadata (Agent Context as the Project
+# Asset §7): separate from Charter's product version, and increased whenever
+# what Charter generates changes. Version 2 tells agents that `duplicate` is a
+# result, gives each guidance setting its Settings name as its heading, and
+# sends an agent that read the map through MCP to return its proposal JSON.
+MAP_FORMAT_VERSION = 2
+# Earlier map formats this Charter still recognizes: such a context is out of
+# date, to be rebuilt, never damaged.
+OLDER_MAP_FORMATS = (1,)
+# How a context's map format relates to this Charter.
+FORMAT_CURRENT, FORMAT_OLDER, FORMAT_NEWER = "current", "older", "newer"
 METADATA_KEYS = ("format_version", "map_format_version", "project_name", "agent_guidance",
                  "sha256")
 
@@ -115,6 +125,8 @@ CONTEXT_CHECK_LINE = "Context check: AGENT-CONTEXT read."
 
 # Product Specification §3.3: the three version 1 settings, in the fixed order
 # the map renders them, with the fixed instruction text each adds when enabled.
+# Each has one name, its `label`: the Settings label and the instruction's
+# heading in the map.
 AGENT_GUIDANCE: Tuple[Dict[str, Any], ...] = (
     {"id": "context_check_in", "label": "Context check-in", "default": True,
      "text": """- **Context check-in.** After reading this map and the governing documents
@@ -125,14 +137,14 @@ AGENT_GUIDANCE: Tuple[Dict[str, Any], ...] = (
   check-in. Continue without waiting for a reply."""},
     {"id": "proposal_context_impact_check", "label": "Assess proposal impact",
      "default": False,
-     "text": """- **Context-impact check before a proposal.** Before proposing a change to
+     "text": """- **Assess proposal impact.** Before proposing a change to
   governing context, retrieve the current governing context. Assess the change
   for duplication, overlap, conflict, unclear relationships to governing
   documents, and decisions a person must make, and put the result in the
   proposal's `expected_context_impact`."""},
     {"id": "review_newly_discovered_material", "label": "Review discovered material",
      "default": False,
-     "text": """- **Review newly discovered material.** When your task brings you to material
+     "text": """- **Review discovered material.** When your task brings you to material
   that may be relevant but is not governing context, compare it with the
   governing documents. Raise any material duplication, overlap or conflict
   with a person. Do not treat that material as true merely because you
@@ -261,14 +273,18 @@ It prints one JSON object whose `result` is:
 - `refused`: not filed. Correct each listed problem and submit again.
 - `unavailable`: not filed. Submit again unchanged only if `retryable` is
   `true`.
+- `duplicate`: not filed, because an identical proposal is already awaiting
+  review. Do not submit it again unchanged: change its text, or tell the
+  person, who may replace the waiting proposal in Charter.
 
 If the command is missing, denied or cannot start, or still reports
 `unavailable`, do not file the proposal any other way: return the complete
 proposal JSON object in your response, so that a person can import it.
 
-If you received this file through MCP or another tool, and do not know the
-folder that holds it, do not search for it or guess: return the complete
-proposal JSON object in your response, so that a person can import it.
+If you received this file through MCP or another tool, do not run
+`charter propose`, even if you know the folder that holds it, and do not
+search for the folder or guess: return the complete proposal JSON object in
+your response, so that a person can import it.
 
 If the command started but printed no result, return the JSON in the same
 way, and tell the person that submission may have succeeded, so that they
@@ -346,9 +362,56 @@ def render_map(settings: Settings, documents: List[Document]) -> str:
     return "\n".join(parts)
 
 
+# What map-format version 1 said where version 2 differs: before each
+# agent-guidance setting took its Settings name as its heading, before
+# `charter propose` could answer `duplicate`, and before an agent that read the
+# map through MCP was told to return its proposal JSON. A heading appears only
+# while its setting is enabled. Agent Context Manager, Charter's earlier name,
+# wrote version 1.
+_PREVIOUS_WORDING = (
+    ("""If you received this file through MCP or another tool, do not run
+`charter propose`, even if you know the folder that holds it, and do not
+search for the folder or guess: return the complete proposal JSON object in
+your response, so that a person can import it.""",
+     """If you received this file through MCP or another tool, and do not know the
+folder that holds it, do not search for it or guess: return the complete
+proposal JSON object in your response, so that a person can import it."""),
+    ("- **Assess proposal impact.** Before proposing a change to",
+     "- **Context-impact check before a proposal.** Before proposing a change to"),
+    ("- **Review discovered material.** When your task brings you to material",
+     "- **Review newly discovered material.** When your task brings you to material"),
+    ("""- `duplicate`: not filed, because an identical proposal is already awaiting
+  review. Do not submit it again unchanged: change its text, or tell the
+  person, who may replace the waiting proposal in Charter.
+""", ""),
+)
+
+# An older supported map format: out of date, to be rebuilt. Plain words, no
+# version numbers (UI Standards); Diagnostics shows the numbers.
+MAP_OUTDATED = ("This map was generated by an earlier version of Charter, so it is out of date. The "
+                "governing documents and settings are unchanged: Rebuild Agent Context brings the "
+                "map and metadata up to date. Charter can’t serve the context until then.")
+# A newer map format than this Charter understands: this copy is out of date,
+# not the context. Nothing here offers to write it.
+CHARTER_OUTDATED = ("A newer version of Charter generated this Agent Context, so this copy of Charter "
+                    "cannot check it. The Agent Context is not at fault.")
+NEWER_KIND = "newer"
+
+
+def render_previous_map(settings: Settings, documents: List[Document]) -> str:
+    """The map in map-format version 1 for the same documents and settings.
+    Only recognized, never written: Rebuild Agent Context replaces it once the
+    person chooses to."""
+    text = render_map(settings, documents)
+    for now, before in _PREVIOUS_WORDING:
+        assert text.count(now) <= 1, now
+        text = text.replace(now, before)
+    return text
+
+
 # What Agent Context Manager, Charter's earlier name, wrote where Charter now
-# writes its own name and command. Nothing else in the map changed with the
-# name, so these three are the whole difference.
+# writes its own name and command. It wrote the previous form of the map, so
+# these three, on top of that form, are the whole difference.
 _LEGACY_WORDING = (
     ("_Generated by Charter from ", "_Generated by Agent Context Manager from "),
     ("\ncharter propose --context .\n", "\nacm propose --context .\n"),
@@ -356,15 +419,15 @@ _LEGACY_WORDING = (
 )
 
 LEGACY_MAP = ("This map was generated by Agent Context Manager, Charter's earlier name, so it still "
-              "names that product and its `acm` command. Agents are refused until the map is "
-              "regenerated.")
+              "names that product and its `acm` command. Charter can’t serve the context until the "
+              "map is regenerated.")
 
 
 def render_legacy_map(settings: Settings, documents: List[Document]) -> str:
     """The map Agent Context Manager, Charter's earlier name, would have
     generated for the same documents and settings. Only recognized, never written: such a map is not valid, and
     Rebuild Agent Context replaces it once the person chooses to."""
-    text = render_map(settings, documents)
+    text = render_previous_map(settings, documents)
     for now, before in _LEGACY_WORDING:
         assert text.count(now) == 1, now
         text = text.replace(now, before)
@@ -400,6 +463,11 @@ class MetadataError(ValueError):
     """`.agent-context.json` is not a metadata file this version reads."""
 
 
+class NewerFormat(MetadataError):
+    """`.agent-context.json` was written in a newer format, or for a newer map
+    format, than this Charter understands: this copy is out of date."""
+
+
 def _no_duplicates(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for key, value in pairs:
@@ -409,8 +477,27 @@ def _no_duplicates(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
     return out
 
 
-def parse_metadata(text: str) -> Tuple[Settings, Dict[str, str]]:
-    """The settings and recorded hashes, or MetadataError saying what is wrong."""
+def _version(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def metadata_map_format(text: str) -> Optional[int]:
+    """The map-format version the metadata records, when it records a whole
+    number; None otherwise. For Diagnostics: it judges nothing."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return _version(data.get("map_format_version")) if isinstance(data, dict) else None
+
+
+def parse_metadata(text: str, allow_older: bool = False) -> Tuple[Settings, Dict[str, str]]:
+    """The settings and recorded hashes, or MetadataError saying what is wrong.
+
+    A format or map format newer than this Charter's is NewerFormat, decided
+    before anything else, since a newer format may hold fields this one does
+    not define. An older map format is accepted only with `allow_older`, and
+    only when it is one this Charter recognizes."""
     try:
         data = json.loads(text, object_pairs_hook=_no_duplicates)
     except MetadataError:
@@ -419,6 +506,9 @@ def parse_metadata(text: str) -> Tuple[Settings, Dict[str, str]]:
         raise MetadataError("it is not valid JSON")
     if not isinstance(data, dict):
         raise MetadataError("it is not a JSON object")
+    fmt, map_fmt = _version(data.get("format_version")), _version(data.get("map_format_version"))
+    if (fmt is not None and fmt > FORMAT_VERSION) or (map_fmt is not None and map_fmt > MAP_FORMAT_VERSION):
+        raise NewerFormat("it was written by a newer version of Charter")
     unknown = sorted(set(data) - set(METADATA_KEYS))
     missing = [k for k in METADATA_KEYS if k not in data]
     if unknown:
@@ -428,9 +518,9 @@ def parse_metadata(text: str) -> Tuple[Settings, Dict[str, str]]:
         raise MetadataError("it is missing " + ", ".join(f"`{k}`" for k in missing))
     if data["format_version"] != FORMAT_VERSION or isinstance(data["format_version"], bool):
         raise MetadataError(f"its `format_version` is not {FORMAT_VERSION}")
-    if data["map_format_version"] != MAP_FORMAT_VERSION or \
-            isinstance(data["map_format_version"], bool):
-        raise MetadataError(f"its `map_format_version` is not {MAP_FORMAT_VERSION}")
+    accepted = (MAP_FORMAT_VERSION,) + (OLDER_MAP_FORMATS if allow_older else ())
+    if map_fmt not in accepted:
+        raise MetadataError("its `map_format_version` is not one this version of Charter recognizes")
     problem = project_name_problem(data["project_name"])
     if problem:
         raise MetadataError(f"its `project_name` is not usable: {problem}")
@@ -468,6 +558,23 @@ class Examination:
     # Their hashes, as `.agent-context.json` should record them.
     hashes: Dict[str, str] = field(default_factory=dict)
     fingerprint: str = ""
+    # How the recorded map format relates to this Charter: current, older (out
+    # of date, to be rebuilt) or newer (this copy is out of date); "" when the
+    # metadata is missing or unusable.
+    map_format: str = ""
+    # The map-format version the metadata records, when it records one.
+    recorded_map_format: Optional[int] = None
+
+    @property
+    def map_outdated(self) -> bool:
+        """Whether the only thing wrong is an older supported map format."""
+        return self.map_format == FORMAT_OLDER and [i["message"] for i in self.errors] == [MAP_OUTDATED]
+
+    @property
+    def charter_outdated(self) -> bool:
+        """Whether the context was generated in a newer map format than this
+        Charter understands: this copy, not the context, is out of date."""
+        return self.map_format == FORMAT_NEWER
 
     @property
     def valid(self) -> bool:
@@ -691,10 +798,8 @@ def examine(root: str) -> Examination:
             issues.append(_transaction_leftover(name))
             continue
         is_dir = entry.is_dir(follow_symlinks=False)
-        issues.append(_issue(STRAY, "This is not part of an Agent Context. Agents are not served "
-                                    "while it is here.", name + ("/" if is_dir else ""),
-                             "Move it out of the Agent Context folder, or delete it. Charter "
-                             "leaves it untouched."))
+        issues.append(_issue(STRAY, "isn’t part of this Agent Context.", name + ("/" if is_dir else ""),
+                             "Move it out of the context folder or delete it, then try again."))
 
     # Governing documents.
     documents: List[Document] = []
@@ -738,14 +843,25 @@ def examine(root: str) -> Examination:
     settings: Optional[Settings] = None
     recorded: Dict[str, str] = {}
     metadata_text: Optional[str] = None
+    map_format = ""
+    recorded_map_format: Optional[int] = None
     if METADATA not in present:
         issues.append(_issue(GENERATED_KIND, "The Agent Context has no `.agent-context.json`.",
                              METADATA, "Use Rebuild Agent Context to generate it."))
     else:
         metadata_text = _read_text(present[METADATA], METADATA, issues, GENERATED_KIND)
         if metadata_text is not None:
+            recorded_map_format = metadata_map_format(metadata_text)
             try:
-                settings, recorded = parse_metadata(metadata_text)
+                settings, recorded = parse_metadata(metadata_text, allow_older=True)
+                map_format = FORMAT_OLDER if recorded_map_format in OLDER_MAP_FORMATS else FORMAT_CURRENT
+            except NewerFormat:
+                # Not damage: this copy of Charter cannot check, or write, what a
+                # newer one generated. No Rebuild is offered for it.
+                map_format = FORMAT_NEWER
+                issues.append(_issue(NEWER_KIND, CHARTER_OUTDATED, METADATA,
+                                     "Use the current Charter installation; if an agent host refuses "
+                                     "this context, restart the host or reconnect it."))
             except MetadataError as exc:
                 issues.append(_issue(GENERATED_KIND, f"`.agent-context.json` is not usable: {exc}.",
                                      METADATA, "Use Rebuild Agent Context to regenerate it."))
@@ -766,7 +882,7 @@ def examine(root: str) -> Examination:
     # until then, what they should say is not settled.
     if settings is not None and not document_errors:
         _compare_generated(settings, documents, recorded, hashes, map_text, metadata_text,
-                           issues)
+                           issues, older=map_format == FORMAT_OLDER)
 
     errors = [i for i in issues if i["level"] == "error"]
     if any(i["kind"] != STRAY for i in errors):
@@ -778,12 +894,18 @@ def examine(root: str) -> Examination:
     return Examination(root=root, state=state, issues=issues,
                        documents=documents if not document_errors else [],
                        settings=settings, texts=texts, hashes=hashes,
-                       fingerprint=context_fingerprint(hashes) if state == VALID else "")
+                       fingerprint=context_fingerprint(hashes) if state == VALID else "",
+                       map_format=map_format, recorded_map_format=recorded_map_format)
 
 
 def _compare_generated(settings: Settings, documents: List[Document], recorded: Dict[str, str],
                        hashes: Dict[str, str], map_text: Optional[str],
-                       metadata_text: Optional[str], issues: List[Dict[str, Any]]) -> None:
+                       metadata_text: Optional[str], issues: List[Dict[str, Any]],
+                       older: bool = False) -> None:
+    """The generated files against what Charter generates now. With `older`, the
+    metadata records an older supported map format: when every file still has
+    the hash it records, the context is simply out of date, and the map's own
+    wording is not compared."""
     rebuild = "Check that the governing documents are what you intend, then use Rebuild " \
               "Agent Context."
     for path in sorted(set(recorded) | set(hashes)):
@@ -801,6 +923,13 @@ def _compare_generated(settings: Settings, documents: List[Document], recorded: 
                                                  "`.agent-context.json` records for it. It "
                                                  "changed after the Agent Context was generated.",
                                  path, rebuild))
+    if older:
+        if map_text is not None and not any(i["kind"] == GENERATED_KIND for i in issues):
+            # Charter's earlier name wrote version 1 too: its own wording says so.
+            legacy = _LEGACY_WORDING[0][1] in map_text
+            issues.append(_issue(GENERATED_KIND, LEGACY_MAP if legacy else MAP_OUTDATED, CONTEXT_MAP,
+                                 rebuild))
+        return
     if map_text is not None and map_text != render_map(settings, documents):
         if map_text == render_legacy_map(settings, documents):
             issues.append(_issue(GENERATED_KIND, LEGACY_MAP, CONTEXT_MAP, rebuild))

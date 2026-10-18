@@ -312,13 +312,10 @@ def case_accept() -> None:
 
         check(snapshot(folder) == before and {rel: read(folder, rel) for rel in ac.examine(folder).texts}
               == governing_before, "through all four, the governing context and the folder never changed")
-        accepted = sorted(os.listdir(cs.path(ps.PROPOSALS, apx.ACCEPTED)))
-        check(accepted == sorted(f"{p}.json" for p in (create, amend, upd, retire))
-              and apx.listing(folder)["pending"] == [], "each accepted record is kept, privately, decided")
-        record = json.loads(open(cs.path(ps.PROPOSALS, apx.ACCEPTED, create + ".json"), encoding="utf-8").read())
-        check(record["decision"]["decision"] == "accepted"
-              and record["decision"]["outcome"] == "authority-candidates/new-rule.md",
-              "with the decision and its outcome")
+        check(apx.listing(folder)["pending"] == [] and inbox_files(cs) == []
+              and not any(os.path.exists(cs.path(ps.PROPOSALS, d)) for d in apx.LEGACY_DECIDED)
+              and apx._ledger(cs) == {},
+              "each accepted proposal leaves the inbox: no record, decided copy or ledger entry is kept")
         shutil.rmtree(folder)
 
 
@@ -332,18 +329,20 @@ def case_reject_and_stale() -> None:
                               "reason": "r", "proposed_body": "x\n"})
         bare = file(folder, {"agent": "a", "operation": "create", "target_path": "authority-candidates/bare.md",
                              "reason": "r", "proposed_body": "y\n"})
-        decide(folder, "reject-proposal", {"proposal_id": blank, "reason": "   "})
-        decide(folder, "reject-proposal", {"proposal_id": bare})
-        for rid in (blank, bare):
-            rec = json.loads(open(cs.path(ps.PROPOSALS, apx.REJECTED, rid + ".json"), encoding="utf-8").read())
-            check(rec["decision"]["decision"] == apx.REJECTED and "reason" not in rec["decision"],
-                  f"rejecting needs no reason: rejected with {'a blank' if rid == blank else 'no'} reason, none recorded")
         candidates = cs.candidates()
+        decide(folder, "reject-proposal", {"proposal_id": bare})
+        check(bare not in {p["proposal_id"] for p in apx.listing(folder)["pending"]}
+              and not os.path.exists(cs.path(ps.PROPOSALS, apx.PENDING, bare + ".json"))
+              and bare not in apx._ledger(cs),
+              "rejecting needs no reason, and removes the proposal: no record or ledger entry is kept")
+        # A request that still carries a reason, as an earlier console sent: it is not stored.
         decide(folder, "reject-proposal", {"proposal_id": pid, "reason": "Out of scope."})
-        record = json.loads(open(cs.path(ps.PROPOSALS, apx.REJECTED, pid + ".json"), encoding="utf-8").read())
-        check(record["decision"]["reason"] == "Out of scope." and cs.candidates() == candidates
-              and apx.listing(folder)["pending"] == [],
-              "a reason given is kept privately with the rejection, and nothing else changes")
+        decide(folder, "reject-proposal", {"proposal_id": blank})
+        check(cs.candidates() == candidates and apx.listing(folder)["pending"] == []
+              and not any(os.path.exists(cs.path(ps.PROPOSALS, d)) for d in apx.LEGACY_DECIDED)
+              and not any("Out of scope." in open(os.path.join(d, n), encoding="utf-8", errors="replace").read()
+                          for d, _dirs, names in os.walk(cs.base) for n in names),
+              "no rejection reason is stored anywhere, and nothing else changes")
 
         stale = file(folder, {"agent": "a", "operation": "amend", "target_path": "authoritative/b.md", "reason": "r",
                               "base_sha256": sha(folder, "authoritative/b.md"), "proposed_body": "Other.\n"})
@@ -388,15 +387,13 @@ def case_preview_then_decide() -> None:
             apx._now = lambda: "2026-01-01T00:00:00Z"
             shown = {pid: au.plan(folder, "accept-proposal", {"proposal_id": pid})
                      for pid in (first, beta, alpha_again)}
-            rejecting = au.plan(folder, "reject-proposal", {"proposal_id": beta_again, "reason": "No."})
+            rejecting = au.plan(folder, "reject-proposal", {"proposal_id": beta_again})
             check(not any(apx._now() in c.new for p in shown.values() for c in p.changes if c.new),
                   "a preview carries no decision time")
             apx._now = lambda: "2026-01-01T00:00:09Z"
             au.apply(folder, "accept-proposal", {"proposal_id": first}, shown[first].plan_id, True)
-            record = json.loads(open(cs.path(ps.PROPOSALS, apx.ACCEPTED, first + ".json"),
-                                     encoding="utf-8").read())
-            check(record["decision"]["decided"] == "2026-01-01T00:00:09Z",
-                  "with three others pending, accepting right after the preview applies, timed when written")
+            check(first not in {p["proposal_id"] for p in apx.listing(folder)["pending"]},
+                  "with three others pending, accepting right after the preview applies")
             au.apply(folder, "accept-proposal", {"proposal_id": beta}, shown[beta].plan_id, True)
             check(beta not in {p["proposal_id"] for p in apx.listing(folder)["pending"]},
                   "another's preview, whose inputs did not change, still applies")
@@ -404,9 +401,9 @@ def case_preview_then_decide() -> None:
                          shown[alpha_again].plan_id, True),
                   "one whose planned candidate name has since been taken is stale")
             au.apply(folder, "reject-proposal", rejecting.request, rejecting.plan_id, True)
-            record = json.loads(open(cs.path(ps.PROPOSALS, apx.REJECTED, beta_again + ".json"),
-                                     encoding="utf-8").read())
-            check(record["decision"]["decided"] == "2026-01-01T00:00:09Z", "rejecting is timed when written too")
+            check(beta_again not in {p["proposal_id"] for p in apx.listing(folder)["pending"]}
+                  and not os.path.exists(cs.path(ps.PROPOSALS, apx.PENDING, beta_again + ".json")),
+                  "rejecting right after its preview applies too, and keeps no record")
 
             again = au.plan(folder, "accept-proposal", {"proposal_id": alpha_again})
             a = au.plan(folder, "add", {"title": "Alpha", "body": "Taken.\n"})
@@ -434,13 +431,129 @@ def case_atomic() -> None:
         plan = au.plan(folder, "accept-proposal", {"proposal_id": pid})
 
         def fault(step: str) -> None:
-            if step.startswith("replace:proposals/accepted"):
+            if step.startswith("replace:candidates/"):
                 raise RuntimeError("disk full")
         check(raises(au.ApplyFailed, au.apply, folder, "accept-proposal", plan.request, plan.plan_id, True,
                      fault=fault), "a failure part-way fails the acceptance")
         check("authority-candidates/n.md" not in cs.candidates()
               and [p["proposal_id"] for p in apx.listing(folder)["pending"]] == [pid],
               "and rolls it back: no candidate, and the proposal still pending")
+        shutil.rmtree(folder)
+
+
+def inbox_files(cs) -> list:
+    folder = cs.path(ps.PROPOSALS, apx.PENDING)
+    return sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+
+
+def state_files(cs) -> dict:
+    """Every private file for this context, with its bytes: what a refused
+    submission must leave exactly as it was."""
+    out = {}
+    for d, _dirs, names in os.walk(cs.base):
+        for n in names:
+            with open(os.path.join(d, n), "rb") as fh:
+                out[os.path.relpath(os.path.join(d, n), cs.base)] = fh.read()
+    return out
+
+
+def case_duplicates() -> None:
+    print("\nduplicates: an exact match of a proposal still awaiting review")
+    with isolated_private_state():
+        folder, cs, _cand = setup()
+        text = json.dumps({"agent": "codex", "operation": "create", "target_path": "authority-candidates/dup.md",
+                           "reason": "Once.", "proposed_body": "# Dup\n\nText.\n"})
+        raw = json.loads(text)
+        first = apx.file(folder, raw, submitted=text.encode("utf-8"))
+        check(first["result"] == "pending", "the first submission is filed")
+        before = state_files(cs)
+        again = apx.file(folder, raw, submitted=text.encode("utf-8"))
+        check(again == apx.duplicate_result() and set(again) == {"result", "problem"}
+              and again["problem"]["code"] == "duplicate", "the same text again is a duplicate, and says no more")
+        check(state_files(cs) == before, "and nothing at all was written")
+        imported = apx.file(folder, raw, source=apx.IMPORTED, submitted=text)
+        check(imported["result"] == "duplicate" and state_files(cs) == before,
+              "the same text imported in the console matches across sources")
+        for label, variant in (("a trailing newline", text + "\n"), ("a leading space", " " + text),
+                               ("a byte-order mark", "\ufeff" + text),
+                               ("different spacing", json.dumps(raw, indent=1))):
+            result = apx.file(folder, raw, submitted=variant)
+            check(result["result"] == "pending", f"{label} makes it distinct: filed as its own proposal")
+        check(len(apx.listing(folder)["pending"]) == 5, "five distinct proposals now wait")
+        bom = apx.file(folder, raw, submitted=b"\xef\xbb\xbf" + text.encode("utf-8"))
+        check(bom["result"] == "duplicate",
+              "a byte-order mark submitted as bytes matches the same mark submitted as text")
+        no_identity = apx.file(folder, raw)
+        check(no_identity["result"] == "pending", "a filing with no submitted text is never matched")
+
+        print("\ndecided proposals never match")
+        pid = first["proposal_id"]
+        decide(folder, "reject-proposal", {"proposal_id": pid})
+        after_reject = apx.file(folder, raw, submitted=text.encode("utf-8"))
+        check(after_reject["result"] == "pending" and after_reject["proposal_id"] != pid,
+              "once rejected, the same text is a new proposal")
+        decide(folder, "accept-proposal", {"proposal_id": after_reject["proposal_id"]})
+        after_accept = apx.file(folder, raw, submitted=text.encode("utf-8"))
+        check(after_accept["result"] == "pending", "once accepted, the same text is a new proposal again")
+
+        print("\nreplacing the waiting proposal, in the console")
+        waiting = after_accept["proposal_id"]
+        old = json.loads(open(cs.path(ps.PROPOSALS, apx.PENDING, waiting + ".json"), encoding="utf-8").read())
+        real_now = apx._now
+        try:
+            apx._now = lambda: "2030-01-01T00:00:00Z"
+            replaced = apx.replace(folder, raw, waiting, source=apx.IMPORTED, submitted=text)
+        finally:
+            apx._now = real_now
+        new = json.loads(open(cs.path(ps.PROPOSALS, apx.PENDING, waiting + ".json"), encoding="utf-8").read())
+        listed = [p for p in apx.listing(folder)["imported"] + apx.listing(folder)["pending"]
+                  if p["proposal_id"] == waiting]
+        check(replaced == {"result": "pending", "proposal_id": waiting}
+              and old["source"] == apx.AGENT and new["source"] == apx.IMPORTED
+              and new["received"] == "2030-01-01T00:00:00Z" and new["proposal"] == raw
+              and len(listed) == 1 and listed[0]["source"] == apx.IMPORTED,
+              "Replace updates that one proposal in place: its received time and source are the new ones")
+        check(len(inbox_files(cs)) == len(apx._ledger(cs)) and f"{waiting}.json" in inbox_files(cs)
+              and not any(os.path.exists(cs.path(ps.PROPOSALS, d)) for d in apx.LEGACY_DECIDED),
+              "one record, one ledger entry: no second proposal, and no record of what it replaced")
+        check(apx.replace(folder, raw, waiting, submitted=text + " ")["result"] == "refused",
+              "only an identical submission can replace it")
+        check(apx.replace(folder, raw, pid, submitted=text)["result"] == "refused",
+              "and only a proposal still awaiting review")
+        shutil.rmtree(folder)
+
+
+def case_legacy_records() -> None:
+    print("\nrecords an earlier Charter kept: decided ones left alone, and never history")
+    with isolated_private_state():
+        folder, cs, _cand = setup()
+        old_pending = file(folder, {"agent": "a", "operation": "create", "target_path": "authority-candidates/o.md",
+                                    "reason": "Old.", "proposed_body": "x\n"})
+        # An earlier Charter kept decided records, and their ledger entries.
+        for decided, pid in (("accepted", "p-20250101-aaaaaaaa"), ("rejected", "p-20250101-bbbbbbbb")):
+            os.makedirs(cs.path(ps.PROPOSALS, decided), exist_ok=True)
+            with open(cs.path(ps.PROPOSALS, decided, pid + ".json"), "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"proposal_id": pid, "decision": {"decision": decided, "reason": "Old."}}))
+        ledger = apx._ledger(cs)
+        ledger.update({"p-20250101-aaaaaaaa": {"sha256": "0" * 64, "source": "agent"},
+                       "p-20250101-bbbbbbbb": {"sha256": "1" * 64, "source": "agent"}})
+        apx._write_ledger(cs, ledger)
+        legacy = {d: sorted(os.listdir(cs.path(ps.PROPOSALS, d))) for d in apx.LEGACY_DECIDED}
+        legacy_bytes = {d: [open(cs.path(ps.PROPOSALS, d, n), "rb").read() for n in names]
+                        for d, names in legacy.items()}
+        check([p["proposal_id"] for p in apx.listing(folder)["pending"]] == [old_pending]
+              and apx.listing(folder)["unexpected"] == [],
+              "decided records are never listed, as proposals or as unexpected material")
+        text = json.dumps({"agent": "a", "operation": "create", "target_path": "authority-candidates/o.md",
+                           "reason": "Old.", "proposed_body": "x\n"})
+        check(apx.file(folder, json.loads(text), submitted=text)["result"] == "pending",
+              "a proposal filed before Charter kept submission identities never matches")
+        check(set(apx._ledger(cs)) == {p["proposal_id"] for p in apx.listing(folder)["pending"]},
+              "filing drops ledger entries for decided proposals: it vouches only for those waiting")
+        check({d: sorted(os.listdir(cs.path(ps.PROPOSALS, d))) for d in apx.LEGACY_DECIDED} == legacy
+              and {d: [open(cs.path(ps.PROPOSALS, d, n), "rb").read() for n in names]
+                   for d, names in legacy.items()} == legacy_bytes,
+              "and the decided records themselves are left exactly as they were")
         shutil.rmtree(folder)
 
 
@@ -453,6 +566,8 @@ def run() -> None:
     case_reject_and_stale()
     case_preview_then_decide()
     case_atomic()
+    case_duplicates()
+    case_legacy_records()
     print(f"\n{OK} All proposal review checks passed.")
 
 

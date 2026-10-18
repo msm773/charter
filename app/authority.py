@@ -59,7 +59,9 @@ CONFIRM_PHRASE = "change governing context"
 NEUTRAL_DAY = "2000-01-01"
 APPLY_DATE_NOTE = "Candidate dates are assigned when this change is applied."
 # A change set's preview carries no such note: it shows only what a person
-# needs to decide (UI Standards).
+# needs to decide (UI Standards). Nor does Retire's: it leaves no candidate to
+# date, only an archived copy.
+_UNNOTED_KINDS = ("changeset", "retire")
 
 KINDS = ("add", "revise", "edit-candidate", "retire", "accept-proposal", "reject-proposal",
          "changeset")
@@ -544,12 +546,11 @@ def _proposal(b: _Builder, req: Dict[str, Any]):
     return apx, record, text
 
 
-def _move_record(b: _Builder, apx, record: Dict[str, Any], text: str, decision: str,
-                 **detail: Any) -> None:
+def _remove_record(b: _Builder, apx, record: Dict[str, Any], text: str) -> None:
+    """A decided proposal leaves the inbox: its record is removed, and nothing
+    about the decision is kept (Product Specification §3.2)."""
     pid = record["proposal_id"]
     b.private(f"{ps.PROPOSALS}/{apx.PENDING}/{pid}.json", f"Agent Proposal {pid}", text, None)
-    b.private(f"{ps.PROPOSALS}/{decision}/{pid}.json", f"Agent Proposal {pid} ({decision})",
-              None, apx.decided(record, decision, **detail))
 
 
 def _accept_proposal(b: _Builder, req: Dict[str, Any]) -> None:
@@ -627,15 +628,14 @@ def _accept_proposal(b: _Builder, req: Dict[str, Any]) -> None:
             b.private(b.candidate_store(logical), logical, cand_text, _render(meta, body))
             b.plan.summary = f"Accept as candidate: the private authority candidate “{doc.title}” is updated."
         outcome = logical
-    _move_record(b, apx, record, text, apx.ACCEPTED, outcome=outcome)
+    _remove_record(b, apx, record, text)
     b.plan.notes.append(PROPOSAL_NOTE)
 
 
 def _reject_proposal(b: _Builder, req: Dict[str, Any]) -> None:
     apx, record, text = _proposal(b, req)
-    reason = (_text_field(req, "reason") or "").strip()
-    # Optional (UI Standards): kept privately with the rejection only when given.
-    _move_record(b, apx, record, text, apx.REJECTED, **({"reason": reason} if reason else {}))
+    # No reason is asked for or kept (UI Standards): rejecting only removes it.
+    _remove_record(b, apx, record, text)
     title, _kind = apx.title_of(record["proposal"], apx.Target(b.sit.folder, b.sit.cs, b.sit.exam)
                                 if b.sit.exam.valid else None, b.sit.cs)
     b.plan.summary = f"Reject the proposal for “{title}”. Nothing else changes."
@@ -829,7 +829,7 @@ def _plan(sit: Situation, kind: str, request: Dict[str, Any]) -> Plan:
 def _build(sit: Situation, kind: str, request: Dict[str, Any], day: str) -> Plan:
     b = _Builder(sit, kind, request, day)
     _BUILDERS[kind](b, request)
-    if kind != "changeset" and kind in _DATED_KINDS:
+    if kind not in _UNNOTED_KINDS and kind in _DATED_KINDS:
         b.plan.notes.append(APPLY_DATE_NOTE)
     return b.finish()
 
@@ -905,12 +905,6 @@ def apply(folder: str, kind: str, request: Dict[str, Any], plan_id: str, confirm
             from . import changeset as chs
             writes = [tx.Write(w.root, w.path, chs.stamp(w.text), w.expected)
                       if w.text and chs.APPLIED_AT in w.text else w for w in writes]
-        elif kind in ("accept-proposal", "reject-proposal"):
-            # The decided record says when it was decided.
-            from . import agent_proposals as apx
-            writes = [tx.Write(w.root, w.path, apx.stamp(w.text), w.expected)
-                      if w.root == tx.PRIVATE and w.text and w.path.startswith(f"{ps.PROPOSALS}/")
-                      else w for w in writes]
         labels = {c.path: c.label for c in current.changes}
         before = ac.examine(cs.folder)
 
@@ -942,6 +936,10 @@ def apply(folder: str, kind: str, request: Dict[str, Any], plan_id: str, confirm
                               exc.restored, exc.unrestored)
         # The action is final from here. Anything that fails now is reported
         # alongside its success, never as though nothing changed.
+        if kind in ("accept-proposal", "reject-proposal"):
+            # Nothing vouches for, or remembers, the decided proposal.
+            from . import agent_proposals as apx
+            apx.forget_decided(cs)
         result: Dict[str, Any] = {"applied": True, "kind": kind, "summary": current.summary,
                                   "governing_change": current.governing_change,
                                   "recovered": recovered,

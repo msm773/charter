@@ -1,8 +1,12 @@
 """Connect agents: copy-ready text, offered only for a ready Agent Context.
 Run: python -m tests.connect
 
-  * the MCP configuration runs `charter mcp --context <folder>`; on Windows through
-    `cmd /c`, which is how agent hosts start a `.cmd` launcher;
+  * the MCP configuration is one program and an exact list of arguments, never
+    a command line for a shell: on Windows the Python running Charter with this
+    copy's `charter.py`, elsewhere this copy's launcher, each by its full path,
+    so PATH can never route an agent to another copy — the same for a release
+    and a development checkout;
+  * another copy first on PATH is named, with its remedy, and blocks nothing;
   * `claude mcp add` is quoted for PowerShell and for Command Prompt on
     Windows, and for a POSIX shell elsewhere. On Windows the commands are
     run through each real shell, with `claude` replaced by a program that
@@ -167,13 +171,14 @@ def shown_wording(folder: str, extra: str = "") -> str:
     finally:
         os.environ["PATH"] = saved
     states = {p.get("connect") for p in payloads}
-    assert states == {"ready", "needs-path", "files-only", "not-ready"}, states
+    assert states == {"ready", "not-ready"}, states
     out = []
     for p in payloads:
         local = [p["folder"], p["map"], on_path.LAUNCHERS]
         found = (p.get("launcher") or {}).get("found") or ""
         if found:
             local += [found, os.path.dirname(found)]
+        local += [p.get("command") or ""] + list(p.get("args") or [])
         # `config_text` is `config` as JSON, whose strings are scanned already.
         text = " ".join(strings(dict(p, config_text="")))
         for value in sorted(set(local), key=len, reverse=True):
@@ -213,6 +218,9 @@ def case_quoting() -> None:
           and connect.posix_arg("/srv/ctx") == "/srv/ctx", "POSIX: shell quoting")
 
 
+PY = r"C:\Program Files\Python 3.12\python.exe"
+
+
 def case_payload() -> None:
     print("\nthe copy-ready text")
     with isolated_private_state():
@@ -220,36 +228,46 @@ def case_payload() -> None:
         folder = os.path.join(base, "My Ctx $x 'q' (é)")
         mg.create(folder, "Demo Project")
         folder = mg.check(folder)["path"]
+        script = os.path.join(on_path.LAUNCHERS, "charter.py")
         check(os.name == "nt" or os.access(os.path.join(on_path.LAUNCHERS, "charter"), os.X_OK),
               "this copy's `charter` launcher is executable, as Git and the release record it")
         with found_on(on_path.LAUNCHERS) as on:
-            win = connect.connection(folder, windows=True, registry=on)
+            win = connect.connection(folder, windows=True, registry=on, python=PY)
             posix = connect.connection(folder, windows=False, registry=on)
         check(win["ready"] and win["server_name"] == "charter-demo-project",
               "a ready Agent Context gets a server named for its project")
         server = win["config"]["mcpServers"]["charter-demo-project"]
-        check(server == {"command": "cmd", "args": ["/c", "charter", "mcp", "--context", folder]}
+        check(server == {"command": PY, "args": [script, "mcp", "--context", folder]}
               and json.loads(win["config_text"]) == win["config"],
-              "Windows: the configuration runs `cmd /c charter mcp --context <folder>`, the folder as one argument")
+              "Windows: the configuration runs the Python running Charter, by its full path, with this "
+              "copy's charter.py and each argument as its own exact argument")
+        check("cmd" not in (server["command"], *server["args"][:1]) and "/c" not in server["args"]
+              and server["command"] not in ("charter", "py", "cmd", "powershell"),
+              "never a bare `charter`, a bare `py`, `cmd /c`, or another shell")
         check(win["config_note"] == "Add this using your host's MCP instructions.",
               "other hosts get one action sentence, no launcher explanation")
+        check("Keep Charter in one folder" in win["install_note"]
+              and "move Charter" in win["install_note"] and "Python" in win["install_note"],
+              "it says registrations keep working when Charter is updated in place, and need "
+              "reconnecting if Charter or its Python moves")
         shells = {s["shell"]: s for s in win["shells"]}
-        check(shells["powershell"]["claude_code"]
-              == "claude mcp add charter-demo-project '--' cmd /c charter mcp --context "
-              + connect.powershell_arg(folder), "Windows: the PowerShell claude mcp add command")
-        check(shells["cmd"]["claude_code"]
-              == f'claude mcp add charter-demo-project -- cmd /c charter mcp --context "{folder}"',
+        register = ["claude", "mcp", "add", "charter-demo-project", "--", PY, script, "mcp", "--context", folder]
+        check(shells["powershell"]["claude_code"] == connect.command_line(register, connect.powershell_arg)
+              and connect.powershell_arg(PY) in shells["powershell"]["claude_code"],
+              "Windows: the PowerShell claude mcp add command, every path quoted as one argument")
+        check(shells["cmd"]["claude_code"] == connect.command_line(register, connect.cmd_arg)
+              and f'"{PY}"' in shells["cmd"]["claude_code"],
               "Windows: the Command Prompt claude mcp add command")
         check("--scope" not in " ".join(s["claude_code"] for s in win["shells"])
               and "claude_code_note" not in win,
               "Claude Code: registered at its default, local scope; the view's one instruction replaces a note")
         check(not any(k in win for k in ("claude_vscode_note", "check_note", "writes_nothing")),
               "troubleshooting, the VS Code workaround and the no-writes footer are the README's, not this view's")
-        check(win["codex_toml"] == "[mcp_servers.charter-demo-project]\ncommand = \"cmd\"\nargs = "
-              + json.dumps(["/c", "charter", "mcp", "--context", folder], ensure_ascii=False)
+        check(win["codex_toml"] == "[mcp_servers.charter-demo-project]\ncommand = " + json.dumps(PY)
+              + "\nargs = " + json.dumps([script, "mcp", "--context", folder], ensure_ascii=False)
               .replace('","', '", "') + "\n"
               and win["codex_note"] == "Add this to your Codex configuration, then restart Codex.",
-              "Codex: its [mcp_servers.<name>] table, runs the same command, with one action sentence")
+              "Codex: its [mcp_servers.<name>] table, runs the same program and arguments")
         try:
             import tomllib
         except ImportError:
@@ -278,15 +296,18 @@ def case_payload() -> None:
               "terminal proposals and the trust boundary are the README's, not this view's")
         check(win["files_note"] == "Requires direct read access to the Agent Context folder. See the README for guidance.",
               "file access says it needs direct read access, and that the README has the rest")
-        check(shells["powershell"]["check"] == "charter mcp --context " + connect.powershell_arg(folder)
-              + " --check" and shells["cmd"]["check"] == f'charter mcp --context "{folder}" --check',
-              "and a check command for each")
+        check(shells["powershell"]["check"] == connect.command_line([PY, script, "mcp", "--context", folder, "--check"],
+                                                                    connect.powershell_arg)
+              and shells["cmd"]["check"] == connect.command_line([PY, script, "mcp", "--context", folder, "--check"],
+                                                                 connect.cmd_arg),
+              "and a check command for each, running the same copy")
+        launcher = os.path.join(on_path.LAUNCHERS, "charter")
         check(posix["config"]["mcpServers"]["charter-demo-project"]
-              == {"command": "charter", "args": ["mcp", "--context", folder]}
+              == {"command": launcher, "args": ["mcp", "--context", folder]}
               and [s["shell"] for s in posix["shells"]] == ["posix"]
-              and posix["shells"][0]["claude_code"].endswith(" -- charter mcp --context "
-                                                              + connect.posix_arg(folder)),
-              "elsewhere: `charter mcp --context <folder>` directly, quoted for a POSIX shell")
+              and posix["shells"][0]["claude_code"].endswith(" -- " + connect.posix_arg(launcher)
+                                                              + " mcp --context " + connect.posix_arg(folder)),
+              "elsewhere: this copy's launcher by its full path, quoted for a POSIX shell")
         check(win["map"] == os.path.join(folder, ac.CONTEXT_MAP)
               and win["map"] in win["instruction"] and "AGENT-CONTEXT.md" in win["instruction"]
               and "authoritative" in win["instruction"],
@@ -298,42 +319,72 @@ def case_payload() -> None:
               "its wording is Charter's own, in every state it can show")
         check("Agent Context Manager" not in words,
               "it names the product Charter, never its earlier name")
-        check(win["launcher"]["on_path"] and win["connect"] == "ready"
-              and win["status_text"] == connect.READY,
-              "with `charter` on PATH for new programs: ready to connect")
+        check(win["connect"] == "ready" and win["status_text"] == connect.READY,
+              "with this copy on PATH: ready to connect")
 
-        print("\nMCP needs `charter` on PATH")
+        print("\nPATH decides nothing about connecting, and Connect agents says nothing about it")
         with found_on() as nowhere:
-            off = connect.connection(folder, windows=True, registry=nowhere)
-            off_posix = connect.connection(folder, windows=False, registry=nowhere)
-        check(off["ready"] and off["connect"] == "needs-path" and not off["launcher"]["on_path"]
-              and off["status_text"] == "Agent Context ready. Add Charter to your PATH before a new agent "
-                                        "host can connect."
-              and "Ready to connect" not in off["status_text"],
-              "without it: the Agent Context is ready, but it is not called ready to connect")
-        check(off["config"] == win["config"] and off["shells"] == win["shells"]
-              and off["instruction"] == win["instruction"] and off["codex_toml"] == win["codex_toml"],
-              "the MCP configuration, commands and file instruction are still all there")
-        check("checked" not in off and off["status_text"] != connect.READY,
-              "and it does not claim `charter` was found")
-        check(off["launcher"]["fix"] == "charter add-to-path" and "charter add-to-path" in off["launcher"]["note"]
-              and "python charter.py add-to-path" in off["launcher"]["note"]
-              and "quit and reopen the agent host" in off["launcher"]["restart"],
-              "with `charter add-to-path` to copy, and the host to be restarted afterwards")
-        check(off_posix["connect"] == "needs-path"
-              and "python3 charter.py add-to-path" in off_posix["launcher"]["note"],
-              "elsewhere the fallback names `python3`, which macOS and Linux provide, not `python`")
+            off = connect.connection(folder, windows=True, registry=nowhere, python=PY)
         other_dir = tempfile.mkdtemp(prefix="charter-other-")
         open(os.path.join(other_dir, "charter.cmd" if os.name == "nt" else "charter"), "w").close()
         if os.name != "nt":
             os.chmod(os.path.join(other_dir, "charter"), 0o755)
         with found_on(other_dir, on_path.LAUNCHERS) as first:
-            other = connect.connection(folder, windows=os.name == "nt", registry=first)
-        check(other["connect"] == "needs-path" and "Another copy of Charter" in other["status_text"]
-              and other_dir in other["launcher"]["note"],
-              "another copy first on PATH: also not ready to connect, naming where it is")
+            other = connect.connection(folder, windows=True, registry=first, python=PY)
+        check(all(p["ready"] and p["connect"] == "ready" and p["config"] == win["config"]
+                  and p["shells"] == win["shells"] for p in (off, other)),
+              "with `charter` nowhere on PATH, or another copy first, the same setup, ready: hosts start "
+              "this copy by its full path")
+        check(all(not any(k in p for k in ("path_conflict", "launcher", "fix", "restart")) for p in (win, off, other))
+              and other_dir not in " ".join(strings(other))
+              and all(not re.search(r"\bPATH\b|add-to-path|Remove ", " ".join(strings(p))) for p in (win, off, other)),
+              "Connect agents carries no PATH warning or remedy in any state: the header's Charter command "
+              "status does")
         shutil.rmtree(other_dir)
         shutil.rmtree(base)
+
+
+def case_command_status() -> None:
+    print("\nthe Charter command status: this installation, another copy, or none")
+    other_dir = tempfile.mkdtemp(prefix="charter-other-")
+    open(os.path.join(other_dir, "charter.cmd" if os.name == "nt" else "charter"), "w").close()
+    if os.name != "nt":
+        os.chmod(os.path.join(other_dir, "charter"), 0o755)
+    script = os.path.join(on_path.LAUNCHERS, "charter.py")
+    try:
+        with no_writes() as attempts:
+            with found_on(on_path.LAUNCHERS, other_dir) as mine:
+                ready = connect.command_status(windows=os.name == "nt", registry=mine, python=PY)
+            with found_on(other_dir, on_path.LAUNCHERS) as first:
+                other = connect.command_status(windows=True, registry=first, python=PY)
+                other_posix = connect.command_status(windows=False, registry=first)
+            with found_on() as nowhere:
+                missing = connect.command_status(windows=True, registry=nowhere, python=PY)
+                missing_posix = connect.command_status(windows=False, registry=nowhere)
+        check(not attempts, "finding out writes nothing and runs nothing")
+        check(ready["state"] == "ready" and "remedy" not in ready,
+              "this installation first: Charter command ready, with no remedy")
+        check(other["state"] == "other" and other["other_folder"] == other_dir and other["found"].startswith(other_dir),
+              "another copy first, though this one is on PATH too: needs attention, naming that copy's folder")
+        check(missing["state"] == "missing" and missing["found"] == "" and missing["other_folder"] == "",
+              "`charter` nowhere on PATH: needs attention, with nothing named as found")
+        expect = "& " + connect.command_line([PY, script, "add-to-path"], connect.powershell_arg)
+        check(other["remedy"] == missing["remedy"] == expect and other["shell"] == "PowerShell"
+              and other["changes_path"],
+              f"Windows: one PowerShell command, this Python and this copy's charter.py by full path: {expect}")
+        check(" " in PY and expect.startswith("& '" + PY + "' ")
+              and expect.endswith(" " + connect.powershell_arg(script) + " add-to-path"),
+              "an interpreter path with spaces is quoted and run with `&`, as PowerShell requires")
+        for c in (other, missing, other_posix, missing_posix):
+            words = c["remedy"].replace(PY, "").replace(script, "").replace(os.path.join(on_path.LAUNCHERS, "charter"), "")
+            check(not re.search(r"(^|[\s&'\"])(py|charter|cmd)(\s|$)|/c\b", words) and other_dir not in c["remedy"],
+                  f"{c['shell']}, {c['state']}: no bare charter, py or cmd /c, and nothing that runs the other copy")
+        launcher = os.path.join(on_path.LAUNCHERS, "charter")
+        check(other_posix["remedy"] == missing_posix["remedy"] == connect.posix_arg(launcher) + " add-to-path"
+              and other_posix["shell"] == "Terminal" and not other_posix["changes_path"],
+              "elsewhere: this copy's launcher by its full path, which says what to add to the shell startup file")
+    finally:
+        shutil.rmtree(other_dir)
 
 
 def case_not_ready() -> None:
@@ -352,7 +403,9 @@ def case_not_ready() -> None:
 
         write(folder, "notes.txt", b"mine")
         c = refused("an unclean folder: refused, naming the stray file", "notes.txt")
-        check("Agents are refused" in c["reasons"][0], "the first reason is the folder's own status")
+        check(c["reasons"][0].startswith("Charter can’t serve this Agent Context yet.")
+              and "`notes.txt`: isn’t part of this Agent Context." in c["reasons"],
+              "the first reason is the folder's own status, then the file that does not belong")
         os.remove(os.path.join(folder, "notes.txt"))
 
         write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited in an editor.\n"))
@@ -377,21 +430,12 @@ def case_not_ready() -> None:
         odd = os.path.join(tempfile.mkdtemp(prefix="charter-connect-"), "R&D 100%")
         mg.create(odd, "Odd")
         c = connect.connection(odd, windows=True, registry=FakeRegistry(user=on_path.LAUNCHERS))
-        mcp_text = ("config", "config_text", "shells", "server_name", "launch_line", "launcher",
-                    "codex_toml", "pointer")
-        check(c["ready"] and c["connect"] == "files-only"
-              and c["status_text"].startswith("Agent Context ready for file access.")
-              and "Ready to connect" not in c["status_text"],
-              "Windows, a path cmd /c cannot carry: ready for file access, not called ready to connect")
-        check("cmd /c" in c["mcp_limitation"] and "% &" in c["mcp_limitation"]
-              and "No MCP configuration is offered" in c["mcp_limitation"]
-              and not any(k in c for k in mcp_text),
-              "the concrete MCP limitation, and no MCP configuration or command at all")
+        check(c["ready"] and c["connect"] == "ready" and c["config"]["mcpServers"][c["server_name"]]["args"][-1] == odd,
+              "Windows, a folder with % and &: MCP is offered, the folder passed as one exact argument")
+        check([sh["shell"] for sh in c["shells"]] == ["powershell"],
+              "Command Prompt cannot type it reliably, so only PowerShell's registration command is offered")
         check(c["instruction"] and c["map"] in c["instruction"],
               "the file-access instruction is still offered")
-        check(connect.connection(odd, windows=False)["connect"] in ("ready", "needs-path")
-              and "config" in connect.connection(odd, windows=False),
-              "elsewhere the same path gets MCP text")
         shutil.rmtree(os.path.dirname(odd))
         shutil.rmtree(folder)
 
@@ -497,8 +541,11 @@ def case_real_shells() -> None:
         folder = os.path.join(base, "Ctx $x 'q' (a) é,b;c")
         mg.create(folder, "Shell Test")
         folder = mg.check(folder)["path"]
-        c = connect.connection(folder, windows=True, registry=FakeRegistry())
-        expected = ["mcp", "add", "charter-shell-test", "--", "cmd", "/c", "charter", "mcp", "--context", folder]
+        fake_py = os.path.join(base, "Py Thon 3", "python.exe")
+        copy = os.path.join(base, "Charter Copy (x)")
+        c = connect.connection(folder, windows=True, registry=FakeRegistry(), launchers=copy, python=fake_py)
+        expected = ["mcp", "add", "charter-shell-test", "--", fake_py, os.path.join(copy, "charter.py"),
+                    "mcp", "--context", folder]
         printer = _argv_printer(base)
         py = sys.executable
         shells = {s["shell"]: s for s in c["shells"]}
@@ -529,76 +576,87 @@ def case_real_shells() -> None:
         cp = subprocess.run(f'cmd /d /s /c "chcp 65001>nul & {line}"', capture_output=True, env=env)
         check(json.loads(cp.stdout.decode("utf-8") or "null") == expected,
               "Command Prompt: every argument arrives exactly")
+
+        # The Charter command dialog's remedy, as pasted into PowerShell: a
+        # quoted interpreter with spaces in its path, run through `&`, with this
+        # copy's charter.py. Stand-ins print what they are given, so nothing
+        # changes PATH.
+        spaced = os.path.join(base, "Py Thon 3", "python.cmd")
+        os.makedirs(os.path.dirname(spaced), exist_ok=True)
+        with open(spaced, "w", encoding="utf-8") as fh:
+            fh.write(f'@"{py}" %*\r\n')
+        os.makedirs(copy, exist_ok=True)
+        shutil.copy(printer, os.path.join(copy, "charter.py"))
+        with found_on() as nowhere:
+            remedy = connect.command_status(windows=True, registry=nowhere, python=spaced, launchers=copy)["remedy"]
+        ps = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + remedy],
+                            capture_output=True, env=env)
+        check(json.loads(ps.stdout.decode("utf-8") or "null") == ["add-to-path"],
+              f"the Charter command remedy runs in PowerShell as shown, spaces and all: {remedy}")
         shutil.rmtree(base)
 
 
-@contextlib.contextmanager
-def installed_release():
-    """Connect agents as an installed release sees it, whatever checkout runs
-    the tests: no `.git` beside the launchers, so setup names `charter`."""
-    real = connect.development_checkout
-    connect.development_checkout = lambda folder=on_path.LAUNCHERS: False
+def case_release_and_checkout() -> None:
+    print("\na release and a development checkout: the same full-path setup, spaces and all")
+    base = tempfile.mkdtemp(prefix="charter-copies-")
     try:
-        yield
-    finally:
-        connect.development_checkout = real
-
-
-def case_development_checkout() -> None:
-    print("\na development checkout's setup names its own launcher, never `charter` on PATH")
-    base = tempfile.mkdtemp(prefix="charter-dev-")
-    try:
-        dev = os.path.join(base, "dev-worktree")
-        release = os.path.join(base, "release")
+        dev = os.path.join(base, "dev worktree")
+        release = os.path.join(base, "Program Files", "Charter 2")
         os.makedirs(dev)
         os.makedirs(release)
         with open(os.path.join(dev, ".git"), "w", encoding="utf-8") as fh:
             fh.write("gitdir: elsewhere\n")  # a worktree's `.git` is a file
-        check(connect.development_checkout(dev) and not connect.development_checkout(release),
-              "a launcher folder that is a Git working tree is a development checkout; a release is not")
         with isolated_private_state():
             folder = context()
-            # PATH finds another copy first: a development checkout must not care.
             other = FakeRegistry(user=os.path.join(base, "elsewhere"))
-            win = connect.connection(folder, windows=True, registry=other, launchers=dev)
-            posix = connect.connection(folder, windows=False, registry=other, launchers=dev)
-            dev_cmd, dev_sh = os.path.join(dev, "charter.cmd"), os.path.join(dev, "charter")
-            check(win["command"] == "cmd" and win["args"][:2] == ["/c", dev_cmd]
-                  and win["config"]["mcpServers"][win["server_name"]]["args"][1] == dev_cmd
-                  and posix["command"] == dev_sh and posix["args"][0] == "mcp",
-                  "the MCP configuration runs that checkout's launcher by its full path")
-            check(all(dev_cmd in s["claude_code"] and dev_cmd in s["check"] for s in win["shells"])
-                  and all(dev_sh in s["claude_code"] and dev_sh in s["check"] for s in posix["shells"])
-                  and connect.toml_string(dev_sh) in posix["codex_toml"]
-                  and posix["launch_line"].split(" mcp ")[0].strip('"') == dev_sh,
-                  "so do the claude command, the check command, Codex's entry and the launch line")
-            check(not any(re.search(r"(^|[\s\"'/c])charter(\s|$)", s["claude_code"]) for s in win["shells"] + posix["shells"]),
-                  "no command runs a bare `charter` that PATH could route to another checkout")
-            check(win["connect"] == "ready" and posix["connect"] == "ready" and win["launcher"]["explicit"]
-                  and "development checkout" in win["launcher"]["note"],
-                  "it is ready whatever PATH holds, and says why")
-            spaced = os.path.join(base, "dev worktree")
-            os.makedirs(spaced)
-            open(os.path.join(spaced, ".git"), "w", encoding="utf-8").close()
-            odd = connect.connection(folder, windows=True, registry=other, launchers=spaced)
-            check(odd["connect"] == "files-only" and "config" not in odd and "a space" in odd["mcp_limitation"],
-                  "on Windows, a checkout path `cmd /c` cannot carry offers file access only, and says why")
-            installed = connect.connection(folder, windows=False, registry=other, launchers=release)
-            check(installed["command"] == "charter" and not installed["launcher"]["explicit"],
-                  "an installed release still names `charter`, which its add-to-path puts on PATH")
+            for label, launchers in (("a development checkout", dev), ("an installed release", release)):
+                win = connect.connection(folder, windows=True, registry=other, launchers=launchers, python=PY)
+                posix = connect.connection(folder, windows=False, registry=other, launchers=launchers)
+                check(win["connect"] == "ready" and win["command"] == PY
+                      and win["args"] == [os.path.join(launchers, "charter.py"), "mcp", "--context", folder]
+                      and posix["command"] == os.path.join(launchers, "charter")
+                      and posix["args"] == ["mcp", "--context", folder],
+                      f"{label}: this copy, by its full path, with spaces in it, as exact arguments")
+                check(not any(re.search(r"(^|\s)(charter|py|cmd)(\s|$)", re.split(r" '?--'? ", s["claude_code"], maxsplit=1)[1])
+                              for s in win["shells"] + posix["shells"]),
+                      f"{label}: no registration runs a bare `charter`, `py` or `cmd`")
             shutil.rmtree(folder)
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
 
+def case_host_runs_it() -> None:
+    print("\nan agent host runs the registered program and arguments, with no shell")
+    with isolated_private_state() as state:
+        base = tempfile.mkdtemp(prefix="charter host ")
+        folder = os.path.join(base, "Agent Context (spaced) & co")
+        mg.create(folder, "Host Run")
+        folder = mg.check(folder)["path"]
+        c = connect.connection(folder, windows=os.name == "nt")
+        server = c["config"]["mcpServers"][c["server_name"]]
+        # As a host does: the stored program and arguments, exactly, no shell.
+        # The test launcher stands in for charter.py only to isolate private state.
+        argv = [server["command"]] + server["args"] + ["--check"]
+        if os.name == "nt":
+            argv = [server["command"], os.path.join(os.path.dirname(os.path.abspath(__file__)), "_launch.py"),
+                    os.path.dirname(state)] + server["args"][1:] + ["--check"]
+        done = subprocess.run(argv, capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
+        out = done.stdout.decode("utf-8", "replace")
+        check(done.returncode == 0 and "the Agent Context is valid and clean" in out and folder in out,
+              "the server command starts from the exact arguments and checks this folder, spaces and & included")
+        shutil.rmtree(base)
+
+
 def run() -> int:
-    with installed_release():
-        case_quoting()
-        case_payload()
-        case_not_ready()
-        case_writes_nothing()
-        case_real_shells()
-    case_development_checkout()
+    case_quoting()
+    case_payload()
+    case_command_status()
+    case_not_ready()
+    case_writes_nothing()
+    case_real_shells()
+    case_release_and_checkout()
+    case_host_runs_it()
     print(f"\n{OK} All Connect agents checks passed.")
     return 0
 
