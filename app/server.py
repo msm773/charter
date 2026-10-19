@@ -197,6 +197,9 @@ def make_handler(session: console.Session, token: str = ""):
                 return self._internal_error()
 
         def _static(self, path: str) -> None:
+            if path == "/favicon.ico":
+                # A browser that asks for an icon anyway gets none, and no error.
+                return self._send(204, b"", "image/x-icon")
             rel = "index.html" if path in ("/", "") else path.lstrip("/")
             # Relative only, and contained by resolved path components: a
             # string prefix would admit a sibling such as `static-private/`.

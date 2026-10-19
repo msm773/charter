@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -113,6 +114,46 @@ def case_listing() -> None:
               "looking at them changes nothing")
         check(raises(console.ApiError, console.unexpected, session, {"name": "../intake.json"}),
               "only an unexpected record can be viewed, by its name")
+        shutil.rmtree(folder)
+
+
+def case_unexpected_not_files() -> None:
+    print("\nan unexpected record that is not a file: listed, described, never read or followed")
+    import threading
+    with isolated_private_state():
+        folder, cs, _cand = setup()
+        pending = cs.path(ps.PROPOSALS, apx.PENDING)
+        os.makedirs(os.path.join(pending, "a-folder"))
+        secret = os.path.join(tempfile.mkdtemp(prefix="charter-secret-"), "secret.txt")
+        with open(secret, "w", encoding="utf-8") as fh:
+            fh.write("SECRET-OUTSIDE-PRIVATE-STATE")
+        kinds = {"a-folder": "a folder"}
+        try:
+            os.symlink(secret, os.path.join(pending, "linked.json"))
+            kinds["linked.json"] = "a link"
+        except (OSError, NotImplementedError):
+            pass  # links need a privilege on some Windows accounts
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(os.path.join(pending, "pipe.json"))
+            kinds["pipe.json"] = "a special file"
+        got = {}
+        lister = threading.Thread(target=lambda: got.update(apx.listing(folder)), daemon=True)
+        lister.start()
+        lister.join(10)
+        check(not lister.is_alive(), "listing never opens a pipe, so it never waits on one")
+        listed = {u["name"]: u for u in got.get("unexpected", [])}
+        check(sorted(listed) == sorted(kinds)
+              and all(u["regular"] is False and "not a regular file" in u["why"] for u in listed.values()),
+              "each is listed as unexpected and not a regular file")
+        session = console.Session(folder)
+        for name, kind in kinds.items():
+            view = console.unexpected(session, {"name": name})
+            check(view["regular"] is False and view["text"] is None and f"is {kind}, not a regular file" in view["message"]
+                  and "SECRET" not in json.dumps(view),
+                  f"viewing {kind} says what it is, shows no contents and follows nothing")
+        check(os.path.isdir(os.path.join(pending, "a-folder")) and open(secret).read().startswith("SECRET"),
+              "and each is left unchanged")
+        shutil.rmtree(os.path.dirname(secret))
         shutil.rmtree(folder)
 
 
@@ -559,6 +600,7 @@ def case_legacy_records() -> None:
 
 def run() -> None:
     case_listing()
+    case_unexpected_not_files()
     case_titles()
     case_import()
     case_older_front_matter()

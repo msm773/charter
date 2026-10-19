@@ -131,7 +131,9 @@ global.fetch = async (url, options) => {
   }
   if (url.startsWith("/api/changeset")) return answer(Object.assign({}, csNext,
     url === "/api/changeset/refresh" ? { refreshed: [{ document: "authority-candidates/delta.md", change: "candidate text changed; review it" }] } : {}));
-  if (url === "/api/proposals/unexpected") return answer(fixture.unexpected_view);
+  if (url === "/api/proposals/unexpected") {
+    return answer(body.name === "a-folder" ? fixture.unexpected_folder_view : fixture.unexpected_view);
+  }
   if (url === "/api/proposals/import/check") {
     const checked = answer(/base_commit/.test(body.json) ? fixture.import_check_bad : fixture.import_check_ok);
     const gate = importCheckDelay;
@@ -212,6 +214,8 @@ const fileToggles = (root) => root.querySelectorAll(".file-toggle");
 const regionOf = (button) => document.getElementById(button.getAttribute("aria-controls"));
 const expanded = (root) => fileToggles(root).filter((b) => b.getAttribute("aria-expanded") === "true");
 const css = fs.readFileSync(path.join(STATIC, "styles.css"), "utf8");
+/* How the header names an open Agent Context: its project name and folder name. */
+const shownName = (st) => `${st.project_name} · ${st.folder_name}`;
 const rule = (source, selector) => {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\>]/g, "\\$&").replace(/\s+/g, "\\s*");
   const m = source.match(new RegExp("(^|\\n)\\s*(?:[^{}\\n]*,\\s*\\n\\s*)?" + escaped + "\\s*\\{([^}]*)\\}"));
@@ -350,7 +354,7 @@ for (const file of ["markdown.js", "app.js"]) {
   check($("contextPath").value === fixture.folder, "and one click fills in the folder");
   currentState = fixture.state_valid;
   await click($("btnOpen"));
-  check(!$("view-governing").hidden && $("barPath").textContent === fixture.state_valid.root,
+  check(!$("view-governing").hidden && $("barPath").textContent === shownName(fixture.state_valid),
     "Open shows the Agent Context");
 
   console.log("\nRecent stays available after an Agent Context is open, without a restart");
@@ -379,7 +383,7 @@ for (const file of ["markdown.js", "app.js"]) {
     && !clearCalls.some((u) => /\/api\/(open|create|apply|changeset)/.test(u)),
     "Clear asks only to clear the list: nothing is opened, created or applied");
   check(!$("recentContexts").querySelector("h3") && !$("btnClearRecent") && !$("view-open").hidden
-    && $("barPath").textContent === fixture.state_valid.root,
+    && $("barPath").textContent === shownName(fixture.state_valid),
     "the list and its Clear are gone, and the open Agent Context stays open");
   await navTo("governing");
   await click($("wordmark"));
@@ -424,10 +428,29 @@ for (const file of ["markdown.js", "app.js"]) {
     "no button operates Git or publishes");
 
   console.log("\nThe header and rail say which Agent Context, and whether agents are served");
-  check($("barPath").textContent === fixture.state_valid.root && $("barState").textContent === "Agent context ready"
+  check($("barPath").textContent === shownName(fixture.state_valid) && $("barState").textContent === "Agent context ready"
+    && $("barName").textContent === fixture.state_valid.project_name
+    && $("barFolder").textContent === fixture.state_valid.folder_name
     && $("barState").querySelector(".chip").classList.contains("ok")
-    && $("metaRoot").textContent === fixture.state_valid.root && $("metaAgents").textContent === "Ready",
-    "its folder, and its status label: Agent context ready, in the positive treatment");
+    && $("metaRoot").textContent === fixture.state_valid.folder_name && $("metaAgents").textContent === "Ready",
+    "its project name and folder name, and its status label: Agent context ready, in the positive treatment");
+  check(fixture.state_valid.root.endsWith(fixture.state_valid.folder_name)
+    && fixture.state_valid.root !== fixture.state_valid.folder_name
+    && document.querySelector(".topbar").textContent.indexOf(fixture.state_valid.root) === -1
+    && document.querySelector("nav.rail").textContent.indexOf(fixture.state_valid.root) === -1,
+    "neither the header nor the rail shows the full path");
+  await show("state_windows");
+  check(fixture.state_windows.folder_name === "team-alpha-context"
+    && $("barFolder").textContent === "team-alpha-context" && $("metaRoot").textContent === "team-alpha-context"
+    && document.querySelector(".topbar").textContent.indexOf("C:\\") === -1,
+    "a Windows folder is named by its final folder name, never its drive or full path");
+  await show("state_older_server");
+  check(!("folder_name" in fixture.state_older_server)
+    && $("barFolder").textContent === fixture.state_valid.folder_name
+    && $("metaRoot").textContent === fixture.state_valid.folder_name
+    && !/undefined/.test(document.querySelector(".topbar").textContent + $("metaRoot").textContent),
+    "a console started before an update, which sends no folder name, still shows the folder name, never undefined");
+  await show("state_valid");
   const govCount = fixture.state_valid.documents.filter((d) => d.kind === "governing").length;
   const candCount = fixture.state_valid.documents.filter((d) => d.kind === "candidate").length;
   const archivedDocs = fixture.state_valid.documents.filter((d) => d.kind === "archived");
@@ -904,6 +927,11 @@ for (const file of ["markdown.js", "app.js"]) {
       === JSON.stringify({ [revised.path]: { decision: "replace", target: "authoritative/b.md" } })
     && $("csTarget-0").value === "authoritative/b.md" && !$("csPreview").disabled,
     "choosing the document completes the plan, ready to preview");
+  check($("csTargetSelected-0") && !$("csTargetSelected-0").hidden
+    && $("csTargetSelected-0").textContent === "Selected: Replaces “Beta”"
+    && $("csTarget-0").getAttribute("aria-describedby") === "csTargetSelected-0"
+    && /flex-basis:\s*100%/.test(rule(css, ".cs-row-controls select.cs-target")),
+    "the document it replaces has a line of its own, and is said in full beneath it");
   check($("csScopeLine-0").classList.contains("cs-scope-oneline")
     && /^Scope: Blank — inherits the replaced document's scope$/.test($("csScopeLine-0").textContent)
     && !$("csScopeToggle-0") && !$("csCandidates").querySelectorAll("dl").length
@@ -1240,7 +1268,8 @@ for (const file of ["markdown.js", "app.js"]) {
     && /Not carried over: id, status, authority, source, created, updated, supersedes, superseded_by\./
       .test($("frontMatterDropped").textContent),
     "a note says it was removed, which values were used, and what was not carried over");
-  check($("convertNotes").textContent.indexOf(fm.notes[1]) !== -1, "the conversion notes say so too");
+  check(!/was removed|not carried over|suggestion/i.test($("convertNotes").textContent),
+    "the front-matter notice appears once: the conversion notes do not repeat it");
   type($("scope"), "Supplier choice.");
   await click($("btnPreviewIntake"));
   check(lastPlan().body.kind === "add" && lastPlan().body.request.scope === "Supplier choice."
@@ -1549,6 +1578,11 @@ for (const file of ["markdown.js", "app.js"]) {
     && sd.textContent.indexOf(fixture.diagnostics.identity.version) !== -1
     && sd.textContent.indexOf(fixture.diagnostics.identity.python) !== -1,
     "it shows the version, build, launcher, charter.py, Python, both map formats and what PATH finds");
+  const diagFolderRow = sd.querySelectorAll("dt").map((d) => d.textContent).indexOf("Agent Context folder");
+  check(fixture.diagnostics.folder === fixture.state_valid.root && diagFolderRow !== -1
+    && sd.querySelectorAll("dd")[diagFolderRow].textContent === fixture.state_valid.root
+    && fixture.diagnostics_closed.folder === "",
+    "and the open Agent Context's exact full folder path, as its own row, only while one is open");
   await click($("settingsDiagnosticsToggle"));
   check(!$("settingsDiagnosticsBody").hidden, "and opens on request");
   check(document.querySelector(".topbar").textContent.indexOf(fixture.diagnostics.identity.version) === -1
@@ -1575,6 +1609,12 @@ for (const file of ["markdown.js", "app.js"]) {
   check(offerCode.includes(".agent-context.json") && $("review").textContent.indexOf("`") === -1
     && $("planProblems").querySelectorAll("code").some((c) => c.textContent === ".agent-context.json"),
     "inline code in the offer and in what blocks Rebuild is shown as code, never as literal backticks");
+  const rebuildRows = $("rebuildGuidance").querySelectorAll("label.choice");
+  check($("rebuildGuidance").classList.contains("settings-guidance") && rebuildRows.length === 3
+    && rebuildRows.every((l) => l.children[0].tagName === "INPUT" && l.children[1].children[0].tagName === "STRONG"
+      && l.children[1].children[1].classList.contains("hint")),
+    "Rebuild's guidance options use Settings' rows: each label, then its description on its own line");
+  check(!/settings are lost/.test($("review").textContent), "and never says settings were lost");
   $("rebuildGuidance-review_newly_discovered_material").checked = true;
   await click($("btnRebuildWithSettings"));
   const sent = lastPlan().body.request;
@@ -1627,6 +1667,14 @@ for (const file of ["markdown.js", "app.js"]) {
     && !$("metaChanged").hidden && $("metaChangedLabel").textContent === "Context files changed"
     && $("metaChangedCount").textContent === "1" && $("metaChanged").textContent === "1",
     "in a Git checkout the sidebar shows the branch and the number of changed context files");
+  await show("state_git_long");
+  const longBranch = fixture.state_git_long.status.git.branch;
+  check($("metaBranch").textContent === longBranch
+    && $("metaBranch").querySelectorAll("wbr").length === (longBranch.match(/[\/_.]/g) || []).length,
+    "a long branch name is shown whole, breakable after each /, _ and .");
+  check(/overflow-wrap:\s*anywhere/.test(rule(css, ".rail-meta dd")) && !/break-all/.test(rule(css, ".rail-meta dd")),
+    "rail values break inside a word only as a last resort, never at arbitrary letters");
+  await show("state_git");
   check(!$("gitDetailsToggle") && !$("gitDetailsPanel") && !$("gitChanged")
     && !$("contextMeta").querySelectorAll("button").length && !$("contextMeta").querySelectorAll("li").length
     && !/authoritative\/a\.md/.test($("contextMeta").textContent),
@@ -1766,6 +1814,19 @@ for (const file of ["markdown.js", "app.js"]) {
     && $("unexpectedText").textContent === fixture.unexpected_view.text
     && /viewing it changes nothing/.test($("review").textContent),
     "its contents can be viewed, as text, changing nothing");
+  vm.runInThisContext("closeReview")();
+  check(buttonSaying(odd, "Import a copy…") && fixture.proposals.unexpected[0].regular === true,
+    "a file among the records offers Import a copy…");
+  const folderRow = vm.runInThisContext("unexpectedRow")(fixture.unexpected_folder_row);
+  check(fixture.unexpected_folder_row.regular === false && buttonSaying(folderRow, "View contents")
+    && !buttonSaying(folderRow, "Import a copy…"),
+    "a record that is not a file can be viewed but offers no Import a copy…, having no text to import");
+  await click(buttonSaying(folderRow, "View contents"));
+  check(lastCall("/api/proposals/unexpected").body.name === "a-folder"
+    && $("unexpectedText").textContent === fixture.unexpected_folder_view.message
+    && /is a folder, not a regular file/.test($("unexpectedText").textContent)
+    && !$("review").querySelector("pre") && !/no such unexpected record/i.test($("review").textContent),
+    "viewing it says what it is, never that it does not exist, and shows no contents");
   vm.runInThisContext("closeReview")();
 
   check(/font-weight:\s*700/.test(rule(css, ".proposal-meta strong")) && /color:\s*var\(--ink\)/.test(rule(css, ".proposal-meta strong"))
@@ -2112,7 +2173,16 @@ for (const file of ["markdown.js", "app.js"]) {
       === fixture.cs_created.governing.map((g) => g.path).sort().join(),
     "any governing document can be withdrawn, in the same change set");
   check(!$("csRetained") && !$("csRetainedList"), "and nothing asks about the governing documents it retains");
+  check($("csAddCandidateSelected").hidden && addCandidate.getAttribute("aria-describedby") === "csAddCandidateSelected",
+    "before a candidate is chosen, no selection line is shown");
   addCandidate.value = fixture.cs_row.plan_candidates[0].path;
+  addCandidate.focus();
+  addCandidate.dispatch("change");
+  const chosenOption = addCandidate.options.find((o) => o.value === addCandidate.value);
+  check(!$("csAddCandidateSelected").hidden
+    && $("csAddCandidateSelected").textContent === `Selected: ${chosenOption.textContent}`
+    && document.activeElement === addCandidate,
+    "the chosen candidate is said in full beneath the closed dropdown, which keeps focus");
   csNext = fixture.cs_row;
   await click($("csAddCandidateButton"));
   check(JSON.stringify(lastCall("/api/changeset/update").body) === JSON.stringify({ id: fixture.cs_created.draft.id,

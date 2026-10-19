@@ -140,6 +140,13 @@ def build_fixture() -> dict:
         fh.write('{"agent": "unknown", "operation": "create"}\n')
     out["proposals"] = console.proposals(session, {})
     out["unexpected_view"] = console.unexpected(session, {"name": "dropped-in.json"})
+    # A record that is not a file, listed and described as the console answers
+    # it, then removed again so nothing else here changes.
+    os.makedirs(cs.path(ps.PROPOSALS, apx.PENDING, "a-folder"))
+    out["unexpected_folder_row"] = next(u for u in console.proposals(session, {})["unexpected"]
+                                        if u["name"] == "a-folder")
+    out["unexpected_folder_view"] = console.unexpected(session, {"name": "a-folder"})
+    os.rmdir(cs.path(ps.PROPOSALS, apx.PENDING, "a-folder"))
     out["import_check_ok"] = console.import_check(session, {"json": json.dumps(dict(
         returned, reason="Another clarification."))})
     out["import_check_bad"] = console.import_check(session, {"json": json.dumps(dict(
@@ -291,6 +298,15 @@ def build_fixture() -> dict:
     valid = out["state_valid"]
     out["state_git"] = dict(valid, status=dict(valid["status"], git={
         "state": "checkout", "branch": "feature/scope", "changed": ["context/authoritative/a.md"]}))
+    out["state_git_long"] = dict(valid, status=dict(valid["status"], git={
+        "state": "checkout", "branch": "feature/release-validation_of.charter-console-long-path-display-2026-10-19",
+        "changed": []}))
+    # An Agent Context on Windows, named by the folder name the server derives.
+    windows_root = "C:\\Users\\me\\Client Work\\2026 Q4\\team-alpha-context"
+    out["state_windows"] = dict(valid, root=windows_root,
+                                folder_name=console.folder_name(windows_root, windows=True))
+    # The same state from a console started before Charter was updated in place.
+    out["state_older_server"] = {k: v for k, v in valid.items() if k != "folder_name"}
     out["state_git_clean"] = dict(valid, status=dict(valid["status"], git={
         "state": "checkout", "branch": "main", "changed": []}))
     out["state_git_unreadable"] = dict(valid, status=dict(valid["status"], git={

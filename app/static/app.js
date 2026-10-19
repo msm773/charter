@@ -549,11 +549,42 @@ function announceRecovery() {
   toast("An interrupted Charter write was found and rolled back. Nothing else changed.");
 }
 
+/* `text` in `node`, breakable after each `/`, `\\`, `_` and `.` — the places a
+   branch, folder or file name reads naturally split; a hyphen already is. CSS
+   breaks a run with none of them only as a last resort, so a long value stays
+   inside a narrow column without being cut at arbitrary letters. */
+function breakable(node, text) {
+  node.textContent = "";
+  let run = "";
+  for (const ch of String(text)) {
+    run += ch;
+    if ("/\\_.".includes(ch)) {
+      node.appendChild(document.createTextNode(run));
+      node.appendChild(el("wbr"));
+      run = "";
+    }
+  }
+  if (run) node.appendChild(document.createTextNode(run));
+  return node;
+}
+
+/* The open Agent Context's folder name, as the server derives it. A page newer
+   than the console serving it — Charter updated in its folder while the
+   console ran — gets none, so it takes the last part of the path itself,
+   never showing a blank, "undefined" or the full path. */
+function contextFolderName() {
+  if (state.folder_name) return state.folder_name;
+  const parts = String(state.root || "").split(/[\\/]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(state.root || "");
+}
+
 function renderShell() {
   const open = state.open;
   const s = open ? state.status : null;
   $("projectName").textContent = open ? state.project_name : "no Agent Context open";
-  $("metaRoot").textContent = open ? state.root : "—";
+  /* Named by its folder's name, never its full path (UI Standards): the exact
+     path is in Diagnostics, Open Agent Context… and copy-ready commands. */
+  breakable($("metaRoot"), open ? contextFolderName() : "—");
   $("metaAgents").textContent = open ? (s.agents_served ? "Ready" : "Unavailable") : "—";
   const groups = open ? documentGroups() : null;
   $("metaContext").textContent = open ? String(groups.governing.length) : "—";
@@ -568,7 +599,15 @@ function renderShell() {
   renderTally();
   renderChangeSetTally(open ? state.change_sets.active : null);
 
-  $("barPath").textContent = open ? state.root : "No Agent Context open";
+  const barPath = $("barPath");
+  barPath.textContent = "";
+  if (open) {
+    barPath.appendChild(el("span", { class: "bar-name", id: "barName", text: state.project_name }));
+    barPath.appendChild(document.createTextNode(" · "));
+    breakable(barPath.appendChild(el("span", { class: "path", id: "barFolder" })), contextFolderName());
+  } else {
+    barPath.textContent = "No Agent Context open";
+  }
   const bar = $("barState");
   bar.textContent = "";
   /* One context status label, always: ready, or unavailable with the problem
@@ -679,7 +718,7 @@ function renderGit() {
   $("metaChangedLabel").hidden = $("metaChanged").hidden = !counted;
   const changed = known ? git.changed : [];
   if (!git) return;
-  $("metaBranch").textContent = GIT_BRANCH_NOTE[git.state] || git.branch || UNREAD;
+  breakable($("metaBranch"), GIT_BRANCH_NOTE[git.state] || git.branch || UNREAD);
   $("metaChangedCount").textContent = known ? String(changed.length) : UNREAD;
 }
 
@@ -1551,7 +1590,9 @@ function unexpectedRow(u) {
     ]),
     el("div", { class: "actions" }, [
       el("button", { class: "btn ghost small", text: "View contents", onclick: () => viewUnexpected(u, false) }),
-      el("button", { class: "btn ghost small", text: "Import a copy…", onclick: () => viewUnexpected(u, true) }),
+      /* Only a file has text to import; a folder, link or special file does not. */
+      u.regular === false ? null
+        : el("button", { class: "btn ghost small", text: "Import a copy…", onclick: () => viewUnexpected(u, true) }),
     ]),
   ]);
 }
@@ -1559,13 +1600,13 @@ function unexpectedRow(u) {
 async function viewUnexpected(u, asImport) {
   let got;
   try { got = await call("/api/proposals/unexpected", { name: u.name }); } catch (err) { toast(err.message, true); return; }
-  if (asImport) { startImport(got.text); return; }
+  if (asImport && got.regular !== false) { startImport(got.text); return; }
   review = null;
-  showFormPanel(`Unexpected Local Record ${u.name}`, el("div", { class: "inner" }, [
-    el("div", { class: "note warn", text: "Untrusted local material, shown as text. It is not a proposal, "
-      + "and viewing it changes nothing." }),
-    el("pre", { class: "code", id: "unexpectedText", text: got.text }),
-  ]));
+  showFormPanel(`Unexpected Local Record ${u.name}`, el("div", { class: "inner" }, got.regular === false
+    ? [el("div", { class: "note warn", id: "unexpectedText", text: got.message })]
+    : [el("div", { class: "note warn", text: "Untrusted local material, shown as text. It is not a proposal, "
+        + "and viewing it changes nothing." }),
+      el("pre", { class: "code", id: "unexpectedText", text: got.text })]));
 }
 
 /* Import: a proposal an agent returned as JSON, checked exactly as `charter
@@ -1929,7 +1970,9 @@ function rebuildSettings(plan, request) {
         + "Agent Context on this computer. Confirm or change them: they are not used until you do."
       : offer.label)),
     el("div", { class: "field" }, [el("label", { for: "rebuildProjectName", text: "Project name" }), name]),
-    el("fieldset", { class: "field" }, [el("legend", { text: "Agent guidance" })].concat(boxes)),
+    /* The same rows as Settings: each option's name, then its description on its own line. */
+    el("fieldset", { class: "field settings-guidance", id: "rebuildGuidance" },
+      [el("legend", { text: "Agent guidance" })].concat(boxes)),
     el("div", { class: "actions" }, [el("button", { class: "btn small", id: "btnRebuildWithSettings",
       text: "Preview with these settings", onclick: () => {
         const guidance = {};
@@ -2609,6 +2652,21 @@ function provenanceOf(cs, c) {
   return bits.join(" · ");
 }
 
+/* A closed native dropdown shows only as much of its choice as fits, so a long
+   label — or the end of one that tells candidates sharing a title apart —
+   can be cut off. The choice is also said in full, in words, just beneath it:
+   state, not an information control, shown only once something is chosen. */
+function selectedLine(id, text) {
+  const line = el("p", { class: "cs-selected", id });
+  showSelected(line, text);
+  return line;
+}
+
+function showSelected(line, text) {
+  line.textContent = text ? `Selected: ${text}` : "";
+  line.hidden = !text;
+}
+
 /* The candidates the plan includes, each a compact row with exactly one
    decision the person makes, from one dropdown: Replace, with the governing
    document they then select, or Govern alongside. A candidate already in the
@@ -2619,9 +2677,12 @@ function changeSetCandidates(cs, active) {
   items.forEach((c, i) => list.appendChild(planCandidate(cs, c, i, active)));
   const free = cs.available_candidates.filter((c) => !c.used);
   const freeLabels = candidateLabels(free, cs.available_candidates);
-  const pick = el("select", { id: "csAddCandidate", "aria-label": "Authority candidate to include" },
+  const pick = el("select", { id: "csAddCandidate", "aria-label": "Authority candidate to include",
+    "aria-describedby": "csAddCandidateSelected" },
     [el("option", { value: "", text: "Choose an authority candidate" })]
       .concat(free.map((c) => el("option", { value: c.path, text: freeLabels[c.path] }))));
+  const chosen = selectedLine("csAddCandidateSelected", "");
+  pick.addEventListener("change", () => showSelected(chosen, pick.value ? freeLabels[pick.value] : ""));
   return csSection("Candidates", [
     items.length ? list : null,
     active && free.length ? el("div", { class: "actions cs-add" }, [pick,
@@ -2629,6 +2690,7 @@ function changeSetCandidates(cs, active) {
         if (!pick.value) { toast("Choose an authority candidate.", true); return; }
         changeSetCall("/api/changeset/update", { candidates: items.map((c) => c.path).concat([pick.value]) });
       } })]) : null,
+    active && free.length ? chosen : null,
     /* Only when the section lists no candidate and none can be added: with
        every candidate already planned, it simply offers no Add. */
     items.length || free.length ? null
@@ -2664,7 +2726,7 @@ function planCandidate(cs, c, i, active) {
     const targets = replacementTargets(cs, c);
     origin = c.revises_path && targets[0] && targets[0].path === c.revises_path ? targets[0] : null;
     target = el("select", { id: `csTarget-${i}`, class: "cs-target", disabled: active ? null : "",
-      "aria-label": `Governing document “${c.title}” replaces` },
+      "aria-label": `Governing document “${c.title}” replaces`, "aria-describedby": `csTargetSelected-${i}` },
       [el("option", { value: "", text: "Choose the document it replaces" })]
         .concat(targets.map((g) => el("option", { value: g.path,
           text: g === origin ? `${g.title} — suggested: ${REVISED_FROM}` : g.title }))));
@@ -2687,6 +2749,7 @@ function planCandidate(cs, c, i, active) {
       ]),
     ]),
     el("div", { class: "cs-row-controls" }, [decision, target]),
+    target ? selectedLine(`csTargetSelected-${i}`, target.value && replaced ? `Replaces “${replaced.title}”` : "") : null,
     scopeLine(`csScopeLine-${i}`, "Scope", c.scope, blank),
     c.decision === "replace" && c.revises_title && c.revises_current === false
       ? el("p", { class: "note warning cs-earlier", id: `csEarlier-${i}`,
@@ -3359,6 +3422,7 @@ async function renderDiagnostics(id) {
     rows.push(["This Agent Context's map format", i.context_map_format === null ? "not recorded"
       : `${i.context_map_format}${d.relation ? ` (${d.relation})` : ""}`]);
   }
+  if (d.folder) rows.push(["Agent Context folder", d.folder]);
   rows.push(["`charter` on PATH", d.on_path.text]);
   const list = el("dl", { class: "diagnostics-list" },
     rows.reduce((out, [k, v]) => out.concat([el("dt", {}, withCode(k)), el("dd", { text: v })]), []));

@@ -207,6 +207,32 @@ def case_strays() -> None:
     shutil.rmtree(root)
 
 
+def case_invalid_front_matter() -> None:
+    print("\nincomplete or malformed governance front matter is named, not called missing")
+    root = context()
+    write(root, "authoritative/draft.md",
+          "---\ntitle: Draft\nstatus: draft\nauthority: authoritative\n---\n\n# Draft\n")
+    exam = ac.examine(root)
+    message = next((i["message"] for i in exam.errors if i["path"] == "authoritative/draft.md"), "")
+    check(exam.state == ac.INVALID and not exam.strays and "no governance front matter" not in message
+          and "`id`" in message and "`created`" in message and "status `draft`" in message,
+          "front matter without `id`: each missing field and the invalid status are named")
+    check(("document", "authoritative/draft.md") in kinds(exam), "  as a document problem, not a stray")
+    os.remove(os.path.join(root, "authoritative", "draft.md"))
+    write(root, "authoritative/open.md", "---\nid: open\ntitle: Open\n\n# Never closed\n")
+    exam = ac.examine(root)
+    message = next((i["message"] for i in exam.errors if i["path"] == "authoritative/open.md"), "")
+    check(exam.state == ac.INVALID and not exam.strays and "never closes" in message,
+          "a front-matter block that is never closed is named as malformed")
+    os.remove(os.path.join(root, "authoritative", "open.md"))
+    write(root, "authoritative/page.md", "---\nlayout: page\ntitle: Page\n---\n\n# Page\n")
+    exam = ac.examine(root)
+    check(exam.strays == ["authoritative/page.md"]
+          and any("no governance front matter" in i["message"] for i in exam.errors),
+          "front matter with no governance field is still Markdown without governance front matter")
+    shutil.rmtree(root)
+
+
 def case_outside_edits_need_rebuild() -> None:
     print("\nchanges made outside Charter")
     root = context()
@@ -496,6 +522,7 @@ def run() -> None:
     case_line_endings()
     case_tolerated_files()
     case_strays()
+    case_invalid_front_matter()
     case_outside_edits_need_rebuild()
     case_invalid_documents()
     case_scope_warning()

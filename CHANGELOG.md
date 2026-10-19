@@ -280,6 +280,30 @@ Git.
   Context, its Git checkout, private state or home in any spelling of the same
   place: as given, as resolved, through a link to it, or through a top-level
   link such as macOS's `/var` for `/private/var`.
+- **macOS release findings.** The packaged console suite compares Recent with
+  the canonical paths Charter records, so it passes where temporary folders
+  are reached through `/var`. Safari's engine keeps the sidebar's folder path
+  inside the rail. A governing document's front matter that lacks `id`, or is
+  never closed, is named with each missing field and invalid value, not called
+  missing. An unexpected local record that is a folder, link or other special
+  file is described as such, never opened, followed or offered for import, and
+  listing one never waits on a pipe. Create Candidate states what became of a
+  file's front matter once. Rebuild's guidance options read as in Settings,
+  and an Agent Context that never had metadata is not said to have lost its
+  settings. `charter check` says it has no record of how the content was made,
+  not of the folder. A chosen candidate, and the document a Replace replaces,
+  are said in full beneath their closed dropdowns, and the replaced document
+  has a line of its own. The page declares an empty icon, and `/favicon.ico`
+  answers 204. The README covers Archive Utility, restarting the console after
+  a PATH fix, private-state permissions, the review packet's Save dialog and
+  typed-path fallback, and a replacement's `id` and `supersedes`.
+- **The open Agent Context, by name.** The header names it by its project
+  name and its folder's name, and the sidebar's Current Context by its folder's
+  name, never by a deep full path; the folder name follows Windows rules on
+  Windows. Diagnostics adds the Agent Context folder's full path, which Open
+  Agent Context… and copy-ready commands keep too. Long sidebar values, such as
+  a branch, break after `/`, `\`, `_` and `.`, and inside a word only when
+  nothing else fits.
 - **`charter serve`** writes its address at once, also when its output is piped
   or redirected. On Linux and macOS, a console stopped with Ctrl+C starts again
   at once on the port it used, which its closed connections still hold for

@@ -68,9 +68,11 @@ def status(cs: Optional[ContextState], exam: ac.Examination) -> Dict[str, Any]:
     """What the person is told about where the current content came from."""
     record = cs.observed() if cs is not None else None
     if record is None:
+        # No record of the content, though the folder may well be known here,
+        # opened in the console or listed in Recent: say which record is missing.
         return {"known": False, "changed_outside": False, "rebuilt": False, "paths": [],
-                "message": "Charter has no record of this Agent Context on this "
-                           "computer, so the origin of its current content is unknown."}
+                "message": "Charter has no record on this computer of how this content was "
+                           "created or changed, so its origin is unknown."}
     paths = outside_since(record, exam)
     rebuilt = record["source"] == "rebuild" and record["fingerprint"] == exam.fingerprint
     # Only documents changed outside Charter, not yet acknowledged, are news. A

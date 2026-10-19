@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import api_changeset as api  # noqa: E402
 from app import console  # noqa: E402
+from app import host_state as hs  # noqa: E402
 from app import private_store as ps  # noqa: E402
 from app import server  # noqa: E402
 from tests.agent_context import context, doc_text, read, snapshot, write  # noqa: E402
@@ -36,6 +37,12 @@ def check(condition: bool, label: str) -> None:
         print(f"  FAILED: {label}")
         raise SystemExit(1)
     print(f"  {OK} {label}")
+
+
+def canon(*folders: str) -> list:
+    """Folders as Charter records them: canonical, so a temporary folder macOS
+    reaches through `/var` compares equal to its `/private/var` spelling."""
+    return [hs.canonical(f) for f in folders]
 
 
 def refused(fn, *args) -> str:
@@ -179,9 +186,9 @@ def case_stage_front_matter() -> None:
               "metadata is text")
         check(staged["front_matter"] == {"removed": True, "used": ["title", "scope"],
                                          "dropped": list(LEGACY_KEYS)}
-              and any("Not carried over: id, status" in n for n in staged["notes"])
-              and not any("only front matter is added" in n for n in staged["notes"]),
-              "and it says what was used and what was not carried over")
+              and not any(re.search(r"was removed|not carried over|suggestion", n, re.I) for n in staged["notes"]),
+              "it says, once, what was used and what was not carried over: in `front_matter`, "
+              "never repeated among the conversion notes")
 
         windows = ("﻿" + "---\r\ntitle: Windows file\r\nscope: From Windows.\r\n---\r\n\r\nBody.\r\n")
         staged = stage_text(session, "win.md", windows.encode("utf-8"))
@@ -241,10 +248,10 @@ def case_recent_while_open() -> None:
         session = console.Session()
         console.open_context(session, {"path": folder})
         opened = console.state(session)
-        check(opened["open"] and folder in opened.get("recent", []),
+        check(opened["open"] and hs.canonical(folder) in opened.get("recent", []),
               "with an Agent Context open, its state still lists Recent, so Open Agent Context… shows it")
         closed = console.state(console.Session())
-        check(not closed["open"] and folder in closed.get("recent", []),
+        check(not closed["open"] and hs.canonical(folder) in closed.get("recent", []),
               "with none open, Recent lists the same Agent Contexts")
         shutil.rmtree(folder)
 
@@ -260,14 +267,14 @@ def case_clear_recent() -> None:
         before = sorted(os.listdir(cs.base))
         console.clear_recent(session, {})
         state = console.state(session)
-        check(state["open"] and state["root"] == folder and state["recent"] == [],
+        check(state["open"] and state["root"] == hs.canonical(folder) and state["recent"] == [],
               "Clear empties Recent, and the open Agent Context stays open")
         check(sorted(os.listdir(cs.base)) == before
-              and os.path.normcase(folder) in map(os.path.normcase, ps.PrivateState.default().known_contexts()),
+              and os.path.normcase(hs.canonical(folder)) in map(os.path.normcase, ps.PrivateState.default().known_contexts()),
               "its private state is untouched")
         check(console.state(console.Session())["recent"] == [], "Recent stays cleared for a later console")
         console.open_context(console.Session(), {"path": other})
-        check(console.state(session)["recent"] == [other],
+        check(console.state(session)["recent"] == canon(other),
               "opening an Agent Context again lists it again, and only it")
         shutil.rmtree(folder)
         shutil.rmtree(other)
@@ -290,16 +297,15 @@ def case_recent_console_only() -> None:
         mg.check(by_check)
         known = set(map(os.path.normcase, ps.PrivateState.default().known_contexts()))
         check(filed.get("result") == "pending"
-              and {os.path.normcase(f) for f in (by_mcp, by_propose)} <= known,
+              and {os.path.normcase(f) for f in canon(by_mcp, by_propose)} <= known,
               "MCP and charter propose made private state for their folders")
         # State an earlier Charter made, by any route, before Recent was limited.
-        from app import host_state as hs
         key = os.path.join(root, "contexts", hs.location_key(hs.canonical(legacy)))
         os.makedirs(key)
         with open(os.path.join(key, "context.json"), "w", encoding="utf-8") as fh:
             json.dump({"version": 1, "folder": hs.canonical(legacy)}, fh)
         listed = console.state(console.Session())["recent"]
-        check(listed == [opened, legacy],
+        check(listed == canon(opened, legacy),
               "Recent: the console-opened context, then the earlier entry; never MCP, propose or check")
 
         def records() -> dict:
@@ -313,14 +319,37 @@ def case_recent_console_only() -> None:
         console.state(console.Session())
         check(records() == before, "listing Recent rewrites, clears or removes nothing")
         console.open_context(session, {"path": by_mcp})
-        check(console.state(session)["recent"] == [by_mcp, opened, legacy],
+        check(console.state(session)["recent"] == canon(by_mcp, opened, legacy),
               "a folder MCP made state for is listed once the console opens it, first")
         console.clear_recent(session, {})
         check(console.state(session)["recent"] == [], "Clear removes the earlier entry with the rest")
         console.open_context(session, {"path": legacy})
-        check(console.state(session)["recent"] == [legacy], "opening the earlier entry lists it again")
+        check(console.state(session)["recent"] == canon(legacy), "opening the earlier entry lists it again")
         for folder in (opened, by_mcp, by_propose, by_check, legacy):
             shutil.rmtree(folder)
+
+
+def case_folder_name() -> None:
+    print("\nthe header and rail name an Agent Context by its folder's name; Diagnostics gives its path")
+    for path, windows, name in (
+            ("/Users/me/work/ctx", False, "ctx"), ("/Users/me/work/ctx/", False, "ctx"),
+            ("/a/b\\c", False, "b\\c"), ("/", False, "/"),
+            ("C:\\Users\\me\\Client Work\\ctx", True, "ctx"), ("C:\\Users\\me\\ctx\\", True, "ctx"),
+            ("C:/Users/me/ctx", True, "ctx"), ("\\\\server\\share\\team\\ctx", True, "ctx"),
+            ("C:\\", True, "C:\\"), ("C:", True, "C:")):
+        check(console.folder_name(path, windows) == name,
+              f"{'Windows' if windows else 'POSIX'} {path!r} is named {name!r}")
+    with isolated_private_state():
+        folder = context()
+        session = console.Session()
+        console.open_context(session, {"path": folder})
+        st = console.state(session)
+        check(st["folder_name"] == os.path.basename(hs.canonical(folder)) and st["root"] == hs.canonical(folder),
+              "an open Agent Context's state carries its folder name beside its full path")
+        check(console.diagnostics(session)["folder"] == hs.canonical(folder)
+              and console.diagnostics(console.Session())["folder"] == "",
+              "Diagnostics gives the open Agent Context's exact folder, and none while none is open")
+        shutil.rmtree(folder)
 
 
 def case_recent_order() -> None:
@@ -330,10 +359,10 @@ def case_recent_order() -> None:
         session = console.Session()
         for folder in (first, second, third):
             console.open_context(session, {"path": folder})
-        check(console.state(session)["recent"] == [third, second, first],
+        check(console.state(session)["recent"] == canon(third, second, first),
               "the last opened heads Recent, then the one before it")
         console.open_context(session, {"path": first})
-        check(console.state(console.Session())["recent"] == [first, third, second],
+        check(console.state(console.Session())["recent"] == canon(first, third, second),
               "opening an Agent Context again moves it to the top, for a later console too")
         created = os.path.join(tempfile.mkdtemp(prefix="charter-new-"), "new")
         os.makedirs(created)
@@ -474,6 +503,10 @@ def case_server() -> None:
         try:
             status, body = _http(port, "GET", "/")
             check(status == 200 and b"Charter" in body, "the page is served")
+            check(b'<link rel="icon" href="data:,">' in body,
+                  "the page declares an empty icon, so a browser asks for none")
+            status, body = _http(port, "GET", "/favicon.ico")
+            check(status == 204 and body == b"", "a browser that asks for an icon anyway gets none, never a 404")
             status, _ = _http(port, "GET", "/workspace.js")
             check(status == 404, "the surfaces page script is gone")
             status, body = _http(port, "GET", "/api/state", header=False)
@@ -1134,6 +1167,7 @@ def run() -> int:
     case_import_duplicate()
     case_recent_console_only()
     case_recent_order()
+    case_folder_name()
     case_change_set_count()
     case_server()
     case_command_route()

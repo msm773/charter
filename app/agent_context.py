@@ -35,7 +35,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .docs import LIFECYCLE, REQUIRED, VALID_AUTHORITY, Document, parse_front_matter
+from .docs import (FENCE, LIFECYCLE, REQUIRED, VALID_AUTHORITY, Document, is_front_matter_fence,
+                   parse_front_matter)
 
 CONTEXT_MAP = "AGENT-CONTEXT.md"
 METADATA = ".agent-context.json"
@@ -715,6 +716,18 @@ def _scan_authoritative(root: str, rel_dir: str, issues: List[Dict[str, Any]],
     return found
 
 
+# Front-matter keys that only governance metadata uses. A block naming any of
+# them is a governing document's front matter, however incomplete; a block with
+# none, such as a page's `layout` or a lone `title`, is not.
+GOVERNANCE_MARKERS = ("id", "authority", "status")
+
+
+def _unclosed_front_matter(text: str) -> bool:
+    """Whether `text` opens a front-matter block that no fence closes."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return bool(lines) and lines[0] == FENCE and not any(is_front_matter_fence(l) for l in lines[1:])
+
+
 def _document_problems(doc: Document) -> List[str]:
     problems = []
     missing = [k for k in REQUIRED if not doc.meta.get(k)]
@@ -820,6 +833,20 @@ def examine(root: str) -> Examination:
             document_errors = True
             continue
         meta, body = parse_front_matter(text)
+        if meta is None and _unclosed_front_matter(text):
+            document_errors = True
+            issues.append(_issue(DOCUMENT, "This file starts a front-matter block with `---` but "
+                                           "never closes it, so Charter can't read its governance "
+                                           "metadata.", rel,
+                                 "Close the block with a `---` line after its metadata, or move "
+                                 "the file out of the Agent Context."))
+            continue
+        if meta and "id" not in meta and any(k in meta for k in GOVERNANCE_MARKERS):
+            # Governance front matter that is incomplete, not missing: judged with
+            # the documents, so each missing field and invalid value is named.
+            parsed.append(Document(path=rel, meta=meta, body=body))
+            texts[rel] = text
+            continue
         if not meta or "id" not in meta:
             issues.append(_issue(STRAY, "This Markdown file has no governance front matter, so it "
                                         "is not a governing document.", rel,

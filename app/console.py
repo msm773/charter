@@ -166,6 +166,25 @@ def _active_change_sets(folder: str) -> int:
                and d.get("state") not in (changeset.APPLIED, changeset.ABANDONED))
 
 
+def folder_name(path: str, windows: Optional[bool] = None) -> str:
+    """The final folder name of `path`, by this platform's rules unless
+    `windows` says which: a trailing separator is ignored, a backslash
+    separates only on Windows (elsewhere it may be part of a name), and a path
+    with no final name, such as `/` or `C:\\`, is given whole. The header and
+    rail name the open Agent Context by it; its full path stays where precision
+    matters (UI Standards)."""
+    import ntpath
+    import posixpath
+    windows = (os.name == "nt") if windows is None else windows
+    flavour = ntpath if windows else posixpath
+    seps = "\\/" if windows else "/"
+    trimmed = path.rstrip(seps)
+    if windows and trimmed.endswith(":"):
+        trimmed = ""  # `C:` is a drive, not a folder name
+    name = flavour.basename(trimmed) if trimmed else ""
+    return name or path
+
+
 def state(session: Session) -> Dict[str, Any]:
     base = {"pdf_support": convert.pdf_available(), "folder_picker": folder_picker_available(),
             "confirm_phrase": au.CONFIRM_PHRASE}
@@ -195,7 +214,8 @@ def state(session: Session) -> Dict[str, Any]:
                      "stale": sum(1 for p in listed["pending"] + listed["imported"] if p["stale"])}
     except (OSError, ps.PrivateStateError):
         proposals = {"pending": 0, "imported": 0, "unexpected": 0, "stale": 0}
-    return dict(base, open=True, root=folder, project_name=status["name"], status=status,
+    return dict(base, open=True, root=folder, folder_name=folder_name(folder),
+                project_name=status["name"], status=status,
                 proposals=proposals, change_sets={"active": _active_change_sets(folder)},
                 recovered=recovered, issues=exam.issues,
                 documents=_documents(folder, cs, exam),
@@ -445,8 +465,8 @@ def stage(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     # A leading heading suggests the title, but stays in the text as written,
     # as an accepted proposal's body keeps it: the document keeps its section.
     heading, _rest = convert.strip_leading_title(markdown)
-    if front:
-        notes.append(_front_matter_note(front))
+    # What became of the front matter is said once, by the page's own note
+    # beside Title and Scope, from `front_matter`: never again among `notes`.
     return {"filename": filename, "kind": convert.extension(filename).lstrip(".").upper(),
             "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
             "markdown": markdown, "notes": notes,
@@ -454,15 +474,6 @@ def stage(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
             "suggested_scope": (front or {}).get("scope") or "",
             "front_matter": None if front is None else
             {"removed": True, "used": front["used"], "dropped": front["dropped"]}}
-
-
-def _front_matter_note(front: Dict[str, Any]) -> str:
-    used = " and ".join(front["used"])
-    said = ((f"Its {used} are offered below as editable suggestions." if len(front["used"]) > 1
-             else f"Its {used} is offered below as an editable suggestion.")
-            if used else "It offered no usable one-line title or scope.")
-    dropped = (" Not carried over: " + ", ".join(front["dropped"]) + "." if front["dropped"] else "")
-    return "Front matter at the top of the file was removed. " + said + dropped
 
 
 # --- plans and applying ---------------------------------------------------------------------
@@ -605,9 +616,16 @@ def unexpected(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     name = body.get("name")
     cs = ps.PrivateState.default().for_context(folder)
     try:
-        return {"name": name, "text": apx.unexpected_text(cs, str(name or ""))}
-    except (ValueError, OSError):
-        raise ApiError("There is no such unexpected record.")
+        return {"name": name, "regular": True, "text": apx.unexpected_text(cs, str(name or ""))}
+    except apx.NotRegular as exc:
+        # Listed, but not a file: say what it is rather than that it is missing.
+        return {"name": name, "regular": False, "text": None, "message": str(exc)}
+    except ValueError:
+        raise ApiError("There is no such unexpected record. It may have been removed; "
+                       "choose Agent Proposals to look again.")
+    except OSError as exc:
+        raise ApiError(f"Charter couldn't read this record ({exc.strerror or exc}). "
+                       "It is left unchanged.")
 
 
 def acknowledge(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -720,7 +738,10 @@ def diagnostics(session: Session) -> Dict[str, Any]:
     else:
         on_path_text = "not found: `charter` is not on PATH for new programs"
     return {"identity": ident, "relation": identity.RELATION.get(ident.get("context_map_relation") or "", ""),
-            "on_path": {"this_copy": command["state"] == connect.COMMAND_READY, "text": on_path_text}}
+            "on_path": {"this_copy": command["state"] == connect.COMMAND_READY, "text": on_path_text},
+            # The open Agent Context's exact folder: the header and rail name it
+            # by its folder's name only (UI Standards).
+            "folder": session.folder if exam is not None else ""}
 
 
 def command(session: Session) -> Dict[str, Any]:

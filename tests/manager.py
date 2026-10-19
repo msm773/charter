@@ -108,9 +108,11 @@ def case_open() -> None:
               and [d["path"] for d in status["governing"]] == ["authoritative/a.md",
                                                                "authoritative/b.md"],
               "a valid folder opens, serving agents, with its governing documents")
-        check(not status["outside"]["known"] and "origin of its current content is unknown"
-              in status["outside"]["message"],
-              "a context this computer has no record of is of unknown origin")
+        check(not status["outside"]["known"] and "how this content was created or changed"
+              in status["outside"]["message"] and "origin is unknown" in status["outside"]["message"]
+              and "record of this Agent Context" not in status["outside"]["message"],
+              "content this computer has no record of is of unknown origin, said of the content, "
+              "not of the folder the person just opened")
         check(status["agents_served"] and not status["outside"]["changed_outside"]
               and not status["outside"]["paths"] and not status["rebuild"]["available"]
               and status["state"] == "valid",
@@ -418,6 +420,9 @@ def case_incomplete_context() -> None:
         check(status["rebuild"]["available"] and status["headline_detail"] == mg.INCOMPLETE_READY
               and status["rebuild"]["needs_project_name"],
               "with only valid documents, Rebuild is offered and asks for the project name")
+        waiting = mg.rebuild_plan(ready).problems
+        check(mg.NO_SETTINGS_YET in waiting and not any("lost" in p for p in waiting),
+              "its preview says it has no settings yet, never that settings were lost")
         rules = read(ready, "authoritative/rules.md")
         check(raises(au.ActionRefused, rebuild, ready, "Rules project"),
               "Rebuild applies only once the person also confirms the agent guidance")
@@ -429,6 +434,9 @@ def case_incomplete_context() -> None:
         check(status["agents_served"] and read(ready, "authoritative/rules.md") == rules
               and [d["path"] for d in status["governing"]] == ["authoritative/rules.md"],
               "Rebuild generates the map and metadata, and the document governs unchanged")
+        os.remove(os.path.join(ready, ".agent-context.json"))
+        check(mg.SETTINGS_UNREADABLE in mg.rebuild_plan(ready).problems,
+              "once it has a map, missing metadata is said to make its recorded settings unusable")
 
         empty = authored({})
         status = mg.open_context(empty)

@@ -428,6 +428,12 @@ def _finish(plan: Plan, exam: ac.Examination) -> Plan:
 LAST_KNOWN = "Last known on this computer."
 INITIALIZING = ("No settings for this Agent Context are known on this computer, so they are being "
                 "initialized: name the project, and confirm or change the default guidance.")
+NO_SETTINGS_YET = ("This Agent Context has no `.agent-context.json` yet, so it has no settings to "
+                   "keep. Name the project, and confirm or change the agent guidance offered here, "
+                   "to rebuild.")
+SETTINGS_UNREADABLE = ("`.agent-context.json` is missing or unreadable, so the settings it recorded "
+                       "can't be used. Confirm or change the project name and agent guidance "
+                       "settings offered here to rebuild.")
 
 
 def rebuild_plan(folder: str, project_name: Optional[str] = None,
@@ -435,7 +441,8 @@ def rebuild_plan(folder: str, project_name: Optional[str] = None,
                  state: Optional[ps.PrivateState] = None) -> Plan:
     """Preview Rebuild Agent Context.
 
-    When `.agent-context.json` is missing or unreadable, its settings are lost.
+    When `.agent-context.json` is missing or unreadable — or, in an incomplete
+    Agent Context, was never generated — no recorded settings can be used.
     The preview then offers the last valid settings known on this computer, or
     the defaults when there are none, and Rebuild applies only with the project
     name and every guidance setting given explicitly by the person: offered
@@ -462,9 +469,9 @@ def rebuild_plan(folder: str, project_name: Optional[str] = None,
             "project_name": "", "agent_guidance": ac.default_guidance(),
             "source": "defaults", "label": INITIALIZING}
         if project_name is None or agent_guidance is None:
-            problems.append("`.agent-context.json` is missing or unreadable, so its settings are "
-                            "lost. Confirm or change the project name and agent guidance "
-                            "settings offered here to rebuild.")
+            # A folder that never had a map never had settings: nothing was lost.
+            problems.append(NO_SETTINGS_YET if ac.is_incomplete_context(cs.folder)
+                            else SETTINGS_UNREADABLE)
         elif not isinstance(agent_guidance, dict) or set(agent_guidance) != set(ac.GUIDANCE_IDS):
             problems.append("Give every agent guidance setting: "
                             + ", ".join(f"`{g}`" for g in ac.GUIDANCE_IDS) + ".")

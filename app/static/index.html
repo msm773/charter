@@ -7,6 +7,8 @@
      API request carries it back, so only the real console page is answered. -->
 <meta name="charter-console-token" content="__CHARTER_CONSOLE_TOKEN__">
 <title>Charter</title>
+<!-- No icon of its own: an empty one, so the browser asks the console for none. -->
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -45,7 +47,8 @@
 
 <main id="main" tabindex="-1">
   <div class="topbar">
-    <span class="path" id="barPath">No Agent Context open</span>
+    <!-- The open Agent Context, by its project name and folder name. -->
+    <span class="bar-context" id="barPath">No Agent Context open</span>
     <span id="barState"></span>
     <!-- What the default `charter` command runs: independent of the context's status. -->
     <span id="barCommand"></span>

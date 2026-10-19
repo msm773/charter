@@ -54,6 +54,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -580,11 +581,49 @@ def forget_decided(cs: ps.ContextState) -> None:
 
 # --- reviewing ---------------------------------------------------------------------------
 
+class NotRegular(Exception):
+    """An unexpected record that is not a regular file: it has no text to show
+    or import. Its message says what it is."""
+
+
+def _not_regular(path: str) -> str:
+    """What the entry at `path` is when it is not a regular file — "a folder",
+    "a link" or "a special file" — or "" for a regular file. Never follows a
+    link."""
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return ""
+    if stat.S_ISREG(mode):
+        return ""
+    if stat.S_ISDIR(mode):
+        return "a folder"
+    if stat.S_ISLNK(mode):
+        return "a link"
+    return "a special file"
+
+
+def _read_regular(path: str, limit: int) -> bytes:
+    """Up to `limit` bytes of the regular file at `path`. A link is never
+    followed, and a folder, pipe or other special file is never opened for
+    reading — which could read another file or wait forever: each raises
+    NotRegular, as does an entry replaced by one while it is opened."""
+    kind = _not_regular(path)
+    if kind:
+        raise NotRegular(kind)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) \
+        | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise NotRegular("a special file")
+        return fh.read(limit)
+
+
 def _read_record(path: str) -> Tuple[Optional[bytes], Optional[Dict[str, Any]]]:
     try:
-        with open(path, "rb") as fh:
-            data = fh.read(MAX_INPUT + 1)
-    except OSError:
+        data = _read_regular(path, MAX_INPUT + 1)
+    except (NotRegular, OSError):
         return None, None
     try:
         record = json.loads(data.decode("utf-8"))
@@ -604,10 +643,11 @@ def records(cs: ps.ContextState) -> Tuple[List[Dict[str, Any]], List[Dict[str, A
         path = os.path.join(folder, name)
         if name.startswith(".") and name.endswith(".tmp"):
             continue  # a write still in progress, or cut short: Charter's own
-        data, record = _read_record(path)
+        regular = not _not_regular(path)
+        data, record = _read_record(path) if regular else (None, None)
         entry = ledger.get(name[:-5]) if name.endswith(".json") else None
         why = ""
-        if not os.path.isfile(path) or os.path.islink(path):
+        if not regular:
             why = "It is not a regular file."
         elif data is None or record is None:
             why = "It cannot be read as a proposal record."
@@ -616,7 +656,8 @@ def records(cs: ps.ContextState) -> Tuple[List[Dict[str, Any]], List[Dict[str, A
         elif hashlib.sha256(data).hexdigest() != entry.get("sha256"):
             why = "It changed after Charter filed it."
         if why:
-            unexpected.append({"name": name, "bytes": len(data or b""), "why": why})
+            unexpected.append({"name": name, "bytes": len(data or b""), "why": why,
+                               "regular": regular})
         else:
             filed.append(dict(record, source=entry.get("source", AGENT)))
     return filed, unexpected
@@ -638,12 +679,18 @@ def staleness(proposal: Dict[str, Any], target: Target) -> List[str]:
 
 
 def unexpected_text(cs: ps.ContextState, name: str, limit: int = 65536) -> str:
-    """An unexpected file's text, for the person to inspect. Read only."""
+    """An unexpected file's text, for the person to inspect. Read only. A record
+    that is not a regular file raises NotRegular, saying what it is."""
     folder = cs.path(ps.PROPOSALS, PENDING)
     if name not in os.listdir(folder) or "/" in name or "\\" in name:
         raise ValueError("No such unexpected record.")
-    with open(os.path.join(folder, name), "rb") as fh:
-        return fh.read(limit).decode("utf-8", "replace")
+    try:
+        data = _read_regular(os.path.join(folder, name), limit)
+    except NotRegular as exc:
+        raise NotRegular(f"This record is {exc}, not a regular file, so it has no contents to show or "
+                         "import. Charter leaves it unchanged; to remove it from the list, delete "
+                         "it yourself.") from None
+    return data.decode("utf-8", "replace")
 
 
 def first_heading(body: Any) -> str:
