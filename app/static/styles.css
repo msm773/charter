@@ -385,6 +385,8 @@ input[aria-invalid="true"] { border-color: var(--brick); }
 .connect-hosts label { display: flex; gap: .4rem; align-items: center; font-size: .92rem; cursor: pointer; }
 .connect-host:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr); gap: .5rem; min-width: 0; }
 .connect-shells { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: .6rem 1rem; min-width: 0; }
+/* Command-Line Access: each shell's whole instruction, one under another. */
+.connect-command .connect-shells { grid-template-columns: minmax(0, 1fr); }
 .connect-status code, .connect-method code { overflow-wrap: anywhere; }
 .connect-method { display: grid; grid-template-columns: minmax(0, 1fr); gap: .6rem; min-width: 0;
   padding-top: .7rem; border-top: 1px solid var(--rule); }

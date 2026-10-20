@@ -2742,18 +2742,19 @@ for (const file of ["markdown.js", "app.js"]) {
     const sections = [["connectMcp", "connectMcpTitle", "connectMcpToggle", "connectMcpDetails", "Connect Agents with MCP (Recommended)"],
       ["connectPointerSection", "connectPointerTitle", "connectPointerToggle", "connectPointerDetails", "Add Project Instructions (Recommended)"],
       ["connectVerify", "connectTestTitle", "connectTestToggle", "connectTestDetails", "Test the Connection (Optional)"],
+      ["connectCommand", "connectCommandTitle", "connectCommandToggle", "connectCommandDetails", "Connect Agents with Command-Line Access"],
       ["connectOther", "connectFilesTitle", "connectFilesToggle", "connectFilesDetails", "Connect Agents with File Access"]];
-    check(sections.every(([s], i) => $("connectBody").children.indexOf($(s)) === i) && $("connectBody").children.length === 4,
-      `${name}: four sections, in order: MCP, project instructions, the connection test, file access`);
+    check(sections.every(([s], i) => $("connectBody").children.indexOf($(s)) === i) && $("connectBody").children.length === 5,
+      `${name}: five sections, in order: MCP, project instructions, the connection test, Command-Line Access, file access`);
     check(sections.every(([s, t, tg, d, label]) => $(s).getAttribute("aria-labelledby") === t && $(t).tagName === "H3"
         && $(t).children.length === 1 && $(t).firstChild === $(tg) && $(tg).classList.contains("disclosure-toggle")
         && $(tg).textContent === label && $(tg).getAttribute("aria-controls") === d && $(s).children[1] === $(d)),
       `${name}: each section's heading is its own toggle, all alike`);
     check(sections.map(([, , tg, d]) => [$(tg).getAttribute("aria-expanded"), $(d).hidden].join()).join(" | ")
-        === "true,false | false,true | false,true | false,true",
+        === "true,false | false,true | false,true | false,true | false,true",
       `${name}: only the MCP section is open at first`);
     check(!v.querySelectorAll(".connect-reveal").length && !/Show text|Hide text/.test(v.textContent)
-      && !rule(css, ".connect-reveal-body") && v.querySelectorAll(".disclosure-toggle").length === 4,
+      && !rule(css, ".connect-reveal-body") && v.querySelectorAll(".disclosure-toggle").length === 5,
       `${name}: no Show text or Hide text controls remain`);
     const server = JSON.parse($("connectConfig").textContent).mcpServers[payload.server_name];
     const launched = [server.command].concat(server.args).join(" ");
@@ -2769,7 +2770,7 @@ for (const file of ["markdown.js", "app.js"]) {
       && $("connectVerifyPrompt").textContent === payload.verify_prompt,
       `${name}: Codex's TOML, the startup pointer and the verification prompt are shown exactly`);
     check(v.querySelectorAll("h3").map((h) => h.textContent).join(" | ")
-        === "Connect Agents with MCP (Recommended) | Add Project Instructions (Recommended) | Test the Connection (Optional) | Connect Agents with File Access"
+        === "Connect Agents with MCP (Recommended) | Add Project Instructions (Recommended) | Test the Connection (Optional) | Connect Agents with Command-Line Access | Connect Agents with File Access"
       && !/1\. Connect an agent|2\. Confirm it works|Optional file access|Send this in a new agent session/.test(v.textContent)
       && !$("connectProposals") && !$("connectVisible") && !$("connectTrustDetails") && !$("connectReadme")
       && !$("connectCheckToggle") && !$("connectCheckDetails") && !$("connectVscodeDetails") && !$("connectVscodeItem")
@@ -2832,6 +2833,33 @@ for (const file of ["markdown.js", "app.js"]) {
       `${name}: the choice outlives a redraw`);
     $("connectHostChoice-claude").checked = true;
     $("connectHostChoice-claude").dispatch("change");
+    const commandLabels = payload.command_access.map((s) => s.label).join();
+    check($("connectCommandDetails").hidden && $("connectCommandToggle").getAttribute("aria-expanded") === "false"
+      && $("connectCommandToggle").parentNode.tagName === "H3"
+      && insideOf($("connectCommand"), $("connectBody")) && !insideOf($("connectCommand"), $("connectMcp"))
+      && commandLabels === (name === "Windows" ? "PowerShell,Command Prompt,Bash" : "Terminal"),
+      `${name}: Command-Line Access is a closed section of its own, after the MCP setup and before file access`);
+    await click($("connectCommandToggle"));
+    const commandParts = $("connectCommandDetails").children;
+    check(!$("connectCommandDetails").hidden && $("connectCommandToggle").getAttribute("aria-expanded") === "true"
+      && commandParts.length === 2 && commandParts[0] === $("connectCommandNote")
+      && $("connectCommandNote").textContent === "Add this to your project’s instruction file, such as CLAUDE.md or AGENTS.md. Do not put it in AGENT-CONTEXT.md or anywhere inside the Agent Context folder."
+      && $("connectCommandNote").querySelectorAll("code").map((c) => c.textContent).join() === "CLAUDE.md,AGENTS.md,AGENT-CONTEXT.md"
+      && $("connectCommandDetails").querySelectorAll("p").length === 1,
+      `${name}: it opens to one placement note, file names as code, and no other words`);
+    check(payload.command_access.every((s) => $("connectCommand-" + s.shell).textContent === s.instruction
+        && s.instruction.indexOf(s.command) !== -1 && s.instruction.indexOf(payload.folder) !== -1
+        && !!$("btnCopyConnectCommand-" + s.shell)
+        && $("btnCopyConnectCommand-" + s.shell).textContent === "Copy instruction"
+        && insideOf($("connectCommand-" + s.shell), $("connectCommandDetails"))
+        && (payload.command_access.length > 1
+          ? $("connectCommand-" + s.shell + "Block").querySelector("h4").textContent === s.label
+          : !$("connectCommand-" + s.shell + "Block").querySelector("h4"))
+        && !/(^|[\s'"])(charter|py|cmd)(\s|$)/.test(s.command) && / read --context /.test(s.command)),
+      `${name}: one instruction per shell, shown exactly with its own Copy instruction button, each running this copy by full path with the folder's full path`);
+    check(!/PATH|add-to-path|Charter command|telemetry|wizard|Next step/.test($("connectCommandDetails").textContent),
+      `${name}: no PATH guidance, telemetry or wizard`);
+    await click($("connectCommandToggle"));
     check($("connectFilesDetails").hidden && $("connectFilesToggle").getAttribute("aria-expanded") === "false"
       && $("connectInstruction").textContent === payload.instruction
       && payload.instruction.indexOf(payload.map) !== -1 && /AGENT-CONTEXT\.md$/.test(payload.map)

@@ -431,6 +431,42 @@ def verified(exam: ac.Examination, rel: str) -> str:
     return text
 
 
+def answer(name: str, args: Dict[str, str],
+           exam: ac.Examination) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """The text and structured payload answering one tool call from the
+    validated `exam`, and what it resolved: the document and heading, for
+    activity. Shared with `charter read` (`app.read`), which answers the same
+    four requests from the same validated context."""
+    if name == "get_context":
+        text = verified(exam, MAP)
+        return text, {"path": MAP, "text": text}, {}
+    governing = sorted(exam.documents, key=lambda d: d.path)
+    if name == "list_governing_documents":
+        documents = [{"id": d.id, "title": d.title,
+                      "scope": str(d.meta.get("scope") or ""), "path": d.path}
+                     for d in governing]
+        payload = {"documents": documents}
+        return json.dumps(payload, ensure_ascii=False, indent=2), payload, {}
+    doc = resolve(governing, args["document"])
+    text = verified(exam, doc.path)
+    fresh = parse_document(doc.path, text)
+    if fresh is None or fresh.id != doc.id:
+        raise Refusal("changed-during-read", doc=doc)
+    if name == "get_document":
+        payload = {"id": doc.id, "title": doc.title,
+                   "scope": str(doc.meta.get("scope") or ""), "path": doc.path,
+                   "text": text}
+        return text, payload, {"doc": doc}
+    try:
+        level, heading, section = find_section(text, args["heading"])
+    except Refusal as refusal:
+        refusal.doc = refusal.doc or doc
+        raise
+    payload = {"id": doc.id, "title": doc.title, "path": doc.path,
+               "heading": heading, "level": level, "text": section}
+    return section, payload, {"doc": doc, "heading": heading}
+
+
 # --- the server ------------------------------------------------------------------------
 
 class Server:
@@ -564,36 +600,7 @@ class Server:
 
     def _answer(self, name: str, args: Dict[str, str],
                 exam: ac.Examination) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-        """The text and structured payload answering one call from the validated
-        `exam`, and what it resolved: the document and heading, for activity."""
-        if name == "get_context":
-            text = verified(exam, MAP)
-            return text, {"path": MAP, "text": text}, {}
-        governing = sorted(exam.documents, key=lambda d: d.path)
-        if name == "list_governing_documents":
-            documents = [{"id": d.id, "title": d.title,
-                          "scope": str(d.meta.get("scope") or ""), "path": d.path}
-                         for d in governing]
-            payload = {"documents": documents}
-            return json.dumps(payload, ensure_ascii=False, indent=2), payload, {}
-        doc = resolve(governing, args["document"])
-        text = verified(exam, doc.path)
-        fresh = parse_document(doc.path, text)
-        if fresh is None or fresh.id != doc.id:
-            raise Refusal("changed-during-read", doc=doc)
-        if name == "get_document":
-            payload = {"id": doc.id, "title": doc.title,
-                       "scope": str(doc.meta.get("scope") or ""), "path": doc.path,
-                       "text": text}
-            return text, payload, {"doc": doc}
-        try:
-            level, heading, section = find_section(text, args["heading"])
-        except Refusal as refusal:
-            refusal.doc = refusal.doc or doc
-            raise
-        payload = {"id": doc.id, "title": doc.title, "path": doc.path,
-                   "heading": heading, "level": level, "text": section}
-        return section, payload, {"doc": doc, "heading": heading}
+        return answer(name, args, exam)
 
     def _ok(self, text: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         result: Dict[str, Any] = {"content": [{"type": "text", "text": text}], "isError": False}

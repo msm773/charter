@@ -4,7 +4,8 @@ Everything here is text for a person to copy: an MCP configuration that runs
 `charter mcp --context <folder>`, the `claude mcp add` command that registers it
 for one project, Codex's TOML entry, a check command, a startup pointer for a
 project's own instruction file, a prompt that verifies an agent retrieved the
-context, and an instruction that points a file-reading agent at
+context, the `charter read` instruction for an agent without MCP that can run
+commands, and an instruction that points a file-reading agent at
 `AGENT-CONTEXT.md`. Producing it reads the folder's status and, on Windows,
 this user's PATH; it writes nothing anywhere. Charter never
 creates or changes `AGENTS.md`, `CLAUDE.md`, a host's configuration or an MCP
@@ -54,6 +55,10 @@ POINTER_NOTE = ("Add this to your project’s instruction file: `CLAUDE.md` for 
                 "anywhere inside the Agent Context folder.")
 
 FILES_NOTE = "Requires direct read access to the Agent Context folder. See the README for guidance."
+
+# Agent Context as the Project Asset §9: where Command-Line Access text goes, and nothing else.
+COMMAND_NOTE = ("Add this to your project’s instruction file, such as `CLAUDE.md` or `AGENTS.md`. "
+                "Do not put it in `AGENT-CONTEXT.md` or anywhere inside the Agent Context folder.")
 
 # Never says a host is configured, or that an agent retrieved or follows the context.
 READY = "This context is ready to connect."
@@ -188,6 +193,46 @@ def mcp_pointer(name: str) -> str:
     ]) + "\n"
 
 
+def command_instruction(command: str) -> str:
+    """For a project's instruction file: the one `charter read` command, by full
+    paths, that a shell-capable agent without MCP runs for the governing context
+    (Agent Context as the Project Asset §9)."""
+    from .read import END_MARKER
+    return "\n".join([
+        "This project's governing context is an Agent Context, served by Charter. Before beginning "
+        "work, run this command, which prints its context map:",
+        "",
+        f"  {command}",
+        "",
+        "Then retrieve the governing documents relevant to your task by running the same command "
+        "with `--list`, or with `--document <path-or-id>`, adding `--heading <heading>` for one "
+        "section. Treat only the governing documents it lists as authoritative.",
+        "",
+        f"Rely on its output only when its last line is `{END_MARKER}`. If it refuses, do what it "
+        "says. If the command cannot run, or reports that Charter context is unavailable, stop and "
+        "tell the person: do not read the Agent Context's files instead.",
+    ]) + "\n"
+
+
+def command_access(parts: List[str], windows: bool) -> List[Dict[str, str]]:
+    """The Command-Line Access instruction for each shell an agent may run it in,
+    each running `parts` — this copy by its full paths, then `read --context
+    <folder>` — exactly as listed. Never a bare `charter`, `py` or `cmd /c`.
+    A shell that cannot carry the paths exactly is not offered."""
+    if any(not p or any(ord(c) < 32 for c in p) for p in parts):
+        return []
+    forms = []
+    if windows:
+        forms.append(("powershell", "PowerShell", "& " + command_line(parts, powershell_arg)))
+        if not any(CMD_UNSAFE & set(p) for p in parts):
+            forms.append(("cmd", "Command Prompt", command_line(parts, cmd_arg)))
+        forms.append(("bash", "Bash", command_line(parts, posix_arg)))
+    else:
+        forms.append(("posix", "Terminal", command_line(parts, posix_arg)))
+    return [{"shell": shell, "label": label, "command": command,
+             "instruction": command_instruction(command)} for shell, label, command in forms]
+
+
 VERIFY_PROMPT = (
     "Before doing anything else, retrieve this project's Agent Context. Tell me the project name "
     "it gives, and which of its governing documents apply to this task: [describe a small task]. "
@@ -249,7 +294,8 @@ def connection(folder: str, windows: Optional[bool] = None, registry: Any = None
         command, launch = os.path.join(launchers, on_path.NAME), args
     unusable = [p for p in [command] + launch if not p or any(ord(c) < 32 for c in p)]
     if unusable:
-        return dict(files, connect="files-only", status_text=FILES_ONLY, mcp_limitation=(
+        return dict(files, connect="files-only", status_text=FILES_ONLY, command_access=[],
+                    command_note=COMMAND_NOTE, mcp_limitation=(
             "A path the agent host would need holds a line break or another control character, "
             "which no host configuration can carry exactly. No MCP configuration is offered. "
             "Agents can read the folder's files as below; for MCP access, use a folder whose path "
@@ -283,4 +329,8 @@ def connection(folder: str, windows: Optional[bool] = None, registry: Any = None
                                                                if windows else posix_arg),
         config=config, config_text=json.dumps(config, indent=2, ensure_ascii=False) + "\n",
         config_note=CONFIG_NOTE, install_note=INSTALL_NOTE,
-        shells=shells)
+        shells=shells,
+        # Command-Line Access (§9): the same program, `read` and the folder's full path.
+        command_access=command_access([command] + launch[:len(launch) - len(args)]
+                                      + ["read", "--context", folder], windows),
+        command_note=COMMAND_NOTE)

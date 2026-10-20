@@ -312,6 +312,43 @@ def case_payload() -> None:
               and win["map"] in win["instruction"] and "AGENT-CONTEXT.md" in win["instruction"]
               and "authoritative" in win["instruction"],
               "the file-access instruction points at this folder's AGENT-CONTEXT.md")
+        print("\nCommand-Line Access: `charter read` by this copy's full paths, with the folder's full path")
+        read_parts = [PY, script, "read", "--context", folder]
+        access = {s["shell"]: s for s in win["command_access"]}
+        check([s["label"] for s in win["command_access"]] == ["PowerShell", "Command Prompt", "Bash"]
+              and access["powershell"]["command"] == "& " + connect.command_line(read_parts, connect.powershell_arg)
+              and access["cmd"]["command"] == connect.command_line(read_parts, connect.cmd_arg)
+              and access["bash"]["command"] == connect.command_line(read_parts, connect.posix_arg),
+              "Windows: PowerShell, Command Prompt and Bash, each the Python running Charter, this "
+              "copy's charter.py, then `read --context <folder>`, quoted for that shell")
+        posix_launcher = os.path.join(on_path.LAUNCHERS, "charter")
+        check([s["label"] for s in posix["command_access"]] == ["Terminal"]
+              and posix["command_access"][0]["command"]
+              == connect.command_line([posix_launcher, "read", "--context", folder], connect.posix_arg),
+              "elsewhere: one terminal command, this copy's launcher by its full path")
+        for s in win["command_access"] + posix["command_access"]:
+            words_in = s["command"].replace("'", " ").replace('"', " ").split()
+            check(s["instruction"].count(s["command"]) == 1 and os.path.isabs(folder)
+                  and not {"charter", "py", "python", "python3", "cmd", "/c"} & set(words_in)
+                  and "--context" in words_in and " . " not in s["command"],
+                  f"{s['label']}: the instruction carries the one command, with no bare `charter`, "
+                  "`py` or `cmd /c` and the folder's absolute path")
+            check(all(p in s["instruction"] for p in (
+                    "Before beginning work, run this command", "`--list`", "`--document <path-or-id>`",
+                    "`--heading <heading>`", "Treat only the governing documents it lists as authoritative",
+                    "`<<<END CHARTER READ>>>`", "If the command cannot run, or reports that Charter "
+                    "context is unavailable, stop and tell the person",
+                    "do not read the Agent Context's files instead"))
+                  and not re.search(r"propose|PATH|add-to-path|telemetry|activity", s["instruction"]),
+                  f"{s['label']}: run it before work, retrieve the relevant documents, trust only the "
+                  "marked-complete output, and stop and tell the person — never fall back to the files")
+        check(win["command_note"] == posix["command_note"] == connect.COMMAND_NOTE
+              == "Add this to your project’s instruction file, such as `CLAUDE.md` or `AGENTS.md`. "
+                 "Do not put it in `AGENT-CONTEXT.md` or anywhere inside the Agent Context folder.",
+              "one placement note: the project's own instruction file, never the Agent Context folder")
+        broken = connect.connection(folder, windows=True, registry=FakeRegistry(), python="C:\\Py\nthon\\python.exe")
+        check(broken["connect"] == "files-only" and broken["command_access"] == [],
+              "a path no command line can carry exactly gets no Command-Line Access command")
         words = shown_wording(folder)
         check(not re.search(r"\b(" + "|".join(FORBIDDEN_WORDS) + r")\b", words, re.I)
               and re.search(r"\b(" + "|".join(FORBIDDEN_WORDS) + r")\b", "a cgu surface", re.I)
@@ -601,6 +638,60 @@ def case_real_shells() -> None:
         shutil.rmtree(base)
 
 
+def _git_bash() -> str:
+    """Git for Windows' bash, the shell Claude Code runs commands in on Windows,
+    never WSL's `bash.exe`, which is a different computer's shell."""
+    for candidate in (shutil.which("bash") or "",
+                      os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe")):
+        if candidate and os.path.isfile(candidate) and "system32" not in candidate.lower():
+            return candidate
+    return ""
+
+
+def case_command_access_shells() -> None:
+    print("\nCommand-Line Access commands, typed into the real shells")
+    if os.name != "nt":
+        print("  (not Windows: the terminal command is quoted by shlex, checked in the payload case)")
+        return
+    with isolated_private_state():
+        base = tempfile.mkdtemp(prefix="charter-cla-shells-")
+        folder = os.path.join(base, "Ctx $x 'q' (a) é,b;c")
+        mg.create(folder, "Shell Test")
+        folder = mg.check(folder)["path"]
+        # A stand-in copy whose charter.py prints the arguments it is given: the
+        # commands run nothing of Charter's and read no private state.
+        copy = os.path.join(base, "Charter Copy (x)")
+        os.makedirs(copy)
+        shutil.copy(_argv_printer(base), os.path.join(copy, "charter.py"))
+        c = connect.connection(folder, windows=True, registry=FakeRegistry(), launchers=copy,
+                               python=sys.executable)
+        access = {s["shell"]: s["command"] for s in c["command_access"]}
+        expected = ["read", "--context", folder]
+        env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+        ps = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + access["powershell"]],
+                            capture_output=True, env=env)
+        check(json.loads(ps.stdout.decode("utf-8") or "null") == expected,
+              "PowerShell: `read --context <folder>` arrives exactly, spaces, quotes and $ included")
+        cp = subprocess.run(f'cmd /d /s /c "chcp 65001>nul & {access["cmd"]}"', capture_output=True, env=env)
+        check(json.loads(cp.stdout.decode("utf-8") or "null") == expected,
+              "Command Prompt: it arrives exactly")
+        bash = _git_bash()
+        if bash:
+            gb = subprocess.run([bash, "-c", access["bash"]], capture_output=True, env=env)
+            check(json.loads(gb.stdout.decode("utf-8") or "null") == expected,
+                  "Git Bash: it arrives exactly, Windows paths and all")
+        else:
+            print("  (Git Bash not found: its command is quoted by shlex, checked in the payload case)")
+        odd = os.path.join(base, "R&D 100%")
+        mg.create(odd, "Odd")
+        c = connect.connection(mg.check(odd)["path"], windows=True, registry=FakeRegistry(),
+                               launchers=copy, python=sys.executable)
+        check([s["shell"] for s in c["command_access"]] == ["powershell", "bash"],
+              "a folder Command Prompt cannot type exactly (& or %): no Command Prompt form")
+        shutil.rmtree(base)
+
+
 def case_release_and_checkout() -> None:
     print("\na release and a development checkout: the same full-path setup, spaces and all")
     base = tempfile.mkdtemp(prefix="charter-copies-")
@@ -659,6 +750,7 @@ def run() -> int:
     case_not_ready()
     case_writes_nothing()
     case_real_shells()
+    case_command_access_shells()
     case_release_and_checkout()
     case_host_runs_it()
     print(f"\n{OK} All Connect agents checks passed.")

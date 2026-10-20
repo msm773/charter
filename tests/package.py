@@ -52,7 +52,7 @@ BUILD_FILE = "app/build.json"
 # Every suite, run against the extracted release. Each module under tests/
 # that is not a helper is one of these; `inspect` checks that it is.
 SUITES = ("agent_context", "private_store", "host_state", "authority", "manager", "console",
-          "launchers", "mcp", "activity", "propose", "intake", "changeset", "impact",
+          "launchers", "mcp", "read", "activity", "propose", "intake", "changeset", "impact",
           "connect", "git_compare", "ui", "brand")
 HELPERS = ("harness", "_launch", "package")
 OK = "ok"
@@ -254,8 +254,9 @@ def verify(release: str, bundle: str, run_suites: bool = True) -> int:
     help_text = subprocess.run([sys.executable, os.path.join(root, "charter.py"), "--help"],
                                cwd=tempfile.gettempdir(), capture_output=True, text=True)
     check(help_text.returncode == 0 and help_text.stdout.startswith("usage: charter ")
-          and "{serve,check,mcp,compare,propose,add-to-path}" in help_text.stdout,
-          "the extracted `python charter.py --help` runs from any folder: serve, check, mcp, compare, propose, add-to-path")
+          and "{serve,check,mcp,compare,read,propose,add-to-path}" in help_text.stdout,
+          "the extracted `python charter.py --help` runs from any folder: serve, check, mcp, compare, read, "
+          "propose, add-to-path")
     empty = tempfile.mkdtemp(prefix="charter-not-a-context-")
     checked_out = subprocess.run([sys.executable, os.path.join(root, "charter.py"), "check", "--context",
                                   "."], cwd=empty, capture_output=True, text=True,

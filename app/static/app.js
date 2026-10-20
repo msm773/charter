@@ -1859,9 +1859,10 @@ function connectHostPanels(c) {
   };
 }
 
-/* Connect Agents is four sections with one disclosure pattern — a heading
+/* Connect Agents is five sections with one disclosure pattern — a heading
    that is its own toggle — in this order: MCP, open; then project
-   instructions, the connection test, and file access, closed. A closed
+   instructions, the connection test, Command-Line Access, and file access,
+   closed. A closed
    section shows nothing of its text. What a person opens or closes stays so
    across redraws in this session. */
 const connectOpen = {};
@@ -1912,6 +1913,19 @@ function connectMcp(c) {
   return mcp;
 }
 
+/* Command-Line Access: for an agent without MCP that can run commands. Where
+   the instruction goes, then one instruction per shell, each running this copy
+   by its full paths with the folder's full path. Closed at first. */
+function connectCommand(c) {
+  const shells = c.command_access.length > 1;
+  return connectSection({ section: "connectCommand", title: "connectCommandTitle", toggle: "connectCommandToggle",
+    body: "connectCommandDetails" }, "Connect Agents with Command-Line Access", [
+    el("p", { class: "hint", id: "connectCommandNote" }, withCode(c.command_note)),
+    el("div", { class: "connect-shells" }, c.command_access.map((s) => copyBlock("connectCommand-" + s.shell,
+      shells ? s.label : "", s.instruction, "Copy instruction", ""))),
+  ], false, "connect-command");
+}
+
 /* File access: the other route, closed unless it is the one route offered. */
 function connectFiles(c, open) {
   return connectSection({ section: "connectOther", title: "connectFilesTitle", toggle: "connectFilesToggle",
@@ -1952,6 +1966,7 @@ function drawConnect() {
     body: "connectTestDetails" }, "Test the Connection (Optional)", [
     copyBlock("connectVerifyPrompt", "", c.verify_prompt, "Copy prompt", ""),
   ], false, "connect-test"));
+  if ((c.command_access || []).length) box.appendChild(connectCommand(c));
   box.appendChild(connectFiles(c, c.connect === "files-only"));
 }
 

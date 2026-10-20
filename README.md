@@ -41,10 +41,10 @@ The result is a shared foundation for your agents, maintained by the people resp
 
 - **A local console** to review candidates and governing changes.
 - **An Agent Context folder** containing governing Markdown documents and their generated map.
-- **Read-only MCP retrieval**, or direct file access for agents that can't use MCP.
+- **Read-only MCP retrieval**; for an agent that can run commands but can't use MCP, the same checked retrieval through `charter read`; or direct file access.
 - **Command-line tools** for local operations and optional agent proposals.
 
-Through MCP, Charter checks the Agent Context before serving it; direct file reads do not have that validation. Charter detects when the map no longer matches its documents. Where it has a prior local record, the console identifies the change as outside Charter’s workflow; otherwise, it reports the context’s origin as unknown. It can provide context and ask agents to use it, **but cannot guarantee an agent will follow it**.
+Through MCP and `charter read`, Charter checks the Agent Context before serving it; direct file reads do not have that validation. Charter detects when the map no longer matches its documents. Where it has a prior local record, the console identifies the change as outside Charter’s workflow; otherwise, it reports the context’s origin as unknown. It can provide context and ask agents to use it, **but cannot guarantee an agent will follow it**.
 
 Charter runs locally with Python 3.9+ and works alongside Git without managing your commits or branches. It requires no hosted service, remote API, embeddings, or AI provider.
 
@@ -217,6 +217,7 @@ You'll create a context, make your first documents govern, then connect an agent
 Before choosing the folder, decide how the agent will access it:
 
 - **MCP (recommended):** Your agent retrieves the context through Charter's local read-only server.
+- **Command-line access:** Your agent can run commands but can't use MCP. It runs `charter read`, which checks the context as MCP does.
 - **File access:** Your agent reads the Agent Context folder directly.
 
 **Using MCP (recommended)**
@@ -233,6 +234,10 @@ The Agent Context folder doesn't need to exist yet. Its parent folder (`C:\work`
 An Agent Context folder cannot be inside another Agent Context folder. Charter recognizes an Agent Context folder by the presence of `AGENT-CONTEXT.md`.
 
 With MCP, the agent retrieves governing documents through Charter and doesn't need ordinary filesystem access to the context folder.
+
+**Using command-line access**
+
+The agent runs Charter on this computer, so keep the Agent Context beside the project, as for MCP. The command reads the folder with the agent's own permissions, so an agent that can run commands can usually also read the folder directly: command-line access gives it a checked route, not a barrier.
 
 **Using file access**
 
@@ -304,7 +309,10 @@ Choose how your agent will read its context:
 | Route | Best for | What happens |
 | --- | --- | --- |
 | **MCP (recommended)** | Claude Code, Codex, and other MCP hosts | The host starts Charter; agents retrieve validated governing documents through four read-only tools |
+| **Command-line access** | Agents that can run commands on this computer but can't use MCP | Agents run `charter read`, which validates the context exactly as MCP does and answers the same four requests |
 | **File access** | Hosts that can read the Agent Context folder | Agents read files directly, without Charter observing or validating the read |
+
+Prefer them in that order: MCP whenever the host supports it, command-line access when it doesn't, and file access only when neither is possible.
 
 Charter never changes an agent host's configuration for you: it shows the commands and settings, and you apply them.
 
@@ -316,7 +324,7 @@ Charter never changes an agent host's configuration for you: it shows the comman
 
 **To connect an agent:**
 
-1. Open **Connect Agents**. It has four sections, each opened or closed from its heading: **Connect Agents with MCP (Recommended)** starts open; **Add Project Instructions (Recommended)**, **Test the Connection (Optional)**, and **Connect Agents with File Access** start closed. Sections you open stay open while you move around the console.
+1. Open **Connect Agents**. It has five sections, each opened or closed from its heading: **Connect Agents with MCP (Recommended)** starts open; **Add Project Instructions (Recommended)**, **Test the Connection (Optional)**, **Connect Agents with Command-Line Access**, and **Connect Agents with File Access** start closed. Sections you open stay open while you move around the console.
 2. Under **Choose an agent host**, select **Claude Code**, **Codex**, or **Other MCP host**.
 3. Copy the command or configuration it shows for this context, and apply it as described for your host below.
 4. Restart the host as described, and start a new session.
@@ -451,9 +459,56 @@ To check that the host loaded it, start a new session: in Claude Code, run `/mem
 
 The pointer is guidance, not enforcement: hosts give it to the agent as instructions to follow, and the agent may still not call Charter. Some Claude Code subagents, such as its built-in Explore and Plan agents, start without your project instructions, so they may not see the pointer.
 
+#### Agents that run commands (without MCP)
+
+When the agent's host can't use MCP but the agent can run commands on this computer, give it **command-line access**: it runs `charter read`, which checks the Agent Context exactly as the MCP server does before answering. Open **Connect Agents with Command-Line Access**, choose **Copy instruction** for the shell your agent runs commands in—on Windows **PowerShell**, **Command Prompt**, or **Bash** (Git Bash, which Claude Code uses on Windows); elsewhere the terminal—and add it to your project's instruction file, such as `CLAUDE.md` or `AGENTS.md`. Never put it inside the Agent Context folder. It reads, with your paths (PowerShell shown):
+
+```text
+This project's governing context is an Agent Context, served by Charter. Before beginning work, run this command, which prints its context map:
+
+  & C:\Python312\python.exe C:\Tools\Charter\charter.py read --context C:\work\my-project-context
+
+Then retrieve the governing documents relevant to your task by running the same command with `--list`, or with `--document <path-or-id>`, adding `--heading <heading>` for one section. Treat only the governing documents it lists as authoritative.
+
+Rely on its output only when its last line is `<<<END CHARTER READ>>>`. If it refuses, do what it says. If the command cannot run, or reports that Charter context is unavailable, stop and tell the person: do not read the Agent Context's files instead.
+```
+
+The command runs **this copy** of Charter by its full paths and names the Agent Context by its full path, so PATH plays no part. If you move the Agent Context or Charter, or change the Python Charter runs with, copy the instruction again.
+
+**What the agent runs.** Four forms, each the same request as one MCP tool, and each with `--json` for one JSON object instead of text:
+
+| Command | Returns | MCP equivalent |
+| --- | --- | --- |
+| `charter read --context <folder>` | `AGENT-CONTEXT.md`, unchanged | `get_context` |
+| `charter read --context <folder> --list` | each governing document's id, title, scope, and path | `list_governing_documents` |
+| `charter read --context <folder> --document <path-or-id>` | one governing document, in full | `get_document` |
+| `charter read --context <folder> --document <path-or-id> --heading <heading>` | one heading's section of that document | `get_document_section` |
+
+`--context` is required every time and must be the Agent Context's **full path**. Charter never uses the current folder, a relative path, an environment variable, Recent, or a folder it remembers, and never searches for an Agent Context.
+
+**Output.** Text output is exactly what the MCP tool returns, followed by a last line that is exactly `<<<END CHARTER READ>>>`. Output that doesn't end with that line was cut off, for example by the agent host's output limit, and the agent mustn't rely on it; asking for one `--document` or `--heading` at a time keeps output short. With `--json`, the command prints exactly one JSON object and no marker: `"result": "served"` with the same fields the MCP tool returns, or `"result": "refused"` with `"reason"` and `"message"`. Nothing is ever written to standard error.
+
+**When it refuses.** A text refusal is one line, `<reason>: <message>`, and serves no context material:
+
+| Exit code | `reason` | Meaning |
+| --- | --- | --- |
+| 2 | `bad-arguments` | No Agent Context was named, it wasn't named by its full path, or the options aren't one of the four forms. The agent is told to run the exact command its instructions give and not to search for an Agent Context. |
+| 1 | `context-invalid` | The folder is missing or can't be read, its files no longer match the approved map, it has no usable map, or a Charter write to it was interrupted. |
+| 1 | `context-unclean` | The folder holds a file or folder that isn't part of the Agent Context. |
+| 1 | `map-outdated` | The map was generated by an earlier Charter: choose **Rebuild Agent Context…** in the console. |
+| 1 | `charter-outdated` | The copy of Charter the command runs is older than the one that generated the map. The context is fine: update that copy of Charter. |
+| 1 | `changed-during-read` | A file changed while it was being read. The agent runs the exact same command **once** more; if that doesn't succeed, it stops and tells you. |
+| 1 | `not-governing`, `unsafe-path`, `heading-missing`, `heading-ambiguous` | The document or heading asked for isn't one Charter lists. |
+
+Whenever the Agent Context itself is unavailable—every `context-invalid`, `context-unclean`, `map-outdated`, `charter-outdated`, and `changed-during-read` refusal—the message ends by telling the agent not to rely on Charter context it retrieved earlier in the session and to tell you. No message tells it to read the folder's files instead. `bad-arguments` doesn't say this, since no Agent Context was named.
+
+**Compared with file access.** With command-line access, every call checks the whole folder, reads each file it returns once, verifies it against the hash the map records, and answers only if nothing changed meanwhile; the agent computes nothing. With file access, the agent reads whatever is in the folder and must check the hashes itself. Neither is a security boundary: an agent that can run commands can usually read the folder directly too.
+
+`charter read` writes nothing anywhere: no private state, no activity record, no Recent entry. It has no proposal route: an agent that read the context this way returns its proposal JSON for you to [import](#importing-a-proposal).
+
 #### File-based agents (without MCP)
 
-When MCP is unavailable, give the agent **read access** to the Agent Context folder (preferably read-only), including when the folder sits outside the main workspace. Open **Connect Agents with File Access**, choose **Copy agent instruction**, and add it to your host's project instructions. It reads, with your paths:
+When neither MCP nor command-line access is available, give the agent **read access** to the Agent Context folder (preferably read-only), including when the folder sits outside the main workspace. Open **Connect Agents with File Access**, choose **Copy agent instruction**, and add it to your host's project instructions. It reads, with your paths:
 
 ```text
 This project's governing context is an Agent Context, in this folder:
@@ -484,6 +539,7 @@ To connect again, start the console from Charter's new location, open **Connect 
   If you registered it with `--scope project` or `--scope user`, add the same option to `claude mcp remove`. `claude mcp list` then shows the new path and whether Claude Code can start it.
 - **Codex:** in `config.toml`, replace the existing `[mcp_servers.charter-my-project]` table, its `command` and `args` lines included, with the one **Copy Codex configuration** gives you. Don't add a second table with the same name: TOML doesn't allow one, so the file would no longer be valid. Then quit and reopen Codex.
 - **Other MCP hosts:** replace the server's existing entry rather than adding another.
+- **Command-line access:** replace the instruction in your project's instruction file with the one **Connect Agents with Command-Line Access** gives you now.
 
 Optional terminal-based proposals are separate from context retrieval; see [Agent Proposals](#agent-proposals).
 
@@ -739,7 +795,7 @@ It prints one JSON object. Its `result`, and the command's exit code:
 
 A proposal is a duplicate only when its JSON text is character for character the same as one still awaiting review in the same Agent Context—whitespace and a byte-order mark included—whether that one was filed by an agent or imported. Any difference makes it a new proposal, and a proposal already accepted or rejected never counts.
 
-The agent needs `charter` on its PATH and permission to write Charter's private state. An agent that read the context through MCP, or can't run Charter, returns the JSON instead, for you to [import](#importing-a-proposal): `AGENT-CONTEXT.md` tells it so, since `charter` found on PATH might be another copy. If the Agent Context's map format doesn't match the Charter that runs the command—the map is out of date, or that Charter is—it files nothing and returns `unavailable`, not retryable, saying which.
+The agent needs `charter` on its PATH and permission to write Charter's private state. An agent that read the context through MCP or `charter read`, or can't run Charter, returns the JSON instead, for you to [import](#importing-a-proposal): `AGENT-CONTEXT.md` tells it so, since `charter` found on PATH might be another copy. If the Agent Context's map format doesn't match the Charter that runs the command—the map is out of date, or that Charter is—it files nothing and returns `unavailable`, not retryable, saying which.
 
 **Proposal JSON.** `AGENT-CONTEXT.md` gives agents the complete format; in brief:
 
@@ -821,6 +877,7 @@ A pull, merge, or checkout that leaves the context internally consistent is serv
 - **`Permission denied` running `charter` (macOS/Linux):** The launcher has lost its executable mode, for example after unpacking the release with a tool that drops file permissions. Check with the Python that runs Charter and this copy's `charter.py`, each by its full path, such as `/usr/bin/python3 /home/you/tools/charter/charter.py add-to-path --check`: it prints the `chmod +x` command that fixes it.
 - **Another `charter` comes first on PATH:** the top bar shows **Charter command needs attention**, and `add-to-path --check`, `charter mcp --check` and **Diagnostics** say which copy runs. A terminal, and an agent running `charter propose`, would reach that other copy; agent hosts set up with Connect Agents start this copy by its full path. Choose **Charter command needs attention** for the fix: remove the folder it names from your PATH, run the command it gives, and open a new terminal. To check again, use this copy's own command, by its full paths, as `add-to-path --check` gives it: for example `& C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path --check` in PowerShell, or `/home/you/tools/charter/charter add-to-path --check` on macOS/Linux; see [Install Charter](#install-charter), step 5. The console checks the PATH it started with: quit it and start it again from the new terminal before its top bar can show **Charter command ready**.
 - **After updating Charter, an agent says the context can't be served:** the agent's message names the cause. `map-outdated`: the map was generated by an earlier version of Charter—open the Agent Context in the console and choose **Rebuild Agent Context…**. `server-outdated`: the agent host is still running an older Charter than the one that generated the map—the context is fine; quit and reopen the agent host, or connect it again if Charter moved. An older Charter that predates these messages says only `context-invalid`; if `charter check --context <folder>` says agents are served, restart the agent host.
+- **`charter read` refuses, or the agent can't run it:** its answer names the reason (the first word of a text answer, `reason` in JSON); see [Agents that run commands](#agents-that-run-commands-without-mcp) for each. `bad-arguments` usually means the instruction was edited or copied incompletely: copy it again from **Connect Agents with Command-Line Access**. If the shell can't find the program, Charter or its Python has moved: copy the instruction again from the console of the copy you now use. `charter check --context <folder>` says whether the folder can be served.
 - **Port 8765 occupied:** Run `charter serve --port 8766` and open `http://127.0.0.1:8766`.
 - **"Charter's private state folder is no longer private to this user" (macOS/Linux):** Charter keeps its [private state](#private-state) in a folder only your account may use, and stops if other accounts can reach it, for example `(mode 755)` after a backup restore or a copy. Check that the folder is yours, then make it private again; this changes only its permissions:
 
@@ -841,6 +898,7 @@ A pull, merge, or checkout that leaves the context internally consistent is serv
 Charter controls the context it serves and changes performed through its own workflow. **It cannot override the permissions your agent host gives an agent.** Keep these boundaries in mind:
 
 - 🔒 **MCP reads are checked.** An agent receives only the map and governing documents. Before every retrieval, Charter checks the folder and refuses it when invalid, unclean, or mid-change. MCP exposes **no write tools**.
+- 🔒 **`charter read` is checked the same way.** It answers only from a valid, clean folder, verified on every call, and returns no private state. It writes nothing.
 - **Direct file reads bypass Charter's checks.** An agent with file access reads what's present; Charter neither observes nor validates that read.
 - **Private work stays out of agent-facing Charter interfaces.** Candidates, archived documents, Agent Proposals, change-set drafts and receipts, review material, and MCP activity live in Charter's private local state—not the Agent Context.
 - ⚠️ **Host permissions still matter.** If a host allows an agent to read or write files, run commands, or reach the local console under your account, that agent may reach private state or edit the context directly. Charter can't stop those actions. Use the host's permissions or sandbox, and keep the context outside writable agent folders.
@@ -928,6 +986,7 @@ charter serve [<agent-context-folder>] [--port 8765]
 charter check --context <folder>
 charter mcp --context <folder> [--check]
 charter compare --context <folder> --base <revision> [--prompt | --packet <destination> [--accept-git-warning]] [--json]
+charter read --context <absolute-folder> [--list | --document <path-or-id> [--heading <heading>]] [--json]
 charter propose --context .
 charter add-to-path [--check]
 charter --version
@@ -937,6 +996,7 @@ charter --version
 - **`charter check`** — Reports whether a context folder is valid and served, and which copy of Charter checked it. Makes no changes or private state; exits **0** if agents are served, **1** otherwise.
 - **`charter mcp`** — Runs the read-only stdio MCP server; `--check` provides diagnostics.
 - **`charter compare`** — Compares the Agent Context with its folder at a Git base you name and prepares advisory review material. Reads Git only; exits **0** when a comparison was made, **1** when it couldn't be made or the requested material couldn't be produced, **2** for an unusable command line.
+- **`charter read`** — Command-line access for an agent without MCP: prints the map, the governing-document list, one document, or one section, validated as MCP validates it. `--context` must be a full path. Text ends with the line `<<<END CHARTER READ>>>`; `--json` prints one JSON object. Writes nothing; exits **0** when served, **1** when refused, **2** for `bad-arguments`. See [Agents that run commands](#agents-that-run-commands-without-mcp).
 - **`charter propose`** — Submits one Agent Proposal as JSON on standard input.
 - **`charter --version`** — Says which copy of Charter this is: version, build, launcher, `charter.py` and Python paths, and map format.
 - **`charter add-to-path`** — On Windows, adds `charter` to your user PATH; `--check` reports what a new program would run. On macOS/Linux, changes nothing: it prints the `export` line to add and the shell startup file to add it to; `--check` reports `This shell runs:` using the current shell's PATH, and says what to do if that isn't this copy. On macOS/Linux, both exit **0** only when this shell already runs this copy as `charter`, and **1** otherwise.

@@ -107,8 +107,8 @@ Git.
   longer renders, or a folder with no document left. Valid outside changes are
   reported until acknowledged.
 - **`charter` command:** `serve`, `check` (read-only), `mcp`, `compare`
-  (read-only), `propose` and `add-to-path`, from the `charter`, `charter.cmd`
-  and `charter.py` launchers.
+  (read-only), `read` (read-only), `propose` and `add-to-path`, from the
+  `charter`, `charter.cmd` and `charter.py` launchers.
 - **MCP** serves the Agent Context folder directly: four read-only tools,
   revalidation on every call, eight fixed refusal codes, and refusal while a
   write is interrupted.
@@ -455,6 +455,25 @@ Git.
   remains, to stop and tell the person rather than reread and continue. Version
   2 contexts are out of date (`map-outdated`) until a Rebuild, which these
   rules allow because no document's approved text changes.
+- **Command-Line Access: `charter read`.** Three access routes, in order of
+  preference: MCP, then `charter read` for an agent that can run commands but
+  can't use MCP, then file access. `charter read --context <full path>` prints
+  the map; `--list`, `--document <path-or-id>` and `--heading <heading>` answer
+  the other three MCP tools' requests, from the same validation and byte-checked
+  reads on every call. Text ends with the line `<<<END CHARTER READ>>>`, so
+  output cut short is recognizable; `--json` prints one JSON object instead.
+  `--context` must be a full path: omitted, empty or relative is
+  `bad-arguments` (exit 2), and Charter never uses the current folder, an
+  environment variable, Recent or a search. Refusals use the governed codes,
+  with `charter-outdated` for a copy older than the map; every unavailable
+  context tells the agent not to rely on earlier Charter context and to tell
+  the person, and `changed-during-read` allows one retry. Nothing on standard
+  error; exit 0 served, 1 refused. It writes no private state, activity or
+  Recent entry, and has no proposal route. **Connect Agents with Command-Line
+  Access** gives the instruction for a project's instruction file, one per
+  shell (PowerShell, Command Prompt and Bash on Windows; the terminal
+  elsewhere), running this copy by its full paths with the folder's full path.
+  MCP's own behaviour is unchanged.
 - **Removed:** governance workspaces, published surfaces, bindings,
   publication and repair, registration and identity, configuration migration,
   capability records, every Git write (commits, recovery commits, branch

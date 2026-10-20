@@ -5,6 +5,8 @@
     charter mcp --context <agent-context-folder> [--check]
     charter compare --context <agent-context-folder> --base <revision>
                     [--prompt | --packet <destination> [--accept-git-warning]] [--json]
+    charter read --context <absolute-agent-context-folder>
+                 [--list | --document <path-or-id> [--heading <heading>]] [--json]
     charter propose --context .              (one Agent Proposal, as JSON on stdin)
     charter add-to-path [--check]
     charter --version
@@ -127,7 +129,12 @@ def parser() -> argparse.ArgumentParser:
     from . import compare
     compare.add_parser(sub)
 
-    # Listed for --help only; `main` hands it to `propose` before parsing.
+    # Listed for --help only; `main` hands these to `read` and `propose` before parsing.
+    sub.add_parser("read", add_help=False,
+                   help="read this Agent Context's map or a governing document, checked as MCP "
+                        "checks it, for an agent without MCP: `charter read --context "
+                        "<absolute-folder> [--list | --document <path-or-id> [--heading "
+                        "<heading>]] [--json]`")
     sub.add_parser("propose", add_help=False,
                    help="submit an Agent Proposal for a person's review: `charter propose --context .`"
                         " with one JSON object on stdin")
@@ -158,6 +165,11 @@ def main(argv=None) -> int:
     words = list(sys.argv[1:] if argv is None else argv)
     if words == ["--version"]:
         return cmd_version()
+    if words[:1] == ["read"]:
+        # Command-Line Access: exactly one answer on stdout and nothing on
+        # stderr, for a bad command line too, so argparse never sees it.
+        from . import read
+        return read.main(words[1:])
     if words[:1] == ["propose"]:
         # Its own contract: exactly one JSON result on stdout and nothing on
         # stderr, for a bad command line too, so argparse never sees it.
