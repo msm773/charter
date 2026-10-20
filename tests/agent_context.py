@@ -19,6 +19,7 @@ Agent Context as the Project Asset §2, §6, §7 and the Product Specification
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -605,29 +606,67 @@ def case_map() -> None:
           "the map tells an agent what a `duplicate` result means")
 
     print("\nmap-format versions: older is out of date, newer means this Charter is")
-    check(ac.MAP_FORMAT_VERSION == 4 and ac.OLDER_MAP_FORMATS == (1, 2, 3),
-          "this Charter generates map-format version 4 and recognizes versions 1, 2 and 3 as older")
+    check(ac.MAP_FORMAT_VERSION == 5 and ac.OLDER_MAP_FORMATS == (1, 2, 3, 4),
+          "this Charter generates map-format version 5 and recognizes versions 1 to 4 as older")
     root = context(guidance={g: True for g in ac.GUIDANCE_IDS})
     exam = ac.examine(root)
-    check(exam.valid and exam.map_format == ac.FORMAT_CURRENT and exam.recorded_map_format == 4,
-          "a context it generates records map-format version 4")
+    check(exam.valid and exam.map_format == ac.FORMAT_CURRENT and exam.recorded_map_format == 5,
+          "a context it generates records map-format version 5")
     current = ac.render_map(exam.settings, exam.documents)
     rule = ("Write each proposal as ASCII JSON: encode every non-ASCII character with\n"
             "valid JSON Unicode escape sequences such as `" + chr(92) + "uXXXX`.")
+    mcp_route = ("If you received this file through MCP, submit each proposal with the\n"
+                 "`submit_proposal` tool of the same MCP server, giving the fields below as\n"
+                 "its arguments rather than as JSON text. Do not run `charter propose`, even if\n"
+                 "you know the folder that holds this file, and do not search for the folder\n"
+                 "or guess. If the tool returns `unavailable` with `retryable` `true`, submit\n"
+                 "the exact same proposal once more: `duplicate` then means it is already\n"
+                 "awaiting review, so stop. If the tool is not listed or is denied, returns\n"
+                 "`unavailable` that is not retryable, or the retry returns neither `pending`\n"
+                 "nor `duplicate`, do not file the proposal any other way: return the\n"
+                 "complete proposal JSON object in your response, so that a person can import\n"
+                 "it, and after a retry tell the person that it may already be awaiting\n"
+                 "review.\n\n"
+                 "If you received this file through any other tool, do not run\n"
+                 "`charter propose`, even if you know the folder that holds it, and do not\n"
+                 "search for the folder or guess: return the complete proposal JSON object in\n"
+                 "your response, so that a person can import it.")
     check(current.count("If you received this file through `charter read`, submit each proposal to\n"
                         "the `charter propose` command your project instructions give, exactly as\n"
                         "given. If they give none, do not run `charter propose`: return the complete\n"
                         "proposal JSON object in your response") == 1
           and current.count(rule) == 1
-          and current.count("If you received this file through MCP or any tool other than "
-                            "`charter read`,\ndo not run `charter propose`, even if you know the folder") == 1
-          and current.count("\ncharter propose --context .\n") == 1
-          and "Either command prints one JSON object" in current,
-          "version 4: a `charter read` agent uses the command its project instructions give, or "
-          "returns JSON when they give none; the folder route stays `--context .`; MCP and any other "
-          "tool return JSON; and JSON sent to `charter propose` is ASCII JSON, the rule verbatim")
+          and current.count("\ncharter propose --context .\n") == 1,
+          "version 5 keeps the command-line and folder routes: a `charter read` agent uses the "
+          "command its project instructions give, or returns JSON when they give none; the folder "
+          "route stays `--context .`; and JSON sent to `charter propose` is ASCII JSON, verbatim")
+    check(current.count(mcp_route) == 1
+          and "If you received this file through MCP or any tool other than" not in current
+          and current.count("Either command prints, and the `submit_proposal` tool returns, one JSON\n"
+                            "object whose `result` is:") == 1,
+          "version 5: an MCP agent submits with `submit_proposal`, retries a retryable `unavailable` "
+          "once, and returns JSON for import when the tool is missing, denied or fails again; any "
+          "other tool still returns JSON; the results mean the same for the command and the tool")
     check(not any(c in current.split("## Making an Agent Proposal")[1] for c in (":\\", "/home/", "/Users/")),
           "  the proposal instructions name no machine-specific path")
+    v4 = ac.render_map_version(exam.settings, exam.documents, 4)
+    check("submit_proposal" not in v4
+          and v4.count("If you received this file through MCP or any tool other than "
+                       "`charter read`,\ndo not run `charter propose`, even if you know the folder") == 1
+          and "Either command prints one JSON object whose `result` is:" in v4
+          and v4.count(rule) == 1 and "If you received this file through `charter read`" in v4,
+          "version 4 sent an MCP agent to return JSON for import, and had no `submit_proposal`")
+    # Exactly what the format-4 Charter rendered for these inputs: Regenerate map
+    # and stale-map recognition depend on reproducing every earlier format exactly.
+    fixed = ac.Settings.make("Proj | X — Ü", {g: True for g in ac.GUIDANCE_IDS})
+    pinned = {4: "09821893b25eab25cd2db3d1d4944fd871592fbf0d8139a7aca0a9f8e9616513",
+              3: "d2f89a34cb989c2efdd249ef18874c2f7673c5f42e61a8bf22b55261fe97667d",
+              1: "2920d7b159c79ba2d51251876c9280c1b8857965dc4a6e8447e49fbb66c3bad9"}
+    check(all(hashlib.sha256(ac.render_map_version(fixed, [], v).encode("utf-8")).hexdigest() == h
+              for v, h in pinned.items())
+          and hashlib.sha256(ac.render_legacy_map(fixed, []).encode("utf-8")).hexdigest()
+          == "91d0ed1a673020324fd852ae9f79f3898cb976416ac8662b24a1d935da0d503f",
+          "formats 4, 3 and 1, and the legacy map, are byte-for-byte what earlier Charter rendered")
     v3 = ac.render_map_version(exam.settings, exam.documents, 3)
     check("`charter read`" not in v3 and "ASCII JSON" not in v3
           and "If you received this file through MCP or another tool, do not run\n`charter propose`" in v3
@@ -636,7 +675,7 @@ def case_map() -> None:
     previous = ac.render_previous_map(exam.settings, exam.documents)
     check("Context-impact check before a proposal" in previous and "`duplicate`" not in previous
           and "and do not know the\nfolder that holds it" in previous
-          and "do not run `charter propose`, even if you know the folder" in current,
+          and "Do not run `charter propose`, even if\nyou know the folder" in current,
           "version 1 had the earlier headings, no duplicate result, and let an MCP agent run "
           "`charter propose`; later versions tell it not to")
     v2 = ac.render_map_version(exam.settings, exam.documents, 2)
@@ -655,8 +694,8 @@ def case_map() -> None:
               "offered, with its settings kept")
         for rel, text in ac.render_generated(exam.settings, exam.documents, exam.texts).items():
             write(root, rel, text)
-        check(ac.examine(root).valid and ac.examine(root).recorded_map_format == 4,
-              "  regenerated, it is current, in version 4, and valid again")
+        check(ac.examine(root).valid and ac.examine(root).recorded_map_format == 5,
+              "  regenerated, it is current, in version 5, and valid again")
     check(not any(ch.isdigit() for ch in ac.MAP_OUTDATED), "the message names no version number")
 
     with_map_format(root, ac.MAP_FORMAT_VERSION + 1)

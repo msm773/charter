@@ -98,7 +98,8 @@ def cmd_version() -> int:
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:
-    """Optional local MCP server over stdio, read-only; see `app.mcp`."""
+    """Optional local MCP server over stdio: read-only retrieval and Agent
+    Proposal submission; see `app.mcp`."""
     from . import mcp
     folder = os.path.abspath(os.path.expanduser(args.context))
     return mcp.check(folder) if args.check else mcp.run(folder)
@@ -133,8 +134,8 @@ def parser() -> argparse.ArgumentParser:
                    help="the Agent Context folder; `.` is the current folder")
     c.set_defaults(func=cmd_check)
 
-    m = sub.add_parser("mcp", help="serve this Agent Context to a local agent over MCP (stdio, "
-                                   "read-only)")
+    m = sub.add_parser("mcp", help="serve this Agent Context to a local agent over MCP (stdio: "
+                                   "read-only retrieval, and proposals filed for review)")
     m.add_argument("--context", required=True, metavar="FOLDER",
                    help="the Agent Context folder to serve; `.` is the current folder")
     m.add_argument("--check", action="store_true",

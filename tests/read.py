@@ -533,14 +533,15 @@ def case_shorthand() -> None:
             shutil.rmtree(path)
 
 
-def case_format_4_transition() -> None:
-    print("\nmap format 4: format 3 is out of date, Rebuild brings it current, older copies refuse it")
+def case_format_transition() -> None:
+    print("\nmap format 5: format 4 is out of date, Rebuild brings it current, older copies refuse it")
     with isolated_private_state():
         folder = fixture()
         code, text = in_process(["--context", folder])
         check(code == 0 and "If you received this file through `charter read`, submit each proposal to" in text
               and "Write each proposal as ASCII JSON" in text,
-              "a format-4 map, read through `charter read`, gives its proposal route and the ASCII JSON rule")
+              "a format-5 map, read through `charter read`, gives its own proposal route and the ASCII "
+              "JSON rule, unchanged")
         session_text = mcp.Server(folder, record=False)
         session_text.handle({"jsonrpc": "2.0", "id": 0, "method": "initialize",
                              "params": {"protocolVersion": "2025-06-18", "capabilities": {}}})
@@ -548,23 +549,19 @@ def case_format_4_transition() -> None:
                                      "params": {"name": "get_context", "arguments": {}}})["result"]
         served = reply["content"][0]["text"]
         tools = session_text.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-        check(not reply["isError"]
-              and "If you received this file through MCP or any tool other than `charter read`,\ndo not "
-                  "run `charter propose`" in served
-              and mcp.INSTRUCTIONS == ("This server gives read-only access to this Agent Context. Call "
-                                       "`get_context` before work, then use the listed document tools as "
-                                       "needed. Authority candidates, archives, and Agent Proposals are "
-                                       "not governing context.")
+        check(not reply["isError"] and served == text[:-len(MARKER) - 1]
+              and "If you received this file through MCP, submit each proposal with the\n"
+                  "`submit_proposal` tool" in served
               and [t["name"] for t in tools["result"]["tools"]] == ["get_context", "list_governing_documents",
-                                                                     "get_document", "get_document_section"],
-              "MCP is unchanged: the same instructions and four read-only tools, and the map sends an MCP "
-              "agent to return its proposal JSON for import")
+                                                                     "get_document", "get_document_section",
+                                                                     "submit_proposal"],
+              "MCP serves the same map, which sends an MCP agent to `submit_proposal`, the fifth tool")
 
-        with_map_format(folder, 3)
+        with_map_format(folder, 4)
         code, text = in_process(["--context", folder])
         check(code == 1 and text.startswith("map-outdated: ") and text.rstrip("\n").endswith(DO_NOT_RELY)
               and MARKER not in text,
-              "a format-3 context, under this format-4 Charter: `charter read` refuses `map-outdated`")
+              "a format-4 context, under this format-5 Charter: `charter read` refuses `map-outdated`")
         session = mcp.Server(folder, record=False)
         session.handle({"jsonrpc": "2.0", "id": 0, "method": "initialize",
                         "params": {"protocolVersion": "2025-06-18", "capabilities": {}}})
@@ -576,18 +573,19 @@ def case_format_4_transition() -> None:
                   for rel in (POLICY, "authoritative/a.md", "authoritative/b.md")}
         plan = mg.rebuild_plan(folder)
         status = mg.rebuild_apply(folder, plan.plan_id, True)
-        check(status["agents_served"] and status["map_format"]["recorded"] == 4
+        check(status["agents_served"] and status["map_format"]["recorded"] == 5
               and all(open(os.path.join(folder, *rel.split("/")), "rb").read() == data
                       for rel, data in before.items()),
-              "Rebuild brings it to format 4 and leaves every governing document byte-for-byte as it was")
+              "Rebuild brings it to format 5 and leaves every governing document byte-for-byte as it was")
         code, text = in_process(["--context", folder])
-        check(code == 0 and "If you received this file through `charter read`" in text,
-              "  after Rebuild, `charter read` serves the map with the new proposal route")
+        check(code == 0 and "If you received this file through `charter read`" in text
+              and "`submit_proposal` tool of the same MCP server" in text,
+              "  after Rebuild, `charter read` serves the map with every route")
 
-        # A copy of Charter that generates only format 3 — an agent host started
+        # A copy of Charter that generates only format 4 — an agent host started
         # before the update, or an old copy a project's instructions name.
         saved = ac.MAP_FORMAT_VERSION, ac.OLDER_MAP_FORMATS
-        ac.MAP_FORMAT_VERSION, ac.OLDER_MAP_FORMATS = 3, (1, 2)
+        ac.MAP_FORMAT_VERSION, ac.OLDER_MAP_FORMATS = 4, (1, 2, 3)
         try:
             code, text = in_process(["--context", folder])
             old_session = mcp.Server(folder, record=False)
@@ -598,10 +596,10 @@ def case_format_4_transition() -> None:
         finally:
             ac.MAP_FORMAT_VERSION, ac.OLDER_MAP_FORMATS = saved
         check(code == 1 and text.startswith("charter-outdated: ") and "update this copy of Charter" in text,
-              "a format-3 copy run by `charter read` refuses the rebuilt context: `charter-outdated`")
+              "a format-4 copy run by `charter read` refuses the rebuilt context: `charter-outdated`")
         check(old["isError"] and old["content"][0]["text"].startswith("server-outdated:")
               and "restart the agent host" in old["content"][0]["text"],
-              "  and a format-3 MCP server refuses it `server-outdated`, telling the person to restart the host")
+              "  and a format-4 MCP server refuses it `server-outdated`, telling the person to restart the host")
         shutil.rmtree(folder)
 
 
@@ -609,8 +607,8 @@ def case_readme() -> None:
     print("\nthe README describes map format 4, the three proposal routes and ASCII JSON")
     with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
         readme = fh.read()
-    check("This release generates map format 4" in readme and "map format 3" not in readme,
-          "updating: this release generates map format 4, and every Agent Context needs one Rebuild")
+    check("This release generates map format 5" in readme and "map format 4" not in readme,
+          "updating: this release generates map format 5, and every Agent Context needs one Rebuild")
     check("It has no proposal route" not in readme
           and "files proposals with the `charter propose` command in its instruction" in readme
           and "propose --context C:\\work\\my-project-context" in readme,
@@ -620,8 +618,10 @@ def case_readme() -> None:
           and "an agent returning proposal JSON for you to import doesn't need it" in readme,
           "ASCII JSON for `charter propose`: why, that Charter can't repair a corrupted `?`, and that "
           "the import route is unaffected")
-    check("| through MCP, or any other tool | nothing: it returns the proposal JSON" in readme,
-          "MCP agents still return proposal JSON for import")
+    check("| through MCP | the `submit_proposal` tool of the same MCP server" in readme
+          and "| through any other tool | nothing: it returns the proposal JSON" in readme
+          and "submits exactly the same proposal once more" in readme,
+          "MCP agents submit with `submit_proposal`, retrying once; any other tool returns JSON for import")
     check("**Read an Agent Context from your terminal.**" in readme
           and "charter C:\\work\\my-project-context" in readme
           and "It's exactly `charter read --context <full path>`" in readme
@@ -645,7 +645,7 @@ def run() -> None:
     case_mcp_unchanged()
     case_command_line()
     case_shorthand()
-    case_format_4_transition()
+    case_format_transition()
     case_readme()
     print(f"\n{OK} All charter read checks passed.")
 

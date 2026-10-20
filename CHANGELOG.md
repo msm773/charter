@@ -109,9 +109,9 @@ Git.
 - **`charter` command:** `serve`, `check` (read-only), `mcp`, `compare`
   (read-only), `read` (read-only), `propose` and `add-to-path`, from the
   `charter`, `charter.cmd` and `charter.py` launchers.
-- **MCP** serves the Agent Context folder directly: four read-only tools,
-  revalidation on every call, eight fixed refusal codes, and refusal while a
-  write is interrupted.
+- **MCP** serves the Agent Context folder directly: four read-only tools and,
+  since map-format version 5, `submit_proposal`; revalidation on every call,
+  fixed refusal codes, and refusal while a write is interrupted.
 - **Agent Proposals** through `charter propose --context .` or an imported file,
   filed privately and reviewed in the console; accepting changes only a
   candidate. The page is introduced in one line, with no information panel.
@@ -539,6 +539,44 @@ Git.
   at a time. Importing never accepts a proposal or makes a candidate or change
   set. The console's import API now takes `items`, each `{"text": …}` or
   `{"bytes": <base64>}`, with `/api/proposals/import/replace` for Replace.
+- **MCP proposal submission: `submit_proposal`, and map-format version 5.**
+  Every MCP registration now lists a fifth tool, `submit_proposal`, annotated
+  `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` and
+  `openWorldHint: false`. It takes the proposal fields as typed arguments —
+  never proposal JSON text, and no `task` label — and files through the same
+  checker, `proposal_sha256` duplicate matching, intake lock and filing as
+  `charter propose` and Import, as an ordinary `agent` proposal awaiting a
+  person's review, with no route label. Its records keep `proposal_sha256` and
+  no `submitted_sha256`, since its arguments never were submitted bytes; every
+  other route keeps both. `pending`, `refused`, `duplicate` and `unavailable`
+  are ordinary tool results, never MCP errors: structured content is the one
+  result object `charter propose` prints, and the text content is the same
+  object as JSON. Problem codes are the intake's: `context_invalid`,
+  `map_outdated` and the new `server_outdated` (the running MCP server is
+  older than the map — restart or reconnect the agent host; never
+  `charter_outdated`) are not retryable; `intake_busy` and an unexpected
+  failure, reported as `intake_unavailable` saying the proposal may already
+  have been filed, are retryable once — the same proposal submitted again
+  answers `duplicate` if the first attempt was filed. Nothing is counted or
+  recorded as activity. Only arguments that are not an object, an unknown
+  tool, and malformed protocol messages are protocol errors. No result names
+  the Agent Context's folder, private state, or a candidate or archived name,
+  even when an exception is injected. The server instructions now read "This
+  server gives read-only access to this Agent Context and files Agent
+  Proposals for a person's review. Call `get_context` before work, then use
+  the listed document tools as needed. To propose a change, use
+  `submit_proposal`; it never changes governing context. Authority
+  candidates, archives, and Agent Proposals are not governing context." The
+  map, now format 5, sends an MCP agent to `submit_proposal`, with one retry of
+  a retryable `unavailable`, and to proposal JSON for import when the tool is
+  not listed, is denied, or fails again; the folder and Command-Line Access
+  routes are unchanged. Format-4 contexts are out of date (`map-outdated`)
+  until one Rebuild Agent Context, which changes only the map and metadata and
+  leaves waiting proposals alone; Charter still reproduces format 1 to 4 maps
+  exactly. An agent host still running an earlier Charter does not list
+  `submit_proposal`, and refuses a rebuilt context as `server-outdated`, until
+  it restarts. The `mcp` module's own documentation no longer says the
+  configured folder's path may be disclosed.
 - **Removed:** governance workspaces, published surfaces, bindings,
   publication and repair, registration and identity, configuration migration,
   capability records, every Git write (commits, recovery commits, branch

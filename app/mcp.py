@@ -1,4 +1,5 @@
-"""Optional local MCP server: read-only access to one Agent Context folder.
+"""Optional local MCP server: read-only retrieval from one Agent Context
+folder, and Agent Proposal submission for a person's review.
 
     charter mcp --context <agent-context-folder> [--check]
 
@@ -11,27 +12,42 @@ The host names only the Agent Context folder, and the server serves that
 folder directly: there is no published copy, binding or registration, and the
 host never names Charter's private state.
 
-Exactly four read-only tools:
+Exactly five tools, on every registration (§3):
 
   get_context               AGENT-CONTEXT.md, unchanged
   list_governing_documents  id, title, scope and path of each governing document
   get_document              one governing document, in full
   get_document_section      one heading's section of one governing document
+  submit_proposal           file one Agent Proposal, pending a person's review
 
-Before every retrieval the whole folder is validated again (`agent_context`):
-the allow-list, the generated map, the metadata, the hashes and the governing
-documents. A context that is invalid, not clean, or in the middle of an
-Charter write that was interrupted is refused, even when its
-files look valid. The bytes returned are read once, in that call, without
-following links, and returned only when their hash is the one the validated
-context records. Nothing is cached between calls.
+The first four are read-only. Before every retrieval the whole folder is
+validated again (`agent_context`): the allow-list, the generated map, the
+metadata, the hashes and the governing documents. A context that is invalid,
+not clean, or in the middle of a Charter write that was interrupted is
+refused, even when its files look valid. The bytes returned are read once, in
+that call, without following links, and returned only when their hash is the
+one the validated context records. Nothing is cached between calls. Refusals
+carry one of ten reason codes and a fixed message.
 
-Refusals carry one of ten reason codes and a fixed message. No response,
-instruction or anything written to standard error discloses a private-state
-location, a candidate, an archived document, an Agent Proposal, a report, a
-Git branch or commit, or any path other than the Agent Context folder the
-host configured. Bounded activity metadata is kept privately
-(`mcp_activity`), never returned to an agent.
+`submit_proposal` (§3.1) is write-capable but non-destructive. It takes the
+proposal fields as typed arguments and files through the same intake as
+`charter propose` and Import (`agent_proposals`): the same checker,
+`proposal_sha256` duplicate matching and intake lock, as an ordinary agent
+proposal, keeping no `submitted_sha256`. Its outcomes — `pending`, `refused`,
+`duplicate` and `unavailable`, with the intake's problem codes — are ordinary
+tool results, never protocol errors; an unexpected failure is `unavailable`
+and retryable once. It never accepts a proposal or changes authority or
+context, and records no activity.
+
+No tool result, server instruction, server information, protocol error,
+refusal or submission result, and nothing written to standard error,
+discloses the registered Agent Context folder's path or any other physical
+location Charter knows — its private state, launcher or interpreter — nor a
+candidate or archived name, an Agent Proposal, a report, or a Git branch or
+commit (§2). Logical paths within the Agent Context, such as
+`AGENT-CONTEXT.md` and the governing-document paths the map lists, are
+returned. Bounded retrieval activity is kept privately (`mcp_activity`),
+never returned to an agent.
 """
 from __future__ import annotations
 
@@ -45,6 +61,7 @@ from typing import Any, BinaryIO, Dict, List, Optional, Tuple
 
 from . import __version__
 from . import agent_context as ac
+from . import agent_proposals as apx
 from . import host_state as hs
 from . import mcp_activity as activity
 from . import private_store as ps
@@ -61,9 +78,11 @@ SERVER_TITLE = "Charter"
 MAP = ac.CONTEXT_MAP
 
 # §8, exactly.
-INSTRUCTIONS = ("This server gives read-only access to this Agent Context. Call `get_context` "
-                "before work, then use the listed document tools as needed. Authority "
-                "candidates, archives, and Agent Proposals are not governing context.")
+INSTRUCTIONS = ("This server gives read-only access to this Agent Context and files Agent "
+                "Proposals for a person's review. Call `get_context` before work, then use the "
+                "listed document tools as needed. To propose a change, use `submit_proposal`; it "
+                "never changes governing context. Authority candidates, archives, and Agent "
+                "Proposals are not governing context.")
 
 MAX_REF = 1024
 MAX_HEADING = 500
@@ -255,9 +274,6 @@ _TASK = {"type": "string", "description": "Optional short label for the task thi
                                           "person; it proves nothing."}
 _DOCUMENT = {"type": "string", "description": "The exact `path` or `id` of a governing "
                                               "document, as list_governing_documents returns it."}
-_READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True,
-              "openWorldHint": False}
-
 TOOLS: List[Dict[str, Any]] = [
     {
         "name": "get_context",
@@ -315,9 +331,74 @@ TOOLS: List[Dict[str, Any]] = [
                                         "text": {"type": "string"}}},
     },
 ]
-TOOL_NAMES = tuple(t["name"] for t in TOOLS)
+RETRIEVAL_TOOLS = tuple(t["name"] for t in TOOLS)
 _ALLOWED_ARGS = {t["name"]: set(t["inputSchema"]["properties"]) for t in TOOLS}
 _REQUIRED_ARGS = {t["name"]: set(t["inputSchema"].get("required", [])) for t in TOOLS}
+
+# §3.1: the one write-capable tool. Its arguments are exactly the proposal
+# fields, typed, and no task label; what it returns is the intake's one result
+# object (`agent_proposals`), the same as `charter propose` prints.
+SUBMIT = "submit_proposal"
+_TEXT = {"type": "string"}
+_PROBLEM = {"type": "object", "required": ["code", "message"],
+            "properties": {"code": _TEXT, "message": _TEXT, "field": _TEXT}}
+TOOLS.append({
+    "name": SUBMIT,
+    "title": "Submit an Agent Proposal",
+    "description": "File one Agent Proposal for a person's review, as AGENT-CONTEXT.md describes "
+                   "its fields. It is only filed, pending review: it never changes governing "
+                   "context, accepts a proposal, or grants authority. The result is `pending`, "
+                   "`refused`, `duplicate` or `unavailable`.",
+    "inputSchema": {
+        "type": "object",
+        "required": list(apx.REQUIRED),
+        "properties": {
+            "agent": {"type": "string", "description": "Your self-reported name, shown to the "
+                                                       "reviewer."},
+            "operation": {"type": "string", "enum": list(apx.OPERATIONS)},
+            "target_path": {"type": "string", "description": "A logical path: a governing "
+                            "document's path as the map lists it, or "
+                            "`authority-candidates/<name>.md`."},
+            "reason": {"type": "string", "description": "Why the change is needed."},
+            "proposed_body": {"type": "string", "description": "The full new Markdown body, "
+                                                               "without front matter."},
+            "replacements": {"type": "array", "items": {
+                "type": "object", "required": ["find", "replace"],
+                "properties": {"find": _TEXT, "replace": _TEXT}, "additionalProperties": False},
+                "description": "For an amend, instead of `proposed_body`: each `find` must occur "
+                               "exactly once in the current body."},
+            "base_sha256": {"type": "string", "description": "For an amend or retire: the "
+                            "SHA-256 of the target's whole current text, front matter included, "
+                            "as UTF-8 with line endings normalized to LF."},
+            "proposed_meta": {"type": "object", "properties": {"title": _TEXT, "scope": _TEXT},
+                              "additionalProperties": False},
+            "expected_context_impact": {"type": ["string", "object", "array"],
+                                        "description": "Your advisory context-impact check."},
+        },
+        "additionalProperties": False,
+    },
+    "outputSchema": {"type": "object", "required": ["result"], "properties": {
+        "result": {"type": "string", "enum": ["pending", "refused", "duplicate", "unavailable"]},
+        "proposal_id": _TEXT,
+        "retryable": {"type": "boolean"},
+        "problem": _PROBLEM,
+        "problems": {"type": "array", "items": _PROBLEM}}},
+})
+TOOL_NAMES = tuple(t["name"] for t in TOOLS)
+assert set(TOOLS[-1]["inputSchema"]["properties"]) == set(apx.FIELDS)
+
+# Every retrieval tool is read-only; `submit_proposal` writes, but never
+# destroys or overwrites anything, and submitting it again files nothing more.
+ANNOTATIONS = {name: {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True,
+                      "openWorldHint": False} for name in RETRIEVAL_TOOLS}
+ANNOTATIONS[SUBMIT] = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True,
+                       "openWorldHint": False}
+
+# §3.1, One retry: a failure Charter did not foresee. Nothing about it is told.
+UNEXPECTED = apx.Unavailable(
+    "intake_unavailable", "Charter could not finish handling this proposal, so it may already "
+                          "have been filed. Submit exactly the same proposal once more: "
+                          "`duplicate` then means it is awaiting review.", retryable=True)
 
 
 def _check_arguments(name: str, args: Any) -> Dict[str, str]:
@@ -435,8 +516,9 @@ def answer(name: str, args: Dict[str, str],
            exam: ac.Examination) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """The text and structured payload answering one tool call from the
     validated `exam`, and what it resolved: the document and heading, for
-    activity. Shared with `charter read` (`app.read`), which answers the same
-    four requests from the same validated context."""
+    activity. Only the four retrieval tools come here. Shared with `charter
+    read` (`app.read`), which answers the same four requests from the same
+    validated context."""
     if name == "get_context":
         text = verified(exam, MAP)
         return text, {"path": MAP, "text": text}, {}
@@ -533,6 +615,12 @@ class Server:
                     self._activity(event="tool", tool="unknown", status="refused",
                                    reason="bad-arguments", task=_task_of(params))
                     return _error(ident, INVALID_PARAMS, "Unknown tool.")
+                if name == SUBMIT:
+                    arguments = params.get("arguments")
+                    if arguments is not None and not isinstance(arguments, dict):
+                        # Not an invocation proposal processing can take at all.
+                        return _error(ident, INVALID_PARAMS, "The arguments must be an object.")
+                    return _result(ident, self._submit(arguments or {}))
                 return _result(ident, self._call(name, params.get("arguments")))
             return _error(ident, METHOD_NOT_FOUND, "Method not found.")
         except Exception:  # noqa: BLE001 — one bad request must not end the session
@@ -564,9 +652,27 @@ class Server:
         out = []
         for tool in TOOLS:
             entry = {k: v for k, v in tool.items() if k != "outputSchema" or self.structured}
-            entry["annotations"] = dict(_READ_ONLY, title=tool["title"])
+            entry["annotations"] = dict(ANNOTATIONS[tool["name"]], title=tool["title"])
             out.append(entry)
         return out
+
+    def _submit(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """`submit_proposal` (§3.1): the arguments, as typed, through the shared
+        intake, as an ordinary agent proposal with no submitted bytes. Every
+        outcome is the intake's one result object as an ordinary tool result,
+        never an error; nothing is recorded as activity, and no exception's
+        detail reaches the agent."""
+        try:
+            if not self.folder:
+                raise apx.Unavailable("context_invalid", apx._MCP_NOT_VALID, retryable=False)
+            result = apx.file(self.folder, arguments, source=apx.AGENT, submitted=None,
+                              route=apx.MCP)
+        except apx.Unavailable as exc:
+            result = apx.unavailable_result(exc)
+        except Exception:  # noqa: BLE001 — unforeseen: retryable once, saying nothing more
+            result = apx.unavailable_result(UNEXPECTED)
+        text = json.dumps(result, ensure_ascii=False, indent=2)
+        return self._ok(text, result)
 
     def _call(self, name: str, raw_args: Any) -> Dict[str, Any]:
         """One tool call, always answered with a tool result and always recorded.
@@ -801,7 +907,8 @@ def check(folder: str) -> int:
         stray = [r["not_json"] for r in replies if "not_json" in r]
         tools = [t["name"] for r in replies if r.get("id") == 1
                  for t in r.get("result", {}).get("tools", [])]
-        good = proc.returncode == 0 and not stray and len(replies) == 2 and len(tools) == 4
+        good = proc.returncode == 0 and not stray and len(replies) == 2 \
+            and tuple(tools) == TOOL_NAMES
         say(good, f"the server command answered over stdio in {took:.1f}s and listed "
                   f"{len(tools)} tools" if good else
                   f"the server command did not answer MCP requests (exit {proc.returncode}"

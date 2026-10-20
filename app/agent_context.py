@@ -104,11 +104,14 @@ FORMAT_VERSION = 1
 # reread to stop and report it, rather than reread and continue. Version 4
 # gives an agent that read the map through `charter read` the proposal command
 # its project instructions give, and tells every agent sending proposal JSON
-# to `charter propose` to send it as ASCII JSON.
-MAP_FORMAT_VERSION = 4
+# to `charter propose` to send it as ASCII JSON. Version 5 sends an agent that
+# read the map through MCP to the `submit_proposal` tool, with one retry of a
+# retryable `unavailable`, and keeps returning proposal JSON for import as its
+# fallback (Agent Context as the Project Asset §7).
+MAP_FORMAT_VERSION = 5
 # Earlier map formats this Charter still recognizes: such a context is out of
 # date, to be rebuilt, never damaged.
-OLDER_MAP_FORMATS = (1, 2, 3)
+OLDER_MAP_FORMATS = (1, 2, 3, 4)
 # How a context's map format relates to this Charter.
 FORMAT_CURRENT, FORMAT_OLDER, FORMAT_NEWER = "current", "older", "newer"
 METADATA_KEYS = ("format_version", "map_format_version", "project_name", "agent_guidance",
@@ -329,7 +332,8 @@ Send each proposal as one JSON object on the command's standard input.
 Write each proposal as ASCII JSON: encode every non-ASCII character with
 valid JSON Unicode escape sequences such as `\\uXXXX`.
 
-Either command prints one JSON object whose `result` is:
+Either command prints, and the `submit_proposal` tool returns, one JSON
+object whose `result` is:
 
 - `pending`: filed for review. Note its `proposal_id`, and stop.
 - `refused`: not filed. Correct each listed problem and submit again.
@@ -343,10 +347,23 @@ If the command is missing, denied or cannot start, or still reports
 `unavailable`, do not file the proposal any other way: return the complete
 proposal JSON object in your response, so that a person can import it.
 
-If you received this file through MCP or any tool other than `charter read`,
-do not run `charter propose`, even if you know the folder that holds it, and
-do not search for the folder or guess: return the complete proposal JSON
-object in your response, so that a person can import it.
+If you received this file through MCP, submit each proposal with the
+`submit_proposal` tool of the same MCP server, giving the fields below as
+its arguments rather than as JSON text. Do not run `charter propose`, even if
+you know the folder that holds this file, and do not search for the folder
+or guess. If the tool returns `unavailable` with `retryable` `true`, submit
+the exact same proposal once more: `duplicate` then means it is already
+awaiting review, so stop. If the tool is not listed or is denied, returns
+`unavailable` that is not retryable, or the retry returns neither `pending`
+nor `duplicate`, do not file the proposal any other way: return the
+complete proposal JSON object in your response, so that a person can import
+it, and after a retry tell the person that it may already be awaiting
+review.
+
+If you received this file through any other tool, do not run
+`charter propose`, even if you know the folder that holds it, and do not
+search for the folder or guess: return the complete proposal JSON object in
+your response, so that a person can import it.
 
 If the command started but printed no result, return the JSON in the same
 way, and tell the person that submission may have succeeded, so that they
@@ -423,6 +440,36 @@ def render_map(settings: Settings, documents: List[Document]) -> str:
         parts.append(GUIDANCE_PREAMBLE + "\n" + "\n".join(enabled) + "\n")
     return "\n".join(parts)
 
+
+# What map-format version 4 said where version 5 differs: before an agent that
+# read the map through MCP had the `submit_proposal` tool, when it returned its
+# proposal JSON for import.
+_V4_ROUTE = (
+    ("""Either command prints, and the `submit_proposal` tool returns, one JSON
+object whose `result` is:""",
+     """Either command prints one JSON object whose `result` is:"""),
+    ("""If you received this file through MCP, submit each proposal with the
+`submit_proposal` tool of the same MCP server, giving the fields below as
+its arguments rather than as JSON text. Do not run `charter propose`, even if
+you know the folder that holds this file, and do not search for the folder
+or guess. If the tool returns `unavailable` with `retryable` `true`, submit
+the exact same proposal once more: `duplicate` then means it is already
+awaiting review, so stop. If the tool is not listed or is denied, returns
+`unavailable` that is not retryable, or the retry returns neither `pending`
+nor `duplicate`, do not file the proposal any other way: return the
+complete proposal JSON object in your response, so that a person can import
+it, and after a retry tell the person that it may already be awaiting
+review.
+
+If you received this file through any other tool, do not run
+`charter propose`, even if you know the folder that holds it, and do not
+search for the folder or guess: return the complete proposal JSON object in
+your response, so that a person can import it.""",
+     """If you received this file through MCP or any tool other than `charter read`,
+do not run `charter propose`, even if you know the folder that holds it, and
+do not search for the folder or guess: return the complete proposal JSON
+object in your response, so that a person can import it."""),
+)
 
 # What map-format version 3 said where version 4 differs: before an agent that
 # read the map through `charter read` had a proposal route of its own, and
@@ -509,8 +556,13 @@ def render_map_version(settings: Settings, documents: List[Document], version: i
     if version not in OLDER_MAP_FORMATS:
         raise ValueError(f"map format {version} is not one this Charter recognizes")
     # Each earlier format is the next one with what that one changed undone:
-    # version 3 from version 4, version 2 from 3, version 1 from 2.
+    # version 4 from version 5, 3 from 4, 2 from 3, 1 from 2.
     text = render_map(settings, documents)
+    for now, before in _V4_ROUTE:
+        assert text.count(now) == 1, now
+        text = text.replace(now, before)
+    if version == 4:
+        return text
     for now, before in _V3_ROUTE:
         assert text.count(now) == 1, now
         text = text.replace(now, before)

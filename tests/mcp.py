@@ -1,10 +1,12 @@
 """Read-only MCP access to an Agent Context folder. Run: python -m tests.mcp
 
-MCP Context Access Specification:
+MCP Context Access Specification (`submit_proposal`, the fifth tool, is
+`tests.submit`):
 
   * one selected Agent Context folder is served directly: no copy, binding or
     registration, and the host never names private state;
-  * exactly four read-only tools, the exact instructions, protocol versions;
+  * exactly four read-only retrieval tools beside `submit_proposal`, the exact
+    instructions, protocol versions;
   * every call revalidates the whole folder and verifies the bytes it
     returns; an invalid, unclean or interrupted context is refused, even
     when its files look valid;
@@ -129,10 +131,13 @@ def case_handshake() -> None:
         init = s.replies[0]["result"]
         check(init["serverInfo"]["name"] == "charter" and init["serverInfo"]["title"] == "Charter",
               "the server is Charter")
-        check(init["instructions"] == ("This server gives read-only access to this Agent Context. "
-                                       "Call `get_context` before work, then use the listed "
-                                       "document tools as needed. Authority candidates, archives, "
-                                       "and Agent Proposals are not governing context."),
+        check(init["instructions"] == ("This server gives read-only access to this Agent Context "
+                                       "and files Agent Proposals for a person's review. Call "
+                                       "`get_context` before work, then use the listed document "
+                                       "tools as needed. To propose a change, use "
+                                       "`submit_proposal`; it never changes governing context. "
+                                       "Authority candidates, archives, and Agent Proposals are "
+                                       "not governing context."),
               "its instructions are the specification's, exactly")
         check(init["protocolVersion"] == "2025-06-18" and init["capabilities"] == {"tools": {"listChanged": False}},
               "it answers the protocol version asked for, with tools only")
@@ -140,11 +145,13 @@ def case_handshake() -> None:
               == mcp.PROTOCOL_VERSIONS[0], "an unknown version is answered with the newest")
         tools = s.ask("tools/list")["result"]["tools"]
         check([t["name"] for t in tools] == ["get_context", "list_governing_documents",
-                                            "get_document", "get_document_section"],
-              "exactly four tools")
+                                            "get_document", "get_document_section",
+                                            "submit_proposal"],
+              "exactly five tools: four retrieval tools and `submit_proposal` (tests.submit)")
         check(all(t["annotations"]["readOnlyHint"] and not t["annotations"]["destructiveHint"]
-                  and t["inputSchema"]["additionalProperties"] is False for t in tools),
-              "each read-only, refusing undeclared arguments")
+                  for t in tools[:4])
+              and all(t["inputSchema"]["additionalProperties"] is False for t in tools),
+              "each retrieval tool read-only; every tool refusing undeclared arguments")
         check(s.ask("resources/list")["error"]["code"] == mcp.METHOD_NOT_FOUND
               and s.ask("prompts/list")["error"]["code"] == mcp.METHOD_NOT_FOUND,
               "no resources and no prompts")
@@ -372,7 +379,8 @@ def case_check() -> None:
 
         code, said = run_check(folder)
         check(code == 0 and "valid and clean: 3 governing documents" in said
-              and "listed 4 tools" in said, "a valid Agent Context: exit 0, the handshake and stdio both answer")
+              and "listed 5 tools" in said,
+              "a valid Agent Context: exit 0, the handshake and stdio both answer, listing all five tools")
         check(not os.path.exists(state_root) and state_root not in said,
               "no private state was created, and none is named")
         # Whatever this machine's PATH holds: a clean installation has no `charter` on it.
