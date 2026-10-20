@@ -133,8 +133,17 @@ def case_api() -> None:
         check(got is not None and "not valid" in got.message,
               "a preview applied after an outside edit is refused: the context is not valid now")
         st = console.state(session)
-        check(not st["status"]["agents_served"] and st["status"]["rebuild"]["available"],
-              "an outside edit leaves agents refused, with Rebuild offered")
+        check(not st["status"]["agents_served"] and st["status"]["needs_review"]
+              and not st["status"]["rebuild"]["available"]
+              and not st["status"]["regenerate"]["available"]
+              and any(i.get("label") == "Does not match approved context"
+                      and i["path"] == "authoritative/b.md" for i in st["status"]["issues"]),
+              "an outside edit leaves agents refused: the document does not match the approved "
+              "context, and neither Rebuild nor Regenerate map is offered")
+        revising = console.draft(session, {"path": "authoritative/b.md"})
+        check(revising["body"] == "Edited outside.\n",
+              "Revise… still drafts from it while the context is unavailable, from its current "
+              "checked-out text")
 
         draft = console.draft(session, {"path": candidate["path"]})
         check(draft["title"] == "Gamma rules" and draft["body"] == "Rule.\n",

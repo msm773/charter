@@ -56,6 +56,7 @@ const planFor = (body) => {
     if (body.request && body.request.project_name !== undefined) return fixture.plan_rebuild_confirmed;
     return currentState === fixture.state_lost_metadata ? fixture.plan_rebuild_lost : fixture.plan_rebuild;
   }
+  if (body.kind === "regenerate-map") return fixture.plan_regenerate;
   return fixture.plans[body.kind];
 };
 global.fetch = async (url, options) => {
@@ -1453,11 +1454,31 @@ for (const file of ["markdown.js", "app.js"]) {
     "with a document that cannot govern, Rebuild is not offered");
   check(!/`/.test($("refusedDetail").textContent) && $("refusedDetail").querySelectorAll("code").length >= 3,
     "file names in the explanation are code, never raw backticks");
+  currentState = fixture.state_no_map;
+  await reload();
+  const noMap = $("refusedCard");
+  const noMapRows = $("attentionList") ? $("attentionList").querySelectorAll("li") : [];
+  check(noMap && noMap.querySelector("h3").textContent === "Context changes need review"
+    && /no usable map, so none of them governs/.test($("refusedDetail").textContent)
+    && noMapRows.length === 1 && noMapRows[0].querySelector("code").textContent === "authoritative/notes.md"
+    && noMapRows[0].querySelector(".chip").textContent === "Not in approved context",
+    "valid governing front matter but no map: context changes need review, the document Not in approved context");
+  check(/If an approved map and metadata for them exist elsewhere/.test($("refusedDetail").textContent)
+    && /newly authored or were never mapped, there is no map to restore/.test($("refusedDetail").textContent)
+    && !/were lost/.test($("refusedDetail").textContent)
+    && /If an approved map and metadata for it exist elsewhere, restore them/.test(noMapRows[0].textContent)
+    && /newly authored or was never mapped, move it out/.test(noMapRows[0].textContent),
+    "the status and the row each give both routes, and neither assumes a map was lost");
+  check(!$("btnRebuildFromStatus") && $("btnRebuildContext").hidden && !$("rebuildBlockedNote")
+    && !/\binvalid\b/i.test(noMapRows[0].textContent) && $("contextMapState").textContent === "Map not checked"
+    && !rowOf("governingList", "Notes"),
+    "no Rebuild maps it into governance, it is never called invalid, the map is not checked, and it does not govern");
   currentState = fixture.state_incomplete_ready;
   await reload();
   check($("refusedCard") && /This Agent Context has no map yet/.test($("refusedCard").textContent)
+    && /establish an empty context, which governs nothing/.test($("refusedDetail").textContent)
     && !!$("btnRebuildFromStatus") && !$("btnRebuildContext").hidden,
-    "once every document there is valid and nothing else is in the folder, Rebuild is offered");
+    "once no document remains, Rebuild is offered, to establish an empty context");
   currentState = fixture.state_valid;
   await reload();
 
@@ -1474,19 +1495,47 @@ for (const file of ["markdown.js", "app.js"]) {
 
   /* --------------------------------------------- status, outside changes, rebuild */
 
-  console.log("\nAn ordinary edit: agents refused, the reason, and Rebuild");
+  console.log("\nAn ordinary edit: agents refused, context changes need review, and no Rebuild");
   await show("state_invalid");
   check($("barState").textContent === "Agent context unavailable" && $("barState").querySelector(".chip").classList.contains("stale")
     && $("metaAgents").textContent === "Unavailable",
     "the header and rail say Agent context unavailable, in the error treatment");
-  check($("refusedCard") && $("refusedCard").querySelector("h3").textContent === "Charter can’t serve this Agent Context yet"
-    && /Rebuild Agent Context/.test($("refusedDetail").textContent)
-    && $("refusedCard").querySelectorAll(".issues li").length > 0, "the status says why, and what to do next");
-  check($("btnRebuildFromStatus") && !$("btnRebuildContext").hidden, "Rebuild Agent Context is offered");
-  check($("outsideNotice") && /authoritative\/a\.md/.test($("outsideNotice").textContent) && !$("btnAcknowledge"),
-    "the document changed outside Charter is named; it cannot be marked seen while refused");
-  check($("contextMapState").textContent === "Map out of date" && $("contextMapState").querySelector(".chip").classList.contains("stale"),
-    "the map's status reads Map out of date, in the error treatment");
+  check($("refusedCard") && $("refusedCard").querySelector("h3").textContent === "Context changes need review"
+    && /no longer match the approved context map/.test($("refusedDetail").textContent)
+    && /Restore the intended files with your own Git or file recovery/.test($("refusedDetail").textContent),
+    "the status says the checked-out files no longer match the approved map, and what to do next");
+  const editedRows = $("attentionList").querySelectorAll("li");
+  const edited = editedRows[0];
+  check(editedRows.length === 1 && edited.querySelector("code").textContent === "authoritative/a.md"
+    && edited.querySelector(".chip").textContent === "Does not match approved context"
+    && edited.querySelector(".chip").classList.contains("stale"),
+    "the edited document is listed by its path, with the one chip Does not match approved context");
+  const recordedAt = fixture.state_invalid.status.issues.find((i) => i.path === "authoritative/a.md");
+  check($("attentionList").querySelector(".attention-facts").textContent
+      === `Recorded ${recordedAt.recorded_sha256.slice(0, 12)} · current ${recordedAt.current_sha256.slice(0, 12)}`,
+    "with only what Charter observed: its recorded and current hashes");
+  check(!/outside Charter|someone|edited by|changed by|modified|\bago\b|\d\d:\d\d/i.test(edited.textContent),
+    "and nothing about who or what changed it, or when");
+  check(!/Restore the approved file/.test(edited.textContent),
+    "the row does not repeat the next step the status above already gives");
+  check(!!buttonSaying(edited, "Revise…") && !buttonSaying(edited, "Regenerate map…"),
+    "its row offers Revise…, to keep its current text as a revision candidate");
+  check(!$("btnRebuildFromStatus") && $("btnRebuildContext").hidden && !$("rebuildBlockedNote")
+    && !buttonSaying($("refusedCard"), "Refresh"),
+    "no Rebuild, Refresh, or anything else that would accept the changed text is offered");
+  check(!$("outsideNotice"), "it is not shown as Changed outside Charter: that notice is only for a served context");
+  check($("contextMapState").textContent === "Map not checked" && $("contextMapState").querySelector(".chip").classList.contains("warn"),
+    "the map's status reads Map not checked, in the warning treatment");
+  const editedCard = rowOf("governingList", "Alpha");
+  check(editedCard && editedCard.querySelector(".chip").textContent === "Does not match approved context"
+    && !!buttonSaying(editedCard, "Revise…"),
+    "its governing-document card carries the same chip, and Revise… stays available");
+  await click(buttonSaying(edited, "Revise…"));
+  check(lastCall("/api/draft").body.path === "authoritative/a.md" && !!$("reviseNotice")
+    && /Filing creates a new authority candidate — not context\./.test($("reviseNotice").textContent),
+    "Revise… from the row opens the revision form for that document, which files only a candidate");
+  await navTo("governing");
+  await show("state_invalid");
   const withdraw = buttonSaying(rowOf("governingList", "Beta"), "Withdraw in a change set…");
   check(withdraw.disabled && !withdraw.getAttribute("title")
     && !$("governingUnavailable").hidden && /valid and clean/.test($("governingUnavailable").textContent)
@@ -1497,6 +1546,54 @@ for (const file of ["markdown.js", "app.js"]) {
   check(planIt && planIt.disabled && !$("candidatesUnavailable").hidden
     && planIt.getAttribute("aria-describedby") === "candidatesUnavailable",
     "so does Plan a change set… on a candidate");
+
+  console.log("\nA document missing from the context, and one that cannot be verified");
+  await show("state_missing");
+  const missingRow = $("attentionList").querySelectorAll("li")[0];
+  check(missingRow && missingRow.querySelector("code").textContent === "authoritative/b.md"
+    && missingRow.querySelector(".chip").textContent === "Missing from context"
+    && /withdraw it through a change set once the Agent Context is valid again/.test(missingRow.textContent)
+    && !missingRow.querySelectorAll("button").length && !rowOf("governingList", "Beta"),
+    "a mapped document absent from the folder gets its own row, Missing from context, with no action of its own");
+  await show("state_unverifiable");
+  const unverifiable = $("attentionList").querySelectorAll("li")[0];
+  check(unverifiable && unverifiable.querySelector(".chip").textContent === "Cannot verify file"
+    && !/does not match/i.test(unverifiable.textContent) && !buttonSaying(unverifiable, "Revise…"),
+    "a recorded file that cannot be read: Cannot verify file, never said to have changed");
+
+  console.log("\nOnly the map does not match: Regenerate map…");
+  await show("state_map_only");
+  const mapOnlyRow = $("attentionList").querySelectorAll("li")[0];
+  check($("refusedCard").querySelector("h3").textContent === "Context changes need review"
+    && /Every governing document still matches/.test($("refusedDetail").textContent)
+    && mapOnlyRow.querySelector("code").textContent === "AGENT-CONTEXT.md"
+    && mapOnlyRow.querySelector(".chip").textContent === "Does not match approved context"
+    && !!$("btnRegenerateMap") && !$("btnRebuildFromStatus") && $("btnRebuildContext").hidden
+    && $("contextMapState").textContent === "Map out of date",
+    "the map's own hash, the sole failure: Regenerate map… is its row's one repair, and no Rebuild");
+  await click($("btnRegenerateMap"));
+  check(lastPlan().body.kind === "regenerate-map" && !$("confirmPhrase")
+    && $("review").querySelectorAll(".file-path").map((n) => n.textContent).join() === "AGENT-CONTEXT.md",
+    "it is previewed, rewrites only the map, and needs no typed phrase");
+  check(/exactly as the approved context records it/.test($("review").textContent)
+    && /\.agent-context\.json, every governing document and every setting stay exactly as they are/
+      .test($("review").textContent)
+    && !/record its new hash|records? the new map/.test($("review").textContent),
+    "the preview says it restores the recorded map and leaves the metadata as it is, never that it records a new hash");
+  await click($("btnApply"));
+  check(lastCall("/api/apply").body.kind === "regenerate-map" && lastCall("/api/apply").body.confirm === true,
+    "applying it sends an ordinary confirmation");
+  clearToasts();
+  await show("state_invalid");
+  check(!$("btnRegenerateMap"), "Regenerate map… is never offered while a governing document does not match");
+
+  console.log("\nWhat Rebuild may still correct: the generated files, with no document at stake");
+  await show("state_generated_only");
+  check($("refusedCard").querySelector("h3").textContent === "Charter can’t serve this Agent Context yet"
+    && /governing documents stay as they are/.test($("refusedDetail").textContent)
+    && $("btnRebuildFromStatus") && !$("btnRebuildContext").hidden && !$("attentionList")
+    && $("contextMapState").textContent === "Map out of date",
+    "metadata out of Charter's form: Rebuild Agent Context is offered, and nothing needs review");
   await click($("btnRebuildFromStatus"));
   check(lastPlan().body.kind === "rebuild" && !$("confirmPhrase")
     && $("review").querySelectorAll(".file-path").every((n) => ["AGENT-CONTEXT.md", ".agent-context.json"].includes(n.textContent)),
@@ -1510,7 +1607,7 @@ for (const file of ["markdown.js", "app.js"]) {
     "a completed apply moves focus to the view heading, not <body>");
   clearToasts();
 
-  console.log("\nAfter Rebuild: served, and still shown as changed outside");
+  console.log("\nAfter a consistent outside change and a Rebuild: served, and still shown as changed outside");
   await show("state_rebuilt");
   check($("barState").textContent === "Agent context ready" && /Rebuild Agent Context regenerated/.test($("outsideNotice").textContent)
     && /authoritative\/a\.md/.test($("outsideNotice").textContent), "served, and the outside change is still named");
@@ -3006,13 +3103,13 @@ for (const file of ["markdown.js", "app.js"]) {
     && $("originUnknown").hidden && !$("refusedCard"),
     "changed outside Charter: its own notice, and no origin-unknown notice");
   await show("state_invalid");
-  check(!!$("refusedCard") && !!$("btnRebuildFromStatus") && $("originUnknown").hidden,
-    "invalid: the refusal and its Rebuild, and no origin-unknown notice");
+  check(!!$("refusedCard") && !!$("attentionList") && !$("btnRebuildFromStatus") && $("originUnknown").hidden,
+    "context changes need review: the refusal and what does not match, no Rebuild, and no origin-unknown notice");
   const invalidUnknown = JSON.parse(JSON.stringify(fixture.state_invalid));
   invalidUnknown.status.outside = Object.assign({}, fixture.state_valid.status.outside);
   currentState = invalidUnknown;
   await reload();
-  check(!!$("refusedCard") && !!$("btnRebuildFromStatus") && !$("originUnknown").hidden
+  check(!!$("refusedCard") && !!$("attentionList") && !$("originUnknown").hidden
     && $("originUnknown").textContent === "Origin unknown. Charter has no local record of how this version was created or changed."
     && !/valid/.test($("originUnknown").textContent),
     "invalid and of unknown origin: the refusal leads, and the notice no longer calls the files valid");

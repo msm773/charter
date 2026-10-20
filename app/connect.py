@@ -145,6 +145,8 @@ def _not_ready(status: Dict[str, Any]) -> List[str]:
     for issue in (status.get("issues") or [])[:5]:
         message = str(issue.get("message") or "")
         if message:
+            if issue.get("label"):
+                message = f"{issue['label']}. {message}"
             path = str(issue.get("path") or "")
             reasons.append(f"`{path}`: {message}" if path else message)
     if len(status.get("issues") or []) > 5:
@@ -167,6 +169,12 @@ def instruction(folder: str) -> str:
         "It lists the governing documents and how to use them. Treat only the governing documents "
         "it lists as authoritative. If the Charter MCP tools are available, "
         "`get_context` returns the same map.",
+        "",
+        # Agent Context as the Project Asset §7: a mismatch that remains after
+        # one reread means stop and report, never reread and continue.
+        "If a document it lists is missing or does not match its recorded hash, read the map "
+        "again once. If it still does not match, stop: do not rely on what you read from it "
+        "earlier, and tell the person that the Agent Context no longer matches its map.",
     ]) + "\n"
 
 

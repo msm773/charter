@@ -42,7 +42,7 @@ from app import console  # noqa: E402
 from app import manager as mg  # noqa: E402
 from app import on_path  # noqa: E402
 from app import server  # noqa: E402
-from tests.agent_context import context, doc_text, snapshot, write  # noqa: E402
+from tests.agent_context import context, doc_text, read, snapshot, write  # noqa: E402
 from tests.harness import isolated_private_state, seeded  # noqa: E402
 
 OK = "ok"
@@ -408,11 +408,15 @@ def case_not_ready() -> None:
               "the first reason is the folder's own status, then the file that does not belong")
         os.remove(os.path.join(folder, "notes.txt"))
 
+        approved = read(folder, "authoritative/a.md")
         write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited in an editor.\n"))
-        refused("an invalid folder: refused, saying the map no longer matches", "Rebuild")
-        p = mg.rebuild_plan(folder)
-        mg.rebuild_apply(folder, p.plan_id, True)
-        check(connect.connection(folder)["ready"], "rebuilt, it is ready again")
+        c = refused("an edited governing document: refused, context changes need review",
+                    "Context changes need review")
+        check(any("Does not match approved context" in r or "does not match" in r for r in c["reasons"])
+              and not any("Rebuild Agent Context to" in r for r in c["reasons"]),
+              "naming the document that does not match, and never offering Rebuild for it")
+        write(folder, "authoritative/a.md", approved)
+        check(connect.connection(folder)["ready"], "with the approved text restored, it is ready again")
 
         cand = au.plan(folder, "add", {"title": "Gamma", "body": "x\n"})
         au.apply(folder, "add", cand.request, cand.plan_id, True)

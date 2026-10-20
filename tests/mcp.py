@@ -406,7 +406,7 @@ def case_check() -> None:
                   "the note follows PATH: none on it, this copy, or another copy")
         check(f"Charter {mcp.__version__}: MCP check" in said
               and all(f"  {k}" in said for k in ("build ", "launcher ", "charter.py ", "python ", "map format "))
-              and "  context map  2 (the format this Charter generates)" in said,
+              and f"  context map  {ac.MAP_FORMAT_VERSION} (the format this Charter generates)" in said,
               "it identifies the running Charter: version, build, launcher, Python, and both map formats")
         write(folder, "notes.txt", b"x")
         code, said = run_check(folder)
@@ -728,7 +728,9 @@ def case_map_format() -> None:
     with isolated_private_state():
         folder = fixture()
         for version, code, remedy in ((1, "map-outdated", "Rebuild Agent Context"),
-                                      (3, "server-outdated", "restart the agent host")):
+                                      (2, "map-outdated", "Rebuild Agent Context"),
+                                      (ac.MAP_FORMAT_VERSION + 1, "server-outdated",
+                                       "restart the agent host")):
             with_map_format(folder, version)
             session = Session(folder)
             result = session.call("get_context")
@@ -760,8 +762,89 @@ def case_map_format() -> None:
         shutil.rmtree(folder)
 
 
+def case_integrity_refusal() -> None:
+    print("\ncontext changes need review: every tool revalidates, refuses, and returns no context")
+    with isolated_private_state():
+        folder = fixture()
+        approved = {rel: read(folder, rel) for rel in (
+            "authoritative/a.md", "authoritative/b.md", "authoritative/policy.md",
+            ac.CONTEXT_MAP, ac.METADATA)}
+        session = Session(folder)
+        served = [session.call("get_context"), session.call("list_governing_documents"),
+                  session.call("get_document", {"document": "authoritative/policy.md"}),
+                  session.call("get_document_section", {"document": "authoritative/policy.md",
+                                                        "heading": "Boundaries"})]
+        check(not any(r.get("isError") for r in served),
+              "a session retrieves the valid context with every tool first")
+        tools = (("get_context", None), ("list_governing_documents", None),
+                 ("get_document", {"document": "authoritative/policy.md"}),
+                 ("get_document_section", {"document": "authoritative/policy.md", "heading": "Boundaries"}))
+        # Nothing an agent could use as context: no path, title, scope, excerpt or map text.
+        leaks = ("authoritative", ".md", "AGENT-CONTEXT", ".agent-context", folder, "Policy", "Alpha",
+                 "Beta", "Gamma", "scope", "Inside the lines", "Boundaries", "Current governing",
+                 "Test project", "sha256")
+
+        def restore() -> None:
+            for name in ("c.md",):
+                path = os.path.join(folder, "authoritative", name)
+                if os.path.exists(path):
+                    os.remove(path)
+            for rel, data in approved.items():
+                write(folder, rel, data)
+
+        for label, damage, observed in (
+                ("a governing document changed",
+                 lambda: write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited.\n")),
+                 "1 file does not match the approved context"),
+                ("a governing document missing",
+                 lambda: os.remove(os.path.join(folder, "authoritative", "b.md")),
+                 "1 document is missing from it"),
+                ("an unrecorded document present",
+                 lambda: write(folder, "authoritative/c.md", doc_text("c", "Gamma")),
+                 "1 document is not in it"),
+                ("a recorded file that cannot be read",
+                 lambda: write(folder, "authoritative/b.md", b"---\nid: b\n\xff\n---\n"),
+                 "1 file cannot be verified"),
+                ("two changed and one missing",
+                 lambda: (write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="x\n")),
+                          write(folder, "authoritative/policy.md", doc_text("policy", "Policy", body="y\n")),
+                          os.remove(os.path.join(folder, "authoritative", "b.md"))),
+                 "2 files do not match the approved context, 1 document is missing from it"),
+                ("only the map's own hash",
+                 lambda: write(folder, ac.CONTEXT_MAP, approved[ac.CONTEXT_MAP] + b"\nA note.\n"),
+                 "1 file does not match the approved context"),
+                ("no usable map",
+                 lambda: os.remove(os.path.join(folder, ac.METADATA)),
+                 "3 documents are not in an approved context")):
+            damage()
+            texts = []
+            for tool, arguments in tools:
+                result = session.call(tool, arguments)
+                texts.append(result["content"][0]["text"] if result.get("isError") else "")
+            check(all(t.startswith("context-invalid: ") for t in texts) and len(set(texts)) == 1,
+                  f"{label}: every one of the four tools refuses with `context-invalid`, on the same session")
+            text = texts[0]
+            check(observed in text and "Charter context is unavailable now" in text,
+                  f"  saying Charter context is unavailable, by kind and count: {observed}")
+            check("Do not rely on Charter context you retrieved earlier in this session." in text
+                  and "Report to the person that Charter context is unavailable, rather than guessing "
+                      "or continuing from earlier context." in text,
+                  "  telling the agent not to rely on earlier Charter context, and to tell the person")
+            found = [w for w in leaks if w.lower() in text.lower()]
+            check(not found, "  and returning no path, title, scope, excerpt or map text"
+                  + (f" (found {found})" if found else ""))
+            restore()
+            check(not session.call("get_context").get("isError"),
+                  "  restored outside Charter, the same session is served again")
+        check(set(mcp.MESSAGES) == CODES | {"map-outdated", "server-outdated"},
+              "the refusal codes are exactly the governed ten: `context-invalid` is kept, and no code "
+              "is added for this condition")
+        shutil.rmtree(folder)
+
+
 def run() -> None:
     case_handshake()
+    case_integrity_refusal()
     case_retrieval()
     case_revalidation()
     case_settled_before_response()

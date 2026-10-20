@@ -9,11 +9,17 @@ actions:
     next, and whether the content changed outside Charter;
   * **Create** a new, empty Agent Context in a folder the person chooses;
   * **Check** a folder without changing anything, for `charter check`;
-  * **Rebuild Agent Context**, after ordinary edits, merges or recovery: when the
-    governing documents are valid and the folder is clean, regenerate
+  * **Rebuild Agent Context**, when only the generated files are at fault —
+    an older map format, Charter's earlier wording, another form, or settings
+    the map no longer renders — or when no document remains: regenerate
     `AGENT-CONTEXT.md` and `.agent-context.json`, after a previewed, ordinary
-    deliberate confirmation. It never changes a governing document, never
-    touches a stray, and never repairs anything silently;
+    deliberate confirmation. It never makes a document govern that the record
+    does not already approve with a matching hash, never touches a stray, and
+    never repairs anything silently;
+  * **Regenerate map**, when the map's own hash is the only failure: restore
+    the map from the recorded documents, which all match, after a preview, and
+    only when the result has exactly the hash the metadata already records;
+    the metadata is never written;
   * **Settings**: the project name and the three agent guidance settings,
     recorded in the metadata and rendered into the map.
 
@@ -147,21 +153,43 @@ MAP_OUTDATED = ("This Agent Context’s map is out of date",
                 "An earlier version of Charter generated it, so Charter can’t serve the context until "
                 "it’s rebuilt. The governing documents are unchanged. Use Rebuild Agent Context to "
                 "bring it up to date.")
-MISMATCH = (NOT_YET, "The map and metadata don’t match the governing documents. Check that the "
-                     "documents are what you intend, then use Rebuild Agent Context.")
+MISMATCH = (NOT_YET, "The map and metadata are not what Charter generates for these governing "
+                     "documents and settings. Use Rebuild Agent Context to regenerate them; the "
+                     "governing documents stay as they are.")
 NOT_VALID = (NOT_YET, "Something in this folder isn’t valid. Each problem, and how to fix it, is "
                       "listed below.")
-# A folder of authored documents in authoritative/ with no map or metadata yet
-# (Product Specification 3.1): an existing, incomplete Agent Context.
+# The folder no longer agrees with its approved map, or has documents and no
+# usable map (Agent Context as the Project Asset §7; UI Standards). Said in
+# terms of what Charter observed: never who or what made a change.
+REVIEW_TITLE = "Context changes need review"
+REVIEW_DETAIL = ("The checked-out files no longer match the approved context map, so agents can’t "
+                 "be served. Restore the intended files with your own Git or file recovery. To keep "
+                 "a document’s current text, use Revise… on it first, then restore the approved "
+                 "document and govern the revision through a change set.")
+REVIEW_MAP_ONLY = ("`AGENT-CONTEXT.md` no longer matches the hash the approved context records for "
+                   "it, so agents can’t be served. Every governing document still matches: "
+                   "Regenerate map… restores the map from them, exactly as the approved context "
+                   "records it, and changes nothing else.")
+REVIEW_NO_MAP = ("This folder holds documents under `authoritative/` but no usable map, so none of "
+                 "them governs and agents can’t be served. If an approved map and metadata for them "
+                 "exist elsewhere, such as in Git, restore them with your usual recovery. If the "
+                 "documents are newly authored or were never mapped, there is no map to restore: "
+                 "move them out of the folder, use Rebuild Agent Context to establish an empty "
+                 "context, then add each one as an authority candidate and govern it through a "
+                 "change set.")
+# A folder with `authoritative/` and no map or metadata yet (Product
+# Specification 3.1). Its documents never govern this way; Rebuild Agent
+# Context establishes an empty context once none remains.
 INCOMPLETE_TITLE = "This Agent Context has no map yet"
 INCOMPLETE_READY = ("Its folder holds `authoritative/` but no `AGENT-CONTEXT.md` or "
-                    "`.agent-context.json`, so agents can’t be served. Check that the documents are "
-                    "what you intend, then use Rebuild Agent Context to generate them.")
+                    "`.agent-context.json`, and no document, so agents can’t be served. Use Rebuild "
+                    "Agent Context to establish an empty context, which governs nothing; then add "
+                    "documents as authority candidates and govern them through a change set.")
 INCOMPLETE_BLOCKED = ("Its folder holds `authoritative/` but no `AGENT-CONTEXT.md` or "
-                      "`.agent-context.json`, so agents can’t be served. Correct or move out each "
-                      "item listed below first. A document without governance metadata can’t govern "
-                      "this way: move it out of the folder, and add it as an authority candidate if "
-                      "you want it.")
+                      "`.agent-context.json`, so agents can’t be served. Move out or correct each "
+                      "item listed below; once no document remains, Rebuild Agent Context "
+                      "establishes an empty context. Add the documents you want as authority "
+                      "candidates and govern them through a change set.")
 
 
 def _headline_parts(exam: ac.Examination, interrupted: bool) -> Tuple[str, str]:
@@ -170,6 +198,10 @@ def _headline_parts(exam: ac.Examination, interrupted: bool) -> Tuple[str, str]:
         return INTERRUPTED
     if exam.valid:
         return SERVED, ""
+    if exam.needs_review:
+        if exam.no_record:
+            return REVIEW_TITLE, REVIEW_NO_MAP
+        return REVIEW_TITLE, REVIEW_MAP_ONLY if exam.map_regenerable else REVIEW_DETAIL
     if exam.state == ac.UNCLEAN:
         return STRAY_TITLE, STRAY_DETAIL
     if ac.is_incomplete_context(exam.root):
@@ -216,6 +248,9 @@ def _status(folder: str, cs: Optional[ps.ContextState], exam: ac.Examination,
                     and not interrupted,
                     "blockers": exam.rebuild_blockers,
                     "needs_project_name": settings is None},
+        # The one repair offered while context changes need review.
+        "regenerate": {"available": exam.map_regenerable and not interrupted},
+        "needs_review": exam.needs_review,
         "governing": _listing(exam.documents),
         "settings": None if settings is None else {
             "project_name": settings.project_name, "agent_guidance": settings.guidance_map},
@@ -461,6 +496,8 @@ def rebuild_plan(folder: str, project_name: Optional[str] = None,
     if tx.interrupted(cs):
         problems.append("A Charter write was interrupted. Open the Agent Context "
                         "to recover it first.")
+    if exam.needs_review:
+        problems.append(REBUILD_NEVER_ACCEPTS + (" " + USE_REGENERATE if exam.map_regenerable else ""))
     for i in exam.rebuild_blockers:
         problems.append(f"{i['path'] or 'The folder'}: {i['message']} {i['fix']}".strip())
     if settings is None:
@@ -513,6 +550,59 @@ def rebuild_plan(folder: str, project_name: Optional[str] = None,
     return _finish(plan, exam)
 
 
+REBUILD_NEVER_ACCEPTS = ("Context changes need review, and Rebuild Agent Context never accepts, "
+                         "remaps, or makes current a document the approved context does not "
+                         "record with a matching hash.")
+USE_REGENERATE = "Only the map itself does not match: use Regenerate map instead."
+NOT_REGENERABLE = ("Regenerate map is offered only when the map's own hash is the only problem and "
+                   "the map Charter generates has exactly the hash `.agent-context.json` already "
+                   "records for it: the map is readable and lists exactly the recorded documents, "
+                   "every one of them is present and matches its recorded hash, and no other "
+                   "document is present. The recorded hash is never changed to fit a new map.")
+
+
+def regenerate_plan(folder: str, state: Optional[ps.PrivateState] = None) -> Plan:
+    """Preview Regenerate map (Agent Context as the Project Asset §7): a map
+    whose own hash is the sole failure is a damaged derived file. Charter
+    regenerates it from the recorded documents and settings and replaces it
+    only when the result has exactly the approved hash the metadata already
+    records (`ac.restored_map`). `.agent-context.json` is never written: no
+    governing document, recorded hash or setting changes, and a map that
+    cannot be reproduced is refused, leaving the context unavailable."""
+    cs = (state or ps.PrivateState.default()).for_context(folder)
+    exam = ac.examine(cs.folder)
+    plan = Plan(kind="regenerate-map", request={}, summary="")
+    plan.before = plan.after = _listing(exam.documents)
+    enclosing = _enclosing_context(cs.folder)
+    if enclosing:
+        plan.problems.append(NESTED.format(enclosing=enclosing))
+    if tx.interrupted(cs):
+        plan.problems.append("A Charter write was interrupted. Open the Agent Context "
+                             "to recover it first.")
+    restored = ac.restored_map(exam) if exam.map_regenerable else None
+    if restored is None:
+        plan.problems.append(NOT_REGENERABLE)
+    if not plan.problems:
+        plan.changes.append(Change(tx.CONTEXT, ac.CONTEXT_MAP, ac.CONTEXT_MAP,
+                                   _read_raw_text(exam.root, ac.CONTEXT_MAP), restored))
+        # Afterwards every file has exactly the hash the metadata records.
+        plan.expected_hashes = dict(exam.hashes, **{ac.CONTEXT_MAP: exam.recorded_map_sha256})
+        plan.problems += tx.path_problems(cs, [tx.Write(c.root, c.path, c.new) for c in plan.changes])
+    plan.summary = ("Regenerate map: restore AGENT-CONTEXT.md from the governing documents, exactly as "
+                    "the approved context records it.")
+    plan.notes = ["Only AGENT-CONTEXT.md is replaced, and only with a map whose hash is the one "
+                  "`.agent-context.json` already records. `.agent-context.json`, every governing "
+                  "document and every setting stay exactly as they are."]
+    return _finish(plan, exam)
+
+
+def regenerate_apply(folder: str, plan_id: str, confirm: Any,
+                     state: Optional[ps.PrivateState] = None) -> Dict[str, Any]:
+    """Apply the Regenerate map the person previewed, with ordinary confirmation."""
+    return _apply_generated(folder, "regenerate-map", lambda: regenerate_plan(folder, state),
+                            plan_id, confirm, state, restores_record=True)
+
+
 def settings_plan(folder: str, project_name: Optional[str] = None,
                   agent_guidance: Optional[Dict[str, Any]] = None,
                   state: Optional[ps.PrivateState] = None) -> Plan:
@@ -544,7 +634,7 @@ def settings_plan(folder: str, project_name: Optional[str] = None,
 
 
 def _apply_generated(folder: str, kind: str, replan, plan_id: str, confirm: Any,
-                     state: Optional[ps.PrivateState]) -> Dict[str, Any]:
+                     state: Optional[ps.PrivateState], restores_record: bool = False) -> Dict[str, Any]:
     cs = (state or ps.PrivateState.default()).for_context(folder)
     with cs.lock("writer") as held:
         if not held:
@@ -563,7 +653,10 @@ def _apply_generated(folder: str, kind: str, replan, plan_id: str, confirm: Any,
 
         def validate() -> None:
             exam = ac.examine(cs.folder)
-            if not exam.valid or exam.hashes != current.expected_hashes:
+            # A restored map agrees with its record again; a record in an older
+            # map format is then simply out of date, for Rebuild to bring up to date.
+            agrees = exam.valid or (restores_record and exam.map_outdated)
+            if not agrees or exam.hashes != current.expected_hashes:
                 raise ActionRefused("After writing, the Agent Context was not exactly the "
                                     "planned valid context.")
         # Each file must still hold what the preview was built from: a change
@@ -584,7 +677,7 @@ def _apply_generated(folder: str, kind: str, replan, plan_id: str, confirm: Any,
                 # this computer saw Charter (or Agent Context Manager) write: not a
                 # change made outside Charter.
                 observation.record_charter_write(cs, before, after)
-            elif kind == "rebuild":
+            elif kind in ("rebuild", "regenerate-map"):
                 observation.record_rebuild(cs, before, after)
             else:
                 observation.record_charter_write(cs, before, after)

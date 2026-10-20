@@ -17,6 +17,17 @@ commit, branch, private record or earlier observation. A document governs when
 it is an active document with authoritative metadata under `authoritative/`,
 and the map lists it.
 
+The map and its metadata are the only record of which documents govern
+(Agent Context as the Project Asset §7, "The approved context"). Front matter
+shows a document's shape, never that it was approved. With a usable record,
+every file is checked against it: a recorded file whose text no longer matches
+its hash, a recorded file that is missing or cannot be read, an unrecorded
+document with governance front matter, a map whose own hash fails, or a map
+and metadata that list different documents, all need review, and nothing here
+clears them. Without a usable record, no document governs, and each one with
+governance front matter is not in the approved context. Nothing says who or
+what made a change, and file modification times are never read.
+
 The map and the metadata are generated from the governing documents and two
 settings, the project name and the agent guidance, which the metadata records.
 Hashes and comparisons use each file's text as UTF-8 with line endings
@@ -30,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import unicodedata
 from dataclasses import dataclass, field
@@ -88,10 +100,12 @@ FORMAT_VERSION = 1
 # what Charter generates changes. Version 2 tells agents that `duplicate` is a
 # result, gives each guidance setting its Settings name as its heading, and
 # sends an agent that read the map through MCP to return its proposal JSON.
-MAP_FORMAT_VERSION = 2
+# Version 3 tells a direct reader whose map still does not match after one
+# reread to stop and report it, rather than reread and continue.
+MAP_FORMAT_VERSION = 3
 # Earlier map formats this Charter still recognizes: such a context is out of
 # date, to be rebuilt, never damaged.
-OLDER_MAP_FORMATS = (1,)
+OLDER_MAP_FORMATS = (1, 2)
 # How a context's map format relates to this Charter.
 FORMAT_CURRENT, FORMAT_OLDER, FORMAT_NEWER = "current", "older", "newer"
 METADATA_KEYS = ("format_version", "map_format_version", "project_name", "agent_guidance",
@@ -114,6 +128,24 @@ UNCLEAN = "unclean"
 STRAY = "stray"
 DOCUMENT = "document"
 GENERATED_KIND = "generated"
+# `integrity`: the folder no longer agrees with its approved map, or has
+# documents and no usable map. Never cleared by Rebuild Agent Context; only
+# Regenerate map repairs one case, a map whose own hash is the sole failure.
+INTEGRITY = "integrity"
+
+# What Charter observed about one file, each with its one person-facing chip
+# (UI Standards). None says who or what made a change.
+CHANGED, MISSING, UNRECORDED, UNVERIFIABLE = "changed", "missing", "unrecorded", "unverifiable"
+INTEGRITY_LABELS = {
+    CHANGED: "Does not match approved context",
+    MISSING: "Missing from context",
+    UNRECORDED: "Not in approved context",
+    UNVERIFIABLE: "Cannot verify file",
+}
+
+# How the folder's documents are judged: against a usable record, with no
+# usable record, or not at all, when a newer Charter wrote the metadata.
+RECORD, NO_RECORD, UNKNOWN_RECORD = "record", "none", "unknown"
 
 MAX_PROJECT_NAME = 200
 
@@ -253,8 +285,18 @@ above, whatever it says about itself.
 `.agent-context.json`, beside this file, records the SHA-256 of this map and of
 each document listed above, as UTF-8 with line endings normalized to LF. If a
 linked document is missing, or its text does not match its recorded hash, read
+`AGENT-CONTEXT.md` again once and start over, since Charter may have been
+writing the folder. Do not combine what you read before with what you read
+after. If it still does not match, stop: do not rely on anything you read from
+this Agent Context earlier, and tell the person that the Agent Context no
+longer matches its map, rather than guessing or continuing."""
+
+# What map-format version 2 said where version 3 differs: a direct reader was
+# told to reread and start over, with no point at which to stop.
+_V2_TAIL = (GOVERNING_TAIL.split("If a\nlinked document")[1],
+            """ is missing, or its text does not match its recorded hash, read
 `AGENT-CONTEXT.md` again and start over. Do not combine what you read before
-with what you read after."""
+with what you read after.""")
 
 # Product Specification §3.3, "The normative proposal route", with the field
 # contract it defines. Only these fields are accepted; Charter
@@ -407,15 +449,28 @@ CHARTER_OUTDATED = ("A newer version of Charter generated this Agent Context, so
 NEWER_KIND = "newer"
 
 
-def render_previous_map(settings: Settings, documents: List[Document]) -> str:
-    """The map in map-format version 1 for the same documents and settings.
-    Only recognized, never written: Rebuild Agent Context replaces it once the
-    person chooses to."""
+def render_map_version(settings: Settings, documents: List[Document], version: int) -> str:
+    """The map an earlier supported map format generated for the same documents
+    and settings. Only recognized, never written: Rebuild Agent Context
+    replaces it once the person chooses to."""
+    if version == MAP_FORMAT_VERSION:
+        return render_map(settings, documents)
+    if version not in OLDER_MAP_FORMATS:
+        raise ValueError(f"map format {version} is not one this Charter recognizes")
     text = render_map(settings, documents)
-    for now, before in _PREVIOUS_WORDING:
-        assert text.count(now) <= 1, now
-        text = text.replace(now, before)
+    now, before = _V2_TAIL
+    assert text.count(now) == 1
+    text = text.replace(now, before)
+    if version == 1:
+        for now, before in _PREVIOUS_WORDING:
+            assert text.count(now) <= 1, now
+            text = text.replace(now, before)
     return text
+
+
+def render_previous_map(settings: Settings, documents: List[Document]) -> str:
+    """The map in map-format version 1 for the same documents and settings."""
+    return render_map_version(settings, documents, 1)
 
 
 # What Agent Context Manager, Charter's earlier name, wrote where Charter now
@@ -466,6 +521,38 @@ def render_generated(settings: Settings, documents: List[Document],
     for d in documents:
         hashes[d.path] = sha256_text(texts[d.path])
     return {CONTEXT_MAP: context_map, METADATA: render_metadata(settings, hashes)}
+
+
+_LISTED_PATH = re.compile(r"\| `([^`]+)` \|$")
+
+
+def map_listing(text: str) -> Optional[List[str]]:
+    """The logical paths the map's governing-document table lists, in order,
+    or None when Charter cannot read a listing from it. Only the path column is
+    read, so a title or scope cannot be mistaken for a path. Every map format
+    Charter has generated lays the table out this way."""
+    lines = text.split("\n")
+    heading = GOVERNING_INTRO.split("\n", 1)[0]
+    if heading not in lines:
+        return None
+    rest = lines[lines.index(heading) + 1:]
+    header = GOVERNING_TABLE_HEADER.split("\n")
+    for i, line in enumerate(rest):
+        if line.startswith("## "):
+            return None
+        if line == NONE_GOVERNING:
+            return []
+        if line == header[0] and i + 1 < len(rest) and rest[i + 1] == header[1]:
+            paths = []
+            for row in rest[i + 2:]:
+                if not row.startswith("| "):
+                    break
+                found = _LISTED_PATH.search(row)
+                if not found:
+                    return None
+                paths.append(found.group(1))
+            return paths
+    return None
 
 
 class MetadataError(ValueError):
@@ -553,6 +640,28 @@ def _issue(kind: str, message: str, path: str = "", fix: str = "",
     return {"level": level, "kind": kind, "message": message, "path": path, "fix": fix}
 
 
+def _attention(state: str, path: str, message: str, fix: str, recorded: str = "",
+               current: str = "") -> Dict[str, Any]:
+    """One file that needs review: what Charter observed, never who did it."""
+    out = _issue(INTEGRITY, message, path, fix)
+    out.update(state=state, label=INTEGRITY_LABELS[state], recorded_sha256=recorded,
+               current_sha256=current)
+    return out
+
+
+RESTORE = "Restore the approved file with your own Git or file recovery."
+KEEP_TEXT = (" To keep its current text, use Revise… first, then restore the approved document "
+             "and govern the revision through a change set.")
+MOVE_OUT = ("Move it out of the Agent Context. To make it govern, add it as an authority candidate "
+            "and govern it through a change set.")
+NO_RECORD_FIX = ("If an approved copy exists elsewhere, such as in Git, restore it with your usual "
+                 "recovery. If these documents were never mapped, there is nothing to restore: "
+                 "Rebuild Agent Context is offered once no document remains under `authoritative/`.")
+NO_RECORD_DOC_FIX = ("If an approved map and metadata for it exist elsewhere, restore them. If it is "
+                     "newly authored or was never mapped, move it out of the Agent Context, then add "
+                     "it as an authority candidate and govern it through a change set.")
+
+
 @dataclass
 class Examination:
     root: str
@@ -573,6 +682,47 @@ class Examination:
     map_format: str = ""
     # The map-format version the metadata records, when it records one.
     recorded_map_format: Optional[int] = None
+    # RECORD, NO_RECORD or UNKNOWN_RECORD: what the documents were judged against.
+    record_mode: str = UNKNOWN_RECORD
+    # The approved hash the metadata records for `AGENT-CONTEXT.md`, with a record.
+    recorded_map_sha256: str = ""
+
+    @property
+    def integrity(self) -> List[Dict[str, Any]]:
+        """Each file that does not agree with the approved context, or, with no
+        usable map, each document that is not in one."""
+        return [i for i in self.errors if i["kind"] == INTEGRITY]
+
+    @property
+    def needs_review(self) -> bool:
+        """Context changes need review (UI Standards): nothing Rebuild clears."""
+        return bool(self.integrity)
+
+    @property
+    def no_record(self) -> bool:
+        """Documents under `authoritative/` and no usable map: none governs."""
+        return self.record_mode == NO_RECORD and self.needs_review
+
+    @property
+    def map_regenerable(self) -> bool:
+        """Whether Regenerate map may repair the folder (Agent Context as the
+        Project Asset §7): the map's own hash is the sole failure, and the map
+        Charter generates from the recorded documents and settings has exactly
+        the approved hash the metadata already records (`restored_map`). The
+        map is readable and lists exactly the recorded documents — a listing
+        that differs is a failure of its own — and every recorded document is
+        present and matches, since any other failure is another error."""
+        only = self.errors
+        return (self.record_mode == RECORD and len(only) == 1 and only[0]["kind"] == INTEGRITY
+                and only[0]["path"] == CONTEXT_MAP and only[0]["state"] == CHANGED
+                and restored_map(self) is not None)
+
+    def integrity_counts(self) -> Dict[str, int]:
+        """How many files are in each observed state: what an agent is told."""
+        counts: Dict[str, int] = {}
+        for i in self.integrity:
+            counts[i["state"]] = counts.get(i["state"], 0) + 1
+        return counts
 
     @property
     def map_outdated(self) -> bool:
@@ -822,12 +972,72 @@ def examine(root: str) -> Examination:
         issues.append(_issue(STRAY, "isn’t part of this Agent Context.", name + ("/" if is_dir else ""),
                              "Move it out of the context folder or delete it, then try again."))
 
+    # The record first: what the documents are judged against.
+    settings: Optional[Settings] = None
+    recorded: Dict[str, str] = {}
+    metadata_text: Optional[str] = None
+    map_format = ""
+    recorded_map_format: Optional[int] = None
+    newer = False
+    if METADATA not in present:
+        issues.append(_issue(GENERATED_KIND, "The Agent Context has no `.agent-context.json`.",
+                             METADATA, "Use Rebuild Agent Context to generate it."))
+    else:
+        metadata_text = _read_text(present[METADATA], METADATA, issues, GENERATED_KIND)
+        if metadata_text is not None:
+            recorded_map_format = metadata_map_format(metadata_text)
+            try:
+                settings, recorded = parse_metadata(metadata_text, allow_older=True)
+                map_format = FORMAT_OLDER if recorded_map_format in OLDER_MAP_FORMATS else FORMAT_CURRENT
+            except NewerFormat:
+                # Not damage: this copy of Charter cannot check, or write, what a
+                # newer one generated. No Rebuild is offered for it.
+                newer = True
+                map_format = FORMAT_NEWER
+                issues.append(_issue(NEWER_KIND, CHARTER_OUTDATED, METADATA,
+                                     "Use the current Charter installation; if an agent host refuses "
+                                     "this context, restart the host or reconnect it."))
+            except MetadataError as exc:
+                issues.append(_issue(GENERATED_KIND, f"`.agent-context.json` is not usable: {exc}.",
+                                     METADATA, "Use Rebuild Agent Context to regenerate it."))
+
+    map_text: Optional[str] = None
+    if CONTEXT_MAP not in present:
+        issues.append(_issue(GENERATED_KIND, "The Agent Context has no `AGENT-CONTEXT.md`.",
+                             CONTEXT_MAP, "Use Rebuild Agent Context to generate it."))
+    else:
+        map_text = _read_text(present[CONTEXT_MAP], CONTEXT_MAP, issues, GENERATED_KIND)
+
+    if newer:
+        mode = UNKNOWN_RECORD
+    elif settings is not None and map_text is not None:
+        mode = RECORD
+    else:
+        mode = NO_RECORD
+    recorded_docs = {p: h for p, h in recorded.items() if p != CONTEXT_MAP} if mode == RECORD else {}
+
     # Governing documents.
     documents: List[Document] = []
     texts: Dict[str, str] = {}
     document_errors = False
     parsed: List[Document] = []
+    changed: set = set()
+    seen: set = set()
     for rel, abs_path in sources:
+        if rel in recorded_docs:
+            seen.add(rel)
+            text = _recorded_text(abs_path, rel, recorded_docs[rel], issues, changed)
+            if text is None:
+                continue
+            meta, body = parse_front_matter(text)
+            if meta and "id" in meta:
+                parsed.append(Document(path=rel, meta=meta, body=body))
+                texts[rel] = text
+            elif rel not in changed:
+                document_errors = True
+                issues.append(_issue(DOCUMENT, "This document has no governance front matter.", rel,
+                                     RESTORE))
+            continue
         text = _read_text(abs_path, rel, issues, DOCUMENT)
         if text is None:
             document_errors = True
@@ -841,7 +1051,16 @@ def examine(root: str) -> Examination:
                                  "Close the block with a `---` line after its metadata, or move "
                                  "the file out of the Agent Context."))
             continue
-        if meta and "id" not in meta and any(k in meta for k in GOVERNANCE_MARKERS):
+        governance = bool(meta) and ("id" in meta or any(k in meta for k in GOVERNANCE_MARKERS))
+        if governance and mode != UNKNOWN_RECORD:
+            # Front matter is shape, not approval: only the map says what governs.
+            issues.append(_attention(
+                UNRECORDED, rel,
+                "The approved context map does not list this document." if mode == RECORD else
+                "There is no usable map, so this document is not in an approved context.",
+                MOVE_OUT if mode == RECORD else NO_RECORD_DOC_FIX, current=sha256_text(text)))
+            continue
+        if meta and "id" not in meta and governance:
             # Governance front matter that is incomplete, not missing: judged with
             # the documents, so each missing field and invalid value is named.
             parsed.append(Document(path=rel, meta=meta, body=body))
@@ -859,9 +1078,11 @@ def examine(root: str) -> Examination:
     for doc in parsed:
         problems = found.get(doc.path, [])
         if problems:
+            del texts[doc.path]
+            if doc.path in changed:
+                continue  # one chip per file: it already does not match
             document_errors = True
             doc.ineligible = "; ".join(problems)
-            del texts[doc.path]
             issues.append(_issue(DOCUMENT, "This document cannot govern: "
                                  + "; ".join(problems) + ".", doc.path,
                                  "Correct its front matter, or move it out of `authoritative/`."))
@@ -874,50 +1095,26 @@ def examine(root: str) -> Examination:
                                  level="warning"))
         documents.append(doc)
 
-    # Settings, from the metadata.
-    settings: Optional[Settings] = None
-    recorded: Dict[str, str] = {}
-    metadata_text: Optional[str] = None
-    map_format = ""
-    recorded_map_format: Optional[int] = None
-    if METADATA not in present:
-        issues.append(_issue(GENERATED_KIND, "The Agent Context has no `.agent-context.json`.",
-                             METADATA, "Use Rebuild Agent Context to generate it."))
-    else:
-        metadata_text = _read_text(present[METADATA], METADATA, issues, GENERATED_KIND)
-        if metadata_text is not None:
-            recorded_map_format = metadata_map_format(metadata_text)
-            try:
-                settings, recorded = parse_metadata(metadata_text, allow_older=True)
-                map_format = FORMAT_OLDER if recorded_map_format in OLDER_MAP_FORMATS else FORMAT_CURRENT
-            except NewerFormat:
-                # Not damage: this copy of Charter cannot check, or write, what a
-                # newer one generated. No Rebuild is offered for it.
-                map_format = FORMAT_NEWER
-                issues.append(_issue(NEWER_KIND, CHARTER_OUTDATED, METADATA,
-                                     "Use the current Charter installation; if an agent host refuses "
-                                     "this context, restart the host or reconnect it."))
-            except MetadataError as exc:
-                issues.append(_issue(GENERATED_KIND, f"`.agent-context.json` is not usable: {exc}.",
-                                     METADATA, "Use Rebuild Agent Context to regenerate it."))
-
-    map_text: Optional[str] = None
-    if CONTEXT_MAP not in present:
-        issues.append(_issue(GENERATED_KIND, "The Agent Context has no `AGENT-CONTEXT.md`.",
-                             CONTEXT_MAP, "Use Rebuild Agent Context to generate it."))
-    else:
-        map_text = _read_text(present[CONTEXT_MAP], CONTEXT_MAP, issues, GENERATED_KIND)
+    if mode == RECORD:
+        _check_record(recorded, recorded_docs, seen, map_text, issues)
+    elif mode == NO_RECORD and any(i["kind"] == INTEGRITY for i in issues):
+        # Documents and no usable map: Rebuild cannot make them govern, so a
+        # missing or unusable generated file is restored, never rebuilt, until
+        # no document remains.
+        for i in issues:
+            if i["kind"] == GENERATED_KIND:
+                i["fix"] = NO_RECORD_FIX
 
     hashes = {d.path: sha256_text(texts[d.path]) for d in documents}
     if map_text is not None:
         texts[CONTEXT_MAP] = map_text
         hashes[CONTEXT_MAP] = sha256_text(map_text)
 
-    # The generated files are compared only when every document validated:
-    # until then, what they should say is not settled.
-    if settings is not None and not document_errors:
-        _compare_generated(settings, documents, recorded, hashes, map_text, metadata_text,
-                           issues, older=map_format == FORMAT_OLDER)
+    # The generated files are compared only against an intact record: until
+    # then, what they should say is not settled.
+    if mode == RECORD and not document_errors and not any(i["kind"] == INTEGRITY for i in issues):
+        _compare_generated(settings, documents, hashes, map_text, metadata_text, issues,
+                           older=map_format == FORMAT_OLDER)
 
     errors = [i for i in issues if i["level"] == "error"]
     if any(i["kind"] != STRAY for i in errors):
@@ -930,36 +1127,106 @@ def examine(root: str) -> Examination:
                        documents=documents if not document_errors else [],
                        settings=settings, texts=texts, hashes=hashes,
                        fingerprint=context_fingerprint(hashes) if state == VALID else "",
-                       map_format=map_format, recorded_map_format=recorded_map_format)
+                       map_format=map_format, recorded_map_format=recorded_map_format,
+                       record_mode=mode,
+                       recorded_map_sha256=recorded.get(CONTEXT_MAP, "") if mode == RECORD else "")
 
 
-def _compare_generated(settings: Settings, documents: List[Document], recorded: Dict[str, str],
-                       hashes: Dict[str, str], map_text: Optional[str],
-                       metadata_text: Optional[str], issues: List[Dict[str, Any]],
-                       older: bool = False) -> None:
-    """The generated files against what Charter generates now. With `older`, the
-    metadata records an older supported map format: when every file still has
-    the hash it records, the context is simply out of date, and the map's own
-    wording is not compared."""
-    rebuild = "Check that the governing documents are what you intend, then use Rebuild " \
-              "Agent Context."
-    for path in sorted(set(recorded) | set(hashes)):
-        if path not in recorded:
-            issues.append(_issue(GENERATED_KIND, "This governing document is not recorded in "
-                                                 "`.agent-context.json`.", path, rebuild))
-        elif path not in hashes:
-            if path == CONTEXT_MAP:
-                continue  # already reported as missing or unreadable
-            issues.append(_issue(GENERATED_KIND, "`.agent-context.json` records this document, "
-                                                 "but it is not a governing document here.",
-                                 path, rebuild))
-        elif recorded[path] != hashes[path]:
-            issues.append(_issue(GENERATED_KIND, "This file's text does not match the hash "
-                                                 "`.agent-context.json` records for it. It "
-                                                 "changed after the Agent Context was generated.",
-                                 path, rebuild))
+def restored_map(exam: "Examination") -> Optional[str]:
+    """The approved `AGENT-CONTEXT.md`, regenerated: the map Charter generates
+    from the recorded documents and settings, in the map format the metadata
+    records — with Charter's earlier wording where that format had it — only
+    when its hash is exactly the one the metadata already records. None when
+    no such map can be reproduced: the record is never changed to fit it."""
+    if exam.settings is None or not exam.recorded_map_sha256:
+        return None
+    version = exam.recorded_map_format
+    if version != MAP_FORMAT_VERSION and version not in OLDER_MAP_FORMATS:
+        return None
+    candidates = [render_map_version(exam.settings, exam.documents, version)]
+    if version == min(OLDER_MAP_FORMATS + (MAP_FORMAT_VERSION,)):
+        candidates.append(render_legacy_map(exam.settings, exam.documents))
+    return next((t for t in candidates if sha256_text(t) == exam.recorded_map_sha256), None)
+
+
+def _recorded_text(abs_path: str, rel: str, expected: str, issues: List[Dict[str, Any]],
+                   changed: set) -> Optional[str]:
+    """A recorded document's LF-normalized text, judged only by its hash: one
+    that cannot be read cannot be verified, and one whose text differs does
+    not match, whatever is wrong with it. None when there is no usable text."""
+    try:
+        with open(abs_path, "rb") as fh:
+            raw = fh.read()
+        text = normalize(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError):
+        issues.append(_attention(
+            UNVERIFIABLE, rel, "Charter cannot read this file, so it cannot check it against the "
+                               "approved context.",
+            "Check that it is there and that you can read it, or " + RESTORE[0].lower() + RESTORE[1:],
+            recorded=expected))
+        return None
+    current = sha256_text(text)
+    if current != expected:
+        changed.add(rel)
+        issues.append(_attention(
+            CHANGED, rel, "Its text does not match the hash the approved context records for it.",
+            RESTORE + KEEP_TEXT, recorded=expected, current=current))
+        if text.startswith("﻿") or _has_conflict_markers(text):
+            return None
+    return text
+
+
+def _check_record(recorded: Dict[str, str], recorded_docs: Dict[str, str], seen: set,
+                  map_text: Optional[str], issues: List[Dict[str, Any]]) -> None:
+    """The record against itself and the folder: every recorded document is
+    here, the map is the one the metadata records, and the map and metadata
+    list the same documents."""
+    named = {i["path"] for i in issues}
+    for rel in sorted(set(recorded_docs) - seen):
+        if rel not in named:
+            issues.append(_attention(
+                MISSING, rel, "The approved context lists this document, but it is not in the "
+                              "folder.",
+                "Restore it with your own Git or file recovery. If its removal was intended, "
+                "withdraw it through a change set once the Agent Context is valid again.",
+                recorded=recorded_docs[rel]))
+    if map_text is None:
+        return
+    listing = map_listing(map_text)
+    current = sha256_text(map_text)
+    if CONTEXT_MAP not in recorded:
+        issues.append(_attention(
+            CHANGED, METADATA, "`.agent-context.json` records no hash for `AGENT-CONTEXT.md`.",
+            "Restore both with your own Git or file recovery."))
+    elif recorded[CONTEXT_MAP] != current:
+        # Whether Regenerate map can repair it is decided once every other
+        # check is done (`Examination.map_regenerable`).
+        issues.append(_attention(
+            CHANGED, CONTEXT_MAP, "Its text does not match the hash `.agent-context.json` records "
+                                  "for it.",
+            "When it is the only problem, Regenerate map… may restore it from the governing "
+            "documents, exactly as the approved context records it; otherwise "
+            + RESTORE[0].lower() + RESTORE[1:],
+            recorded=recorded[CONTEXT_MAP], current=current))
+    if listing is None or len(listing) != len(set(listing)) or set(listing) != set(recorded_docs):
+        issues.append(_attention(
+            CHANGED, METADATA, "`AGENT-CONTEXT.md` and `.agent-context.json` do not list the same "
+                               "documents.",
+            "Restore both with your own Git or file recovery."))
+
+
+def _compare_generated(settings: Settings, documents: List[Document], hashes: Dict[str, str],
+                       map_text: Optional[str], metadata_text: Optional[str],
+                       issues: List[Dict[str, Any]], older: bool = False) -> None:
+    """The generated files against what Charter generates now, once every
+    document matches the record (`_check_record`). With `older`, the metadata
+    records an older supported map format: the context is simply out of date,
+    and the map's own wording is not compared. What is reported here, Rebuild
+    Agent Context may correct: it changes no document's approved status or
+    text."""
+    rebuild = "Use Rebuild Agent Context; the governing documents stay as they are."
     if older:
-        if map_text is not None and not any(i["kind"] == GENERATED_KIND for i in issues):
+        if map_text is not None:
             # Charter's earlier name wrote version 1 too: its own wording says so.
             legacy = _LEGACY_WORDING[0][1] in map_text
             issues.append(_issue(GENERATED_KIND, LEGACY_MAP if legacy else MAP_OUTDATED, CONTEXT_MAP,

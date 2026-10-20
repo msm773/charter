@@ -737,10 +737,13 @@ function renderContextStatus() {
       s.headline_detail ? el("p", { class: "status-detail", id: "refusedDetail" }, withCode(s.headline_detail)) : null,
     ]);
     const errors = s.issues.filter((i) => i.level === "error");
-    if (errors.length) {
+    const attention = errors.filter((i) => i.kind === "integrity");
+    if (attention.length) card.appendChild(attentionList(attention, s));
+    const others = errors.filter((i) => i.kind !== "integrity");
+    if (others.length) {
       const list = el("ul", { class: "issues" });
       // A file that does not belong: its name first, in bold, then what to do.
-      errors.forEach((i) => list.appendChild(i.kind === "stray" && i.path
+      others.forEach((i) => list.appendChild(i.kind === "stray" && i.path
         ? el("li", { class: "error stray-item" }, [el("strong", { text: i.path }),
           document.createTextNode(` ${i.message}${i.fix ? " " + i.fix : ""}`)])
         : issueItem(i)));
@@ -754,14 +757,17 @@ function renderContextStatus() {
     if (s.rebuild.available) {
       card.appendChild(el("div", { class: "actions" }, [el("button", { class: "btn", id: "btnRebuildFromStatus",
         text: "Rebuild Agent Context…", onclick: startRebuild })]));
-    } else if (!s.interrupted && s.rebuild.blockers.length && errors.some((i) => i.kind === "generated")) {
+    } else if (!s.interrupted && !s.needs_review && s.rebuild.blockers.length
+               && errors.some((i) => i.kind === "generated")) {
       card.appendChild(el("p", { class: "hint", id: "rebuildBlockedNote", text: "Rebuild Agent Context is offered "
         + "once these are corrected. It never changes or repairs a governing document." }));
     }
     parts.push(card);
   }
+  /* "Changed outside Charter" is only the notice for a valid outside change,
+     which is still served; an unavailable context lists what does not match. */
   const o = s.outside;
-  if (o.changed_outside) {
+  if (o.changed_outside && s.agents_served) {
     const note = el("section", { class: "status-card outside", id: "outsideNotice" }, [
       el("h3", { text: "Changed Outside Charter" }),
       el("p", {}, withCode(o.message)),
@@ -781,6 +787,50 @@ function renderContextStatus() {
   if (legacy) parts.push(legacy);
   parts.forEach((p) => box.appendChild(p));
   box.hidden = !parts.length;
+}
+
+/* Context changes need review (UI Standards): each affected file by its
+   logical path with one chip — Does not match approved context, Missing from
+   context, Not in approved context, or Cannot verify file — and only what
+   Charter observed: the recorded and current hashes, never a file time and
+   never who or what made the change. A governing document that does not match
+   offers Revise…, which files its current text as a revision candidate; a map
+   whose own hash is the sole failure offers Regenerate map…. Nothing here
+   accepts, remaps, or makes current the changed text. */
+const shortHash = (h) => (h ? h.slice(0, 12) : "");
+const OWN_STEP = ["missing", "unrecorded", "unverifiable"];
+
+function attentionList(items, s) {
+  const governing = new Map((state.documents || []).filter((d) => d.kind === "governing")
+    .map((d) => [d.path, d]));
+  const list = el("ul", { class: "issues attention", id: "attentionList", "aria-label": "Files that need review" });
+  items.forEach((i) => {
+    const facts = [];
+    if (i.recorded_sha256) facts.push(`Recorded ${shortHash(i.recorded_sha256)}`);
+    if (i.current_sha256) facts.push(`current ${shortHash(i.current_sha256)}`);
+    const doc = governing.get(i.path);
+    const actions = [];
+    if (i.state === "changed" && doc) {
+      actions.push(el("button", { class: "btn ghost small", text: "Revise…",
+        onclick: () => startRevision(doc) }));
+    }
+    if (i.path === "AGENT-CONTEXT.md" && s.regenerate && s.regenerate.available) {
+      actions.push(el("button", { class: "btn small", id: "btnRegenerateMap", text: "Regenerate map…",
+        onclick: startRegenerate }));
+    }
+    /* The status above already gives the next step for a file that does not
+       match; a row adds only what it alone needs to say: restoring a missing
+       or unreadable file, or the two routes for one not in the approved
+       context. */
+    const own = OWN_STEP.includes(i.state) && i.fix ? " " + i.fix : "";
+    list.appendChild(el("li", { class: "error attention-item", "data-state": i.state }, [
+      el("div", { class: "title-row" }, [el("code", { text: i.path }), chip(i.label, "stale")]),
+      el("div", {}, withCode(i.message + own)),
+      facts.length ? el("div", { class: "hint attention-facts", text: facts.join(" · ") }) : null,
+      actions.length ? el("div", { class: "actions" }, actions) : null,
+    ]));
+  });
+  return list;
 }
 
 /* Private state that Agent Context Manager, Charter's earlier name, left on this
@@ -869,11 +919,15 @@ function renderContextMap() {
   const box = $("contextMapState");
   box.textContent = "";
   /* Out of date: a generated file is missing, unreadable, or not what Charter
-     generates. Not checked: a governing-document problem stops the comparison.
-     Otherwise current — a stray file elsewhere does not make the map stale. */
+     generates, and Rebuild Agent Context or Regenerate map may correct it.
+     Not checked: a governing-document problem stops the comparison, context
+     changes that need review among them. Otherwise current — a stray file
+     elsewhere does not make the map stale. */
   const blocking = s.issues.filter((i) => i.level === "error" && i.kind !== "generated" && i.kind !== "stray");
   let label;
-  if (generated.length) label = chip("Map out of date", "stale");
+  if (s.regenerate && s.regenerate.available) label = chip("Map out of date", "stale");
+  else if (s.needs_review) label = chip("Map not checked", "warn");
+  else if (generated.length) label = chip("Map out of date", "stale");
   else if (blocking.length) label = chip("Map not checked", "warn");
   else label = chip("Map current", "ok");
   box.appendChild(label);
@@ -914,6 +968,10 @@ function competingNotice(co) {
   return "Another revision candidate exists for this document." + (co > 1 ? ` ${co} others in all.` : "");
 }
 
+/* The one attention state of a governing document whose file needs review. */
+const attentionOf = (path) => ((state.status && state.status.issues) || [])
+  .find((i) => i.kind === "integrity" && i.path === path) || null;
+
 function docRow(doc) {
   const isCandidate = doc.kind === "candidate";
   const tag = isCandidate ? sourceTag(doc) : "";
@@ -925,7 +983,10 @@ function docRow(doc) {
     isCandidate
       ? el("div", { class: "title-row" }, [el("span", { class: "title", text: doc.title }),
         tag ? el("span", { class: "source-tag", text: tag }) : null])
-      : el("div", { class: "title", text: doc.title }),
+      : attentionOf(doc.path)
+        ? el("div", { class: "title-row" }, [el("span", { class: "title", text: doc.title }),
+          chip(attentionOf(doc.path).label, "stale")])
+        : el("div", { class: "title", text: doc.title }),
     labelled("path", "Filename:", doc.path),
     doc.scope ? labelled("scope", "Scope:", doc.scope) : null,
     /* Human-only candidate lineage: which governing document a revision revises,
@@ -1924,7 +1985,8 @@ async function copyText(text, fallbackId) {
 /* What each kind of plan is, in the words the page uses for the action. */
 const PLAN_LABEL = {
   add: "Create candidate", revise: "Revise", "edit-candidate": "Edit candidate", retire: "Retire",
-  rebuild: "Rebuild Agent Context", settings: "Settings", "accept-proposal": "Accept Agent Proposal",
+  rebuild: "Rebuild Agent Context", "regenerate-map": "Regenerate map", settings: "Settings",
+  "accept-proposal": "Accept Agent Proposal",
   "reject-proposal": "Reject Agent Proposal",
   changeset: "Change set",
 };
@@ -3401,6 +3463,12 @@ function changeSetReceipt(cs) {
    ordinary deliberate confirmation, and never changes a governing document. */
 function startRebuild() {
   planFor("rebuild", {}, { applyLabel: "Rebuild Agent Context" });
+}
+
+/* Offered only when the map's own hash is the sole failure: it rewrites only
+   the map from the governing documents, which all match, after a preview. */
+function startRegenerate() {
+  planFor("regenerate-map", {}, { applyLabel: "Regenerate map" });
 }
 
 /* ----------------------------------------------------------------- settings */

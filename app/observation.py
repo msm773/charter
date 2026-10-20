@@ -73,22 +73,25 @@ def status(cs: Optional[ContextState], exam: ac.Examination) -> Dict[str, Any]:
         return {"known": False, "changed_outside": False, "rebuilt": False, "paths": [],
                 "message": "Charter has no record on this computer of how this content was "
                            "created or changed, so its origin is unknown."}
-    paths = outside_since(record, exam)
     rebuilt = record["source"] == "rebuild" and record["fingerprint"] == exam.fingerprint
+    if not exam.valid:
+        # "Changed outside Charter" is only the notice for a valid outside
+        # change, which is still served (UI Standards). An unavailable context
+        # says what does not match instead; the record is kept, unacknowledged,
+        # for when the context is valid again.
+        return {"known": True, "changed_outside": False, "rebuilt": rebuilt, "paths": [],
+                "message": ""}
+    paths = outside_since(record, exam)
     # Only documents changed outside Charter, not yet acknowledged, are news. A
     # Rebuild's own map and metadata are Charter's output: a Rebuild that only
     # regenerated them, over documents Charter saw, says nothing.
     changed = bool(paths)
-    if not changed:
-        message = ""
-    elif exam.valid:
+    message = ""
+    if changed:
         message = ("This Agent Context changed outside Charter. Its current files "
                    "govern for this checkout, but they were not changed through a Charter "
                    "authority action, and it cannot tell who changed them.")
         if rebuilt:
             message += " Rebuild Agent Context regenerated its map and metadata."
-    else:
-        message = ("This Agent Context changed outside Charter, and is not valid "
-                   "now.")
     return {"known": True, "changed_outside": changed, "rebuilt": rebuilt,
             "paths": paths, "message": message}

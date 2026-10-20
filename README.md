@@ -203,7 +203,7 @@ On Debian and Ubuntu, `python3 -m venv` itself needs the `python3-venv` package.
    `cp -Rp` keeps the launchers' executable mode. If `charter` then says `Permission denied`, see [Troubleshooting](#troubleshooting).
 
 3. Check it: `charter --version` shows the new version, from the same folder.
-4. Start the console and open each Agent Context. If an update changed what Charter generates, its map shows **Map out of date**: choose **Rebuild Agent Context…** for each one.
+4. Start the console and open each Agent Context. If an update changed what Charter generates, its map shows **Map out of date**: choose **Rebuild Agent Context…** for each one. (This release generates map format 3, which tells a file-reading agent to stop when the map no longer matches, so every existing Agent Context needs one Rebuild.)
 5. Reopen your agent hosts. A host keeps running the Charter it started until it restarts, so an agent host left open answers with the old copy—see [Troubleshooting](#troubleshooting).
 
 Registrations keep working because the folder didn't move. If you move the Charter folder, or change the Python it runs with, [connect your agents again](#moving-updating-or-a-development-checkout), replacing each existing registration.
@@ -229,6 +229,8 @@ C:\work\my-project-context\   the Agent Context
 ```
 
 The Agent Context folder doesn't need to exist yet. Its parent folder (`C:\work` in this example) **does**. On Windows, MCP can't be set up for a folder whose path contains any of `% & | < > ^ "`.
+
+An Agent Context folder cannot be inside another Agent Context folder. Charter recognizes an Agent Context folder by the presence of `AGENT-CONTEXT.md`.
 
 With MCP, the agent retrieves governing documents through Charter and doesn't need ordinary filesystem access to the context folder.
 
@@ -451,9 +453,11 @@ Before beginning work, read its context map:
   C:\work\my-project-context\AGENT-CONTEXT.md
 
 It lists the governing documents and how to use them. Treat only the governing documents it lists as authoritative. If the Charter MCP tools are available, `get_context` returns the same map.
+
+If a document it lists is missing or does not match its recorded hash, read the map again once. If it still does not match, stop: do not rely on what you read from it earlier, and tell the person that the Agent Context no longer matches its map.
 ```
 
-🔒 **Important:** Direct file reads bypass Charter's validation. The agent sees whatever is in the folder. If it can also write there, it can bypass the review workflow.
+🔒 **Important:** Direct file reads bypass Charter's validation. The agent sees whatever is in the folder. Charter can't refuse a file read the way it refuses MCP; the map and this instruction tell the agent to stop and tell you when the files no longer match. If it can also write there, it can bypass the review workflow. With file access, you're responsible for giving the agent the right folder and instructions, keeping them current, and routing changes back through Charter.
 
 #### Moving, updating, or a development checkout
 
@@ -514,15 +518,19 @@ The console carries no information icons or hover panels; this part of the guide
 
 #### Bring in documents you already have
 
-A folder that holds `authoritative/` but no `AGENT-CONTEXT.md` or `.agent-context.json` is an existing, incomplete Agent Context, not an empty folder: open it with **Open Agent Context**. **Create Agent Context** doesn't accept it.
+Only a valid map decides what governs. Governance front matter shows that a document is shaped like a governing document; it never shows that anyone approved it into this context. So documents you already have become governing context the same way every new document does: as [authority candidates](#4-add-your-documents) governed through a reviewed [change set](#change-governing-context). Charter never generates a map that makes documents already sitting in a folder govern.
 
-1. Put the governing documents, one Markdown file each, in `authoritative/` in a folder of their own.
-2. Enter that folder under **Agent Context folder**. The line under **Name** says it holds `authoritative/` but no context map yet; choose **Open Agent Context**. Opening writes nothing in the folder.
-3. The status reads **This Agent Context has no map yet** and lists what's missing, each document that can't govern, and anything else in the folder.
-4. Correct or move out each item listed. A document without governance front matter never governs this way: move it out of the folder, and add it with [Create candidate](#4-add-your-documents) if you want it.
-5. Once nothing else is listed, choose **Rebuild Agent Context…**, enter the **Project name**, confirm the agent guidance, review the preview, and choose **Rebuild Agent Context**. With no documents left, Rebuild makes an empty Agent Context.
+The simplest route is to [create an empty Agent Context](#3-create-the-agent-context) and add each document with **Create candidate**.
 
-A governing document starts with front matter like this, followed by its Markdown text:
+If you already have a folder that holds `authoritative/` but no `AGENT-CONTEXT.md` or `.agent-context.json`, it is an existing Agent Context with no approved context, not an empty folder: open it with **Open Agent Context**. **Create Agent Context** doesn't accept it. Opening writes nothing in the folder.
+
+- If it holds documents, the status reads **Context changes need review** and lists each one as **Not in approved context**, whatever its front matter says. No Rebuild is offered. What you do next depends on where the documents came from:
+  - **An approved map and metadata exist elsewhere** (for example, the folder is a checkout and the map is in Git): restore `AGENT-CONTEXT.md` and `.agent-context.json` with your usual recovery, and the context is checked against them again.
+  - **The documents are newly authored, or were never mapped**: there is no map to restore. Move the documents out of the folder and continue below.
+- Once no document remains in `authoritative/`, the status reads **This Agent Context has no map yet**. Choose **Rebuild Agent Context…**, enter the **Project name**, confirm the agent guidance, review the preview, and choose **Rebuild Agent Context**. This establishes an empty Agent Context, which governs nothing.
+- Then add each document you moved out with **Create candidate**, and govern it through a change set.
+
+A governing document starts with front matter like this, followed by its Markdown text. Charter writes it for you when a change set makes a candidate govern:
 
 ```text
 ---
@@ -538,7 +546,7 @@ superseded_by: []
 ---
 ```
 
-Rebuild never changes a governing document; it only writes the map and metadata.
+Rebuild never changes a governing document, and never makes one govern; it only writes the map and metadata.
 
 An **Agent Context** is a dedicated folder agents read: `AGENT-CONTEXT.md`, `.agent-context.json`, and the governing documents in `authoritative/`. It may sit inside a project or its own Git repository; nothing else belongs in it.
 
@@ -551,25 +559,45 @@ The top bar names the open Agent Context by its project name and its folder's na
 | Status | Where | Meaning | What to do |
 | --- | --- | --- | --- |
 | **Agent context ready** | Top bar (and **Agents: Ready** in **CURRENT CONTEXT**) | The folder is valid and clean, so MCP and file-reading agents receive its governing documents. | Nothing. |
-| **Agent context unavailable** | Top bar (and **Agents: Unavailable**) | The folder is invalid, incomplete, or holds stray files, so MCP refuses it. | Follow the status above every view, as in the rows below. |
+| **Agent context unavailable** | Top bar (and **Agents: Unavailable**) | The folder is invalid, incomplete, holds stray files, or no longer matches its approved map, so MCP refuses it. | Follow the status above every view, as in the rows below. |
+| **Context changes need review** | Status above every view | The checked-out files no longer match the approved context map, or the folder holds documents but no usable map. Each affected file is listed below it with one chip. Agents get an unavailable answer, and are told not to rely on Charter context they read earlier. | See [When context changes need review](#when-context-changes-need-review). |
+| **Does not match approved context** | A file listed under Context changes need review, and its document card | The file's text no longer matches the hash `.agent-context.json` records for it; for `.agent-context.json` itself, the map and metadata list different documents. | Restore the approved file with Git or your own recovery. To keep a governing document's current text, choose **Revise…** first. |
+| **Missing from context** | A file listed under Context changes need review | The map lists this document, but it isn't in the folder. | Restore it. If you meant to remove it, withdraw it in a change set once the context is valid again. |
+| **Not in approved context** | A file listed under Context changes need review | A document in `authoritative/` that the map doesn't list, or any document when there is no usable map. It may be perfectly well formed; it just isn't approved here. | With no usable map: if an approved map and metadata exist elsewhere, restore them. Otherwise—and always when a map exists but doesn't list it—move it out of the Agent Context; to make it govern, add it with **Create candidate** and govern it through a change set. |
+| **Cannot verify file** | A file listed under Context changes need review | The map records this file, but Charter can't read it, so it can't check it. | Check that it's there and readable, or restore it. |
+| **Regenerate map…** | The `AGENT-CONTEXT.md` row under Context changes need review | Only the map's own text no longer matches its recorded hash; it still lists exactly the recorded documents, every one of them matches, and Charter can regenerate a map with exactly the hash `.agent-context.json` records. | Choose it, review the preview, and confirm: it restores only `AGENT-CONTEXT.md`, exactly as the approved context records it. `.agent-context.json` is never changed. |
 | **No Agent Context open** | Top bar | Nothing is open in the console. | Choose **Open Agent Context…**. |
 | **Charter command ready** | Top bar, after the context's status | `charter` in a new terminal runs this copy of Charter. | Nothing. |
 | **Charter command needs attention** | Top bar, after the context's status | `charter` in a new terminal runs another copy of Charter, or isn't found, so a terminal, or an agent running `charter propose`, wouldn't reach this copy. It's a warning about your PATH, not about the Agent Context: nothing is disabled, and agents set up with Connect Agents start this copy by its full path. | Choose it, or **Fix…** beside it. The dialog names the copy found, gives one command to copy that puts this copy on your PATH (after removing any other copy it names), and says to open a new terminal afterwards. The console checks the PATH it was started with, so after the fix, quit the console and start it again from a new terminal for this to read **Charter command ready**. |
-| **This Agent Context has no map yet** | Status above every view (with **Map out of date** or **Map not checked**) | The folder holds `authoritative/` but no `AGENT-CONTEXT.md` or `.agent-context.json`, so agents get an unavailable answer. | Correct or move out each item listed, then choose **Rebuild Agent Context…**, which is offered only when the folder is clean and every document is valid, or none remains; see [Bring in documents you already have](#bring-in-documents-you-already-have). |
+| **This Agent Context has no map yet** | Status above every view (with **Map out of date** or **Map not checked**) | The folder holds `authoritative/` but no `AGENT-CONTEXT.md` or `.agent-context.json`, and no document, so agents get an unavailable answer. | Correct or move out each item listed, then choose **Rebuild Agent Context…** to establish an empty context; see [Bring in documents you already have](#bring-in-documents-you-already-have). |
 | **Map current** | Context Map | `AGENT-CONTEXT.md` and `.agent-context.json` are exactly what Charter generates from the governing documents and settings. | Nothing. |
-| **Map out of date** | Context Map | The map or metadata is missing, unreadable, or not what Charter generates—for example, after a governing document was edited outside Charter, or after you update Charter, when the status above every view reads "This Agent Context’s map is out of date". | Check the governing documents are what you intend, then choose **Rebuild Agent Context…**, review the preview, and choose **Rebuild Agent Context**. |
+| **Map out of date** | Context Map | The map or metadata is missing, unreadable, or not what Charter generates, and Charter can correct it without changing which documents govern or their text—for example, after you update Charter, when the status above every view reads "This Agent Context’s map is out of date". | Choose **Rebuild Agent Context…** (or **Regenerate map…**, when that is what's offered), review the preview, and confirm. |
 | "This copy of Charter is out of date" | Status above every view (with **Map not checked**) | A newer version of Charter generated this Agent Context. The context is not at fault; this console is an older copy. Charter offers no Rebuild here, so it never rewrites the newer map. | Use the current Charter installation: quit this console and start the current one. **Diagnostics** shows which copy is running. |
-| **Map not checked** | Context Map | A governing document has a problem, so the map can't be compared yet. | Correct the document the status names (for example, its front matter), or move it out of `authoritative/`. Charter checks again whenever you choose a page in the navigation. |
+| **Map not checked** | Context Map | A governing document has a problem, or context changes need review, so the map can't be compared yet. | Follow the status above every view. Charter checks again whenever you choose a page in the navigation. |
 | "Charter can’t serve this Agent Context yet", with files listed | Status above every view | The folder holds a file or folder that isn't part of an Agent Context, such as notes or `CLAUDE.md`. Until it's resolved, agents get an unavailable answer instead of governing material. Charter never moves or deletes it. | Move each listed file out of the context folder, or delete it, then choose any navigation item to check again. |
-| "Charter can’t serve this Agent Context yet", for another reason | Status above every view | The line under it says why: a Charter write to the folder was interrupted; Charter’s local records for the folder can’t be used, so it can’t tell whether a write was interrupted; the map was generated by Agent Context Manager, Charter’s earlier name; the map and metadata don’t match the governing documents; or something else isn’t valid, listed below. Agents get an unavailable answer until it's resolved. | Do what that line says: open the Agent Context in Charter to recover an interrupted write or see what to do about its records; check the documents, then choose **Rebuild Agent Context…** for the map; or fix each listed problem. |
-| **Changed Outside Charter** | Status above every view | Governing documents differ from what Charter last saw here, for example after a Git checkout or an edit in another program. A valid change remains usable context. A **Rebuild** of Charter's own map and metadata is not flagged. | Check the listed documents, then choose **Mark as seen**. |
+| "Charter can’t serve this Agent Context yet", for another reason | Status above every view | The line under it says why: a Charter write to the folder was interrupted; Charter’s local records for the folder can’t be used, so it can’t tell whether a write was interrupted; the map was generated by Agent Context Manager, Charter’s earlier name; the map and metadata aren't in the form Charter generates for these documents and settings; or something else isn’t valid, listed below. Agents get an unavailable answer until it's resolved. | Do what that line says: open the Agent Context in Charter to recover an interrupted write or see what to do about its records; choose **Rebuild Agent Context…** for the map; or fix each listed problem. |
+| **Changed Outside Charter** | Status above every view | The context is valid and served, but its governing documents differ from what Charter last saw here—for example after a Git checkout or pull that brought a context another computer's Charter generated. Charter can't tell who made the change. A **Rebuild** of Charter's own map and metadata is not flagged. Shown only while agents are served. | Check the listed documents, then choose **Mark as seen**. |
 | **Origin unknown** | Context Map | The files are valid, but this computer has no record of how this version was created—for example, a copied or cloned folder. | Nothing needs repair. |
 | **Stale** | Agent Proposal card | Its target changed after the agent read it, so it can't be accepted as written. | Reject it, or ask the agent to propose again. |
 | **structurally valid** / **waiting for required candidates or decisions** / **blocked** | Change-set editor | Whether the plan can be previewed, still needs a decision, or has a problem to correct first. | Follow **Readiness** in the editor. |
 
-**Governing Context** lists the documents currently governing the selected Agent Context, after its **Context Map**. **View agent context** shows `AGENT-CONTEXT.md`, the agents' entry point; `.agent-context.json` is its integrity record. The map is a routing aid, not a governing document, and is never edited by hand. **Rebuild Agent Context…** is offered only when the governing documents are valid and nothing else is in the folder, and it never changes a governing document.
+**Governing Context** lists the documents currently governing the selected Agent Context, after its **Context Map**. **View agent context** shows `AGENT-CONTEXT.md`, the agents' entry point; `.agent-context.json` is its integrity record. The map is a routing aid, not a governing document, and is never edited by hand. **Rebuild Agent Context…** is offered only when every governing document matches the approved map and nothing else is in the folder, or when no document remains; it never changes a governing document or makes one govern.
 
 From a terminal, `charter check --context <folder>` reports the same health—its `Agents:` line reads `served` or `unavailable`—and exits **0** only when agents are served.
+
+#### When context changes need review
+
+`AGENT-CONTEXT.md` and `.agent-context.json` are the only record of which documents govern and what their approved text is. Charter checks the folder exactly as it's checked out. A context that is internally consistent is served normally, whether you pulled it with Git, copied it from another computer, or made it here: Charter doesn't treat a file as suspect because this copy didn't write it.
+
+When the files no longer agree with that record, Charter refuses to serve the context and lists what it observed—each file that doesn't match, is missing, isn't in the approved context, or can't be verified, with its recorded and current hashes. It never says who or what made a change (you, an agent, Git, an editor, a formatter, or anything else), and it never uses file times as evidence. No Rebuild, Refresh, or other action accepts the changed text. You resolve it in one of these ways:
+
+- **Restore the approved files** with `git restore`, `git checkout`, or your own backup. The context is served again as soon as the files match.
+- **Keep a document's current text as a proposal for review.** Choose **Revise…** on the document while the context is unavailable: it saves the current checked-out text as a revision candidate and changes nothing else. Then restore the approved document, and replace it with the revision through an ordinary [change set](#change-governing-context). The preview compares the revision with the approved text and warns that it was made from another version, so you can check that difference before you apply it.
+- **A document that's missing** must be restored first. If you meant to remove it, withdraw it in a change set once the context is valid again.
+- **A document that isn't in the approved context**: move it out of the Agent Context, and add it with **Create candidate** if you want it to govern.
+- **Only the map doesn't match**, while every governing document does: **Regenerate map…** regenerates the map from the approved documents and, after a preview, replaces `AGENT-CONTEXT.md` only if the result has exactly the hash `.agent-context.json` already records. It never changes the metadata or records a new hash. If Charter can't reproduce the recorded map—for example, because the recorded settings no longer produce it—Regenerate map isn't offered, and you restore the map with your own recovery instead.
+
+Agents connected through MCP get an unavailable answer to every tool call until it's resolved. It says what kind of mismatch Charter found, but names no files, and tells the agent not to rely on Charter context it read earlier in the session and to tell you. A file-reading agent is told by the map to reread it once and, if it still doesn't match, to stop and tell you. Charter can't erase what an agent already read; it refuses everything after.
 
 ### Settings
 
@@ -767,7 +795,7 @@ The review material identifies the base only by its context fingerprint. Charter
 
 The comparison uses **read-only Git commands** limited to the Agent Context and **never fetches**. It writes nothing except a packet you ask for, and creates no private state. The result is review input—not authority, merge approval, or a new current change set.
 
-After a direct edit, a merge, or a recovery leaves the map out of date, see [Check context health](#check-context-health).
+A pull, merge, or checkout that leaves the context internally consistent is served as it is. One that leaves a governing document, or the map, not matching what the map and metadata record needs review: see [When context changes need review](#when-context-changes-need-review). Charter never asks Git what happened, and never treats a commit or branch as approval.
 
 ---
 
@@ -788,7 +816,7 @@ After a direct edit, a merge, or a recovery leaves the map out of date, see [Che
   ```
 
   On Linux the folder is `~/.local/state/charter`. If `ls -ld` names another account as the owner, don't change it: ask whoever manages the computer. If the message instead says the folder belongs to another account, or isn't a plain folder, Charter can't use it until that is resolved.
-- **MCP refuses the context:** Run `charter check --context <folder>`, or open the folder in the console and follow [Check context health](#check-context-health). After intentional direct edits, review and use **Rebuild Agent Context…**. If an unexpected file or folder (such as `CLAUDE.md`, notes, or an empty subfolder under `authoritative/`) is inside the Agent Context, move it out; Charter won't move or delete it.
+- **MCP refuses the context:** Run `charter check --context <folder>`, or open the folder in the console and follow [Check context health](#check-context-health). After a direct edit to a governing document, Rebuild won't accept it: restore the approved text, or keep the edit with **Revise…** and govern it through a change set; see [When context changes need review](#when-context-changes-need-review). If an unexpected file or folder (such as `CLAUDE.md`, notes, or an empty subfolder under `authoritative/`) is inside the Agent Context, move it out; Charter won't move or delete it.
 - **`charter propose` is refused, unavailable, or a duplicate:** Exit code 3 (`refused`) lists each problem to correct; exit code 4 (`unavailable`) means Charter couldn't file proposals on this computer; exit code 5 (`duplicate`) means the same proposal is already waiting—change its text, or replace the waiting one by [importing it](#importing-a-proposal) and choosing **Replace**. If the agent can't fix a refusal, have it return the JSON and import it.
 - **Agent can't connect:** Run `charter mcp --context <folder> --check`. This diagnoses the folder and this copy of Charter, **not** the host configuration. Start a new session after MCP configuration changes, and connect again if you moved Charter or changed its Python.
 
@@ -802,7 +830,7 @@ Charter controls the context it serves and changes performed through its own wor
 - **Direct file reads bypass Charter's checks.** An agent with file access reads what's present; Charter neither observes nor validates that read.
 - **Private work stays out of agent-facing Charter interfaces.** Candidates, archived documents, Agent Proposals, change-set drafts and receipts, review material, and MCP activity live in Charter's private local state—not the Agent Context.
 - ⚠️ **Host permissions still matter.** If a host allows an agent to read or write files, run commands, or reach the local console under your account, that agent may reach private state or edit the context directly. Charter can't stop those actions. Use the host's permissions or sandbox, and keep the context outside writable agent folders.
-- **Valid doesn't mean approved.** Integrity checks establish that the folder's files agree with each other; they don't prove who wrote them. Charter changes receive your preview and confirmation. A valid direct edit also governs for that checkout. If Charter has a prior local record, the console identifies an outside change until you acknowledge it; otherwise, the content's origin is unknown.
+- **Valid doesn't mean approved.** Integrity checks establish that the folder's files agree with each other; they don't prove who wrote them. Charter changes receive your preview and confirmation. A checkout whose files all agree governs for that checkout, however it was produced; one whose documents no longer match its map is refused until you restore it or govern the change through a change set. If Charter has a prior local record, the console identifies an outside change until you acknowledge it; otherwise, the content's origin is unknown.
 - **Instructions aren't enforcement.** Charter asks agents to retrieve and follow the map, but can't compel them. Check what each agent says it read.
 
 ### Technical reference
@@ -869,7 +897,11 @@ folder **before every retrieval**; if it is invalid, unclean, or has an
 interrupted write, the request is refused with one of **ten fixed reason
 codes**. Two say what to do after an update: `map-outdated` (rebuild the Agent
 Context in Charter) and `server-outdated` (restart the agent host, or connect it
-to the current Charter; the context is not at fault).
+to the current Charter; the context is not at fault). When the files no longer
+match the approved map, or there is no usable map, every tool answers
+`context-invalid` with no context material at all: the message says what kind of
+mismatch was found, by count and never by file name, and tells the agent not to
+rely on Charter context it retrieved earlier in the session and to tell you.
 
 Charter retains a bounded record of MCP diagnostic activity **privately**. It isn't available through MCP, and the console has no activity feed. A recorded retrieval means the server answered a request—it doesn't identify which agent requested it or establish that the agent followed the material.
 

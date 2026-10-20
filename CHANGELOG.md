@@ -101,9 +101,11 @@ Git.
   **Edit…**: the label **Scope** and the one helper “A short routing summary
   shown in AGENT-CONTEXT.md.”, with no information icon, hover panel or
   placeholder.
-- **Rebuild Agent Context** regenerates the map and metadata after documents
-  are edited outside Charter, with a preview; outside changes are reported until
-  acknowledged.
+- **Rebuild Agent Context** regenerates the map and metadata, with a preview,
+  only for what changes no document's approved status or text: an older map
+  format, Charter's earlier wording, another form, or settings the map no
+  longer renders, or a folder with no document left. Valid outside changes are
+  reported until acknowledged.
 - **`charter` command:** `serve`, `check` (read-only), `mcp`, `compare`
   (read-only), `propose` and `add-to-path`, from the `charter`, `charter.cmd`
   and `charter.py` launchers.
@@ -235,13 +237,15 @@ Git.
   no `AGENT-CONTEXT.md` or `.agent-context.json` is an existing, incomplete
   Agent Context: the Open or Create view offers **Open Agent Context** for it
   and never **Create Agent Context**, which refuses it and says to open it.
-  Opening writes nothing in the folder. Its status, **This Agent Context has no
-  map yet**, names what is missing and each document that cannot govern;
-  **Rebuild Agent Context…** is offered only once the folder is clean and every
-  document under `authoritative/` is valid, or none remains, and asks for the
-  project name and agent guidance. A document without governance front matter
-  never governs this way. Explanations above every view show file names as
-  code.
+  Opening writes nothing in the folder. Only a valid map decides what governs,
+  so its documents never govern this way, whatever their front matter: each is
+  **Not in approved context**, and **Rebuild Agent Context…** is offered only
+  once no document remains, to establish an empty context, asking for the
+  project name and agent guidance. If an approved map and metadata exist
+  elsewhere, the person restores them; for newly authored or never-mapped
+  documents, the person moves them out, then adds each as an authority
+  candidate and governs it through a change set.
+  Explanations above every view show file names as code.
 - **Connect agents:** a guided, copy-only view, offered only while the Agent
   Context is ready. From a development checkout or worktree, every
   configuration and command names that checkout's own launcher by its full
@@ -417,6 +421,36 @@ Git.
   `unavailable` with `charter_outdated`. A genuinely invalid context is still
   `context-invalid`. A Rebuild no longer raises a false "Changed Outside
   Charter" notice for Charter's own map and metadata.
+- **The map is the only authority record; context changes need review.** With
+  a usable map and metadata, Charter checks the folder as it is on disk: a
+  recorded document whose text no longer matches its hash, a recorded document
+  missing or unreadable, an unrecorded document with governance front matter, a
+  map whose own hash fails, and a map and metadata that list different
+  documents each make the context unavailable, under **Context changes need
+  review**, with one chip per file — **Does not match approved context**,
+  **Missing from context**, **Not in approved context** or **Cannot verify
+  file** — and only observed facts: recorded and current hashes, never file
+  times, never who or what made a change. Rebuild never accepts, remaps or
+  makes such text current. The way back is to restore the files through Git or
+  other recovery, or to keep a document's text with **Revise…**, still
+  available, restore the approved document, and govern the revision through an
+  ordinary change set. **Regenerate map…** is offered only when the map's own
+  hash is the sole failure and the map Charter regenerates has exactly the hash
+  the metadata already records; it replaces only `AGENT-CONTEXT.md` and never
+  writes `.agent-context.json`. A folder of documents with no usable map says
+  to restore an approved map and metadata that exist elsewhere, or, for newly
+  authored or never-mapped documents, to move them out and govern them as
+  candidates from an empty context. An internally
+  consistent checkout is served, however it arrived. **Changed Outside
+  Charter** is now only the notice for a valid, served context. MCP refuses
+  every tool with `context-invalid` and no context material, saying what kind of
+  mismatch it found, by count, never naming a file, and telling the agent not to
+  rely on Charter context from earlier in the session and to tell the person.
+- **Map-format version 3.** The map, and Connect Agents' file-access
+  instruction, tell a direct reader to reread once and, if the mismatch
+  remains, to stop and tell the person rather than reread and continue. Version
+  2 contexts are out of date (`map-outdated`) until a Rebuild, which these
+  rules allow because no document's approved text changes.
 - **Removed:** governance workspaces, published surfaces, bindings,
   publication and repair, registration and identity, configuration migration,
   capability records, every Git write (commits, recovery commits, branch

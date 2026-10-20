@@ -518,7 +518,8 @@ def case_map_format_mismatch() -> None:
                         out[os.path.relpath(os.path.join(d, n), root)] = fh.read()
             return out
         for version, code, words in ((1, "map_outdated", "rebuild it"),
-                                     (3, "charter_outdated", "out of date")):
+                                     (2, "map_outdated", "rebuild it"),
+                                     (ac.MAP_FORMAT_VERSION + 1, "charter_outdated", "out of date")):
             with_map_format(folder, version)
             before = private_bytes()
             result = submit(folder, good)

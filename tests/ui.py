@@ -180,6 +180,10 @@ def build_fixture() -> dict:
         fh.write("---\nid: notes\ntitle: Notes\nstatus: active\nauthority: authoritative\nscope: Notes\n"
                  "created: 2026-10-18\nupdated: 2026-10-18\nsupersedes: []\nsuperseded_by: []\n---\n\n"
                  "# Notes\n\nGoverning now.\n")
+    # Valid governing front matter, still no map: not in an approved context.
+    out["state_no_map"] = console.state(opened_authored)
+    os.remove(os.path.join(authored, "authoritative", "notes.md"))
+    # No document left: Rebuild may establish an empty context.
     out["state_incomplete_ready"] = console.state(opened_authored)
     shutil.rmtree(authored, ignore_errors=True)
     candidate = "authority-candidates/gamma-rules.md"
@@ -256,9 +260,34 @@ def build_fixture() -> dict:
                         "plan_id": out["start_plan"]["plan_id"], "confirm": PHRASE})
     out["cs_start_applied"] = api.get(session, {"id": ready["draft"]["id"]})
 
+    # Context changes need review: a governing document that does not match,
+    # and Rebuild refused for it. Then each other observed state, restored in turn.
+    def as_text(rel):
+        with open(os.path.join(folder, *rel.split("/")), "rb") as fh:
+            return fh.read()
+    approved = {rel: as_text(rel) for rel in ("authoritative/a.md", "authoritative/b.md",
+                                              ac.CONTEXT_MAP, ac.METADATA)}
     write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited in an editor.\n"))
     out["state_invalid"] = console.state(session)
     out["connect_invalid"] = console.connect_agents(session)
+    out["plan_rebuild_refused"] = plan("rebuild", {})
+    write(folder, "authoritative/a.md", approved["authoritative/a.md"])
+    os.remove(os.path.join(folder, "authoritative", "b.md"))
+    out["state_missing"] = console.state(session)
+    write(folder, "authoritative/b.md", b"---\nid: b\n\xff\n---\n")
+    out["state_unverifiable"] = console.state(session)
+    write(folder, "authoritative/b.md", approved["authoritative/b.md"])
+    write(folder, ac.CONTEXT_MAP, approved[ac.CONTEXT_MAP] + b"\nA note added by hand.\n")
+    out["state_map_only"] = console.state(session)
+    out["plan_regenerate"] = plan("regenerate-map", {})
+    write(folder, ac.CONTEXT_MAP, approved[ac.CONTEXT_MAP])
+
+    # Rebuild, for what it may correct: a consistent outside change first, as
+    # Git delivers it, then metadata out of Charter's form.
+    write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="From another checkout.\n"))
+    generate(folder)
+    write(folder, ac.METADATA, json.dumps(json.loads(as_text(ac.METADATA))).encode("utf-8"))
+    out["state_generated_only"] = console.state(session)
     out["plan_rebuild"] = plan("rebuild", {})
     console.apply(session, {"kind": "rebuild", "request": {},
                             "plan_id": out["plan_rebuild"]["plan_id"], "confirm": True})
@@ -270,14 +299,18 @@ def build_fixture() -> dict:
     os.remove(os.path.join(folder, "notes.txt"))
 
     text = open(os.path.join(folder, ac.METADATA), encoding="utf-8").read()
-    os.remove(os.path.join(folder, ac.METADATA))
-    out["state_lost_metadata"] = console.state(session)
-    out["plan_rebuild_lost"] = plan("rebuild", {})
+    # Lost metadata, where Rebuild may still repair it: a context governing no
+    # document. With documents present it would need review instead.
+    bare = context(docs=())
+    bare_session = console.Session()
+    console.open_context(bare_session, {"path": bare})
+    os.remove(os.path.join(bare, ac.METADATA))
+    out["state_lost_metadata"] = console.state(bare_session)
+    out["plan_rebuild_lost"] = console.plan(bare_session, {"kind": "rebuild", "request": {}})
     offered = out["plan_rebuild_lost"]["settings_proposal"]
-    out["plan_rebuild_confirmed"] = plan("rebuild", {
-        "project_name": offered["project_name"], "agent_guidance": offered["agent_guidance"]})
-    with open(os.path.join(folder, ac.METADATA), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(text)
+    out["plan_rebuild_confirmed"] = console.plan(bare_session, {"kind": "rebuild", "request": {
+        "project_name": offered["project_name"], "agent_guidance": offered["agent_guidance"]}})
+    shutil.rmtree(bare, ignore_errors=True)
 
     # A map-format mismatch, each way: the map out of date, or this copy of
     # Charter out of date. Then the context as it was.
@@ -285,7 +318,7 @@ def build_fixture() -> dict:
     map_text = open(os.path.join(folder, ac.CONTEXT_MAP), encoding="utf-8").read()
     with_map_format(folder, 1)
     out["state_map_outdated"] = console.state(session)
-    with_map_format(folder, 3)
+    with_map_format(folder, ac.MAP_FORMAT_VERSION + 1)
     out["state_charter_outdated"] = console.state(session)
     for rel, kept in ((ac.CONTEXT_MAP, map_text), (ac.METADATA, text)):
         with open(os.path.join(folder, rel), "w", encoding="utf-8", newline="\n") as fh:

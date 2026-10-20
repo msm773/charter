@@ -38,12 +38,17 @@ def _report(status: Dict[str, Any]) -> List[str]:
             continue
         lines += ["", f"{title}:"]
         for i in found:
-            lines.append(f"  - {i['path'] or 'the folder'}: {i['message']}")
+            label = f"{i['label']}. " if i.get("label") else ""
+            lines.append(f"  - {i['path'] or 'the folder'}: {label}{i['message']}")
             if i.get("fix"):
                 lines.append(f"    {i['fix']}")
     if status["rebuild"]["available"]:
         lines += ["", "Rebuild Agent Context can regenerate the map and metadata. Use it in the "
-                      "console (`charter serve`), after checking the governing documents."]
+                      "console (`charter serve`); the governing documents stay as they are."]
+    if status["regenerate"]["available"]:
+        lines += ["", "Only the map does not match; every governing document does. Regenerate map, "
+                      "in the console (`charter serve`), can restore it exactly as the approved "
+                      "context records it, without changing `.agent-context.json`."]
     outside = status["outside"]
     if outside["message"]:
         lines += ["", outside["message"]]

@@ -7,14 +7,16 @@ Product Specification §3.1 and §3.5, Agent Context as the Project Asset §4 an
   * opening recovers an interrupted Charter write, validates, and says whether
     agents are served, in ordinary language;
   * a new Agent Context is created in an empty folder, never inside another;
-  * an edit to a governing document leaves the context invalid until the
-    person uses Rebuild Agent Context; Rebuild previews, needs ordinary
-    deliberate confirmation, writes only the map and metadata, may create a
-    missing metadata file after asking for the project name, and refuses
-    while any document problem or stray remains;
-  * after Rebuild, or any valid outside change, the context is shown as
-    changed outside Charter until the person acknowledges it; with no private
-    record its origin is unknown;
+  * an edit to a governing document needs review: agents are refused,
+    Rebuild never accepts it, and the route is Revise, restore the approved
+    text outside Charter, then an ordinary change set;
+  * Rebuild previews, needs ordinary deliberate confirmation, writes only the
+    map and metadata, corrects only problems that change no document's
+    approved status or text, and with no usable map only once no document
+    remains; Regenerate map rewrites only a map whose own hash is the sole
+    failure;
+  * a valid outside change is shown as changed outside Charter until the
+    person acknowledges it; with no private record its origin is unknown;
   * settings change the map and metadata through a previewed plan;
   * `check` changes nothing; Git information is read-only.
 """
@@ -161,48 +163,95 @@ def case_open() -> None:
         del root
 
 
-def case_outside_edit_and_rebuild() -> None:
-    print("\nan ordinary edit, then Rebuild Agent Context")
+def case_outside_edit_needs_review() -> None:
+    print("\nan edit made outside Charter needs review: Revise, restore, then a change set")
     with isolated_private_state():
         folder = context()
         mg.open_context(folder)
         cs = ps.PrivateState.default().for_context(folder)
         exam = ac.examine(folder)
         cs.record_observed(exam.fingerprint, exam.hashes, "charter", [])
+        approved = read(folder, "authoritative/a.md")
 
-        write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited in an editor.\n"))
+        edited = doc_text("a", "Alpha", body="Edited in an editor.\n")
+        write(folder, "authoritative/a.md", edited)
         status = mg.open_context(folder)
-        check(status["state"] == ac.INVALID and not status["agents_served"],
-              "an edited governing document leaves the context invalid: agents are refused")
-        check(status["rebuild"]["available"] and "Rebuild Agent Context" in status["headline"]
-              and status["headline_title"] == mg.NOT_YET
-              and status["headline_detail"] == ("The map and metadata don’t match the governing documents. "
-                                                "Check that the documents are what you intend, then use "
-                                                "Rebuild Agent Context."),
-              "and Rebuild Agent Context is offered, the mismatch said plainly")
-        check(status["outside"]["paths"] == ["authoritative/a.md"],
-              "the edited document is named as changed outside Charter")
+        check(status["state"] == ac.INVALID and not status["agents_served"] and status["needs_review"]
+              and status["headline_title"] == mg.REVIEW_TITLE == "Context changes need review"
+              and status["headline_detail"] == mg.REVIEW_DETAIL,
+              "an edited governing document: agents are refused, and context changes need review")
+        rows = [i for i in status["issues"] if i["kind"] == ac.INTEGRITY]
+        check([(r["path"], r["label"]) for r in rows]
+              == [("authoritative/a.md", "Does not match approved context")],
+              "the document is listed, with the one chip Does not match approved context")
+        check(not status["rebuild"]["available"] and not status["regenerate"]["available"]
+              and not status["outside"]["changed_outside"] and status["outside"]["message"] == "",
+              "neither Rebuild nor Regenerate map is offered, and it is not called a served outside change")
 
         before = snapshot(folder)
         p = mg.rebuild_plan(folder)
-        check(not p.blocked and not p.governing_change and p.confirm_phrase == "",
-              "Rebuild needs ordinary confirmation, not the typed phrase")
-        check({c.label for c in p.changes} == {".agent-context.json"} and
-              all(c.diff() for c in p.changes),
-              "its preview shows each generated file it rewrites, with a diff")
-        check(any("authoritative/a.md" in n and "changed outside" in n for n in p.notes),
-              "and says the edited document stays marked as changed outside")
-        check(raises(au.ActionRefused, mg.rebuild_apply, folder, p.plan_id, PHRASE) and
-              raises(au.ActionRefused, mg.rebuild_apply, folder, p.plan_id, None) and
-              snapshot(folder) == before, "it needs a deliberate confirmation")
-        status = mg.rebuild_apply(folder, p.plan_id, True)
+        check(p.blocked and mg.REBUILD_NEVER_ACCEPTS in p.problems
+              and raises(au.ActionRefused, mg.rebuild_apply, folder, p.plan_id, True)
+              and snapshot(folder) == before,
+              "Rebuild is refused outright: it never accepts the changed text, and writes nothing")
+        r = mg.regenerate_plan(folder)
+        check(r.blocked and mg.NOT_REGENERABLE in r.problems
+              and raises(au.ActionRefused, mg.regenerate_apply, folder, r.plan_id, True)
+              and snapshot(folder) == before, "Regenerate map is refused too")
+
+        revise = au.plan(folder, "revise", {"path": "authoritative/a.md"})
+        check(not revise.blocked and not revise.governing_change,
+              "Revise stays available while the context is unavailable, and changes no governing context")
+        au.apply(folder, "revise", revise.request, revise.plan_id, True)
+        logical = next(c for c in ps.PrivateState.default().for_context(folder).candidates())
+        cs = ps.PrivateState.default().for_context(folder)
+        candidate = cs.read_candidate(logical) or ""
+        check("Edited in an editor." in candidate and snapshot(folder) == before
+              and not mg.check(folder)["agents_served"],
+              "it files the current checked-out text as a revision candidate; the folder is untouched "
+              "and agents are still refused")
+        from app import changeset as chs
+        try:
+            blocked = au.plan(folder, "changeset", seeded(folder, {"document": "authoritative/a.md",
+                                                                   "candidate": logical})).blocked
+        except (au.ActionRefused, chs.ChangeSetError):
+            blocked = True
+        check(blocked, "no change set can be applied while the context needs review: there is no "
+                       "invalid-context exception")
+
+        write(folder, "authoritative/a.md", approved)  # restored outside Charter, as with Git
+        status = mg.open_context(folder)
+        check(status["agents_served"] and not status["needs_review"]
+              and not status["outside"]["changed_outside"],
+              "restoring the approved text makes the context valid and served again")
+        g = au.plan(folder, "changeset", seeded(folder, {"document": "authoritative/a.md",
+                                                         "candidate": logical}))
+        check(not g.blocked and g.governing_change and g.confirm_phrase == PHRASE
+              and any("was made from an earlier version of" in n for n in g.notes),
+              "an ordinary change set replaces it with the revision, warning that the candidate was "
+              "made from another version, to be compared before applying")
+        check(any(c.label == "authoritative/a.md" and c.diff() for c in g.changes),
+              "and its preview compares the candidate with the restored governing document")
+        au.apply(folder, "changeset", g.request, g.plan_id, PHRASE)
+        status = mg.check(folder)
+        check(status["agents_served"] and b"Edited in an editor." in read(folder, "authoritative/a.md"),
+              "applied through the reviewed change set, the revision governs")
+        shutil.rmtree(folder)
+
+    print("\na valid outside change, made consistently, is served and flagged until seen")
+    with isolated_private_state():
+        folder = context()
+        mg.open_context(folder)
+        cs = ps.PrivateState.default().for_context(folder)
+        exam = ac.examine(folder)
+        cs.record_observed(exam.fingerprint, exam.hashes, "charter", [])
+        write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="From another checkout.\n"))
+        generate(folder)  # as Git delivers a context another Charter generated
+        status = mg.open_context(folder)
         check(status["agents_served"] and status["outside"]["changed_outside"]
-              and status["outside"]["rebuilt"]
-              and status["outside"]["paths"] == ["authoritative/a.md"],
-              "after Rebuild it is valid, and shown as changed outside Charter")
-        changed = {k for k in snapshot(folder) if snapshot(folder)[k] != before.get(k)}
-        check(changed == {".agent-context.json"},
-              "Rebuild wrote only the generated files; the edited document is as it was")
+              and status["outside"]["paths"] == ["authoritative/a.md"]
+              and "cannot tell who changed them" in status["outside"]["message"],
+              "a consistent checkout governs, and is shown as changed outside Charter, never attributed")
 
         logical = "authority-candidates/new.md"
         a = au.plan(folder, "add", {"title": "New", "body": "x\n"})
@@ -218,13 +267,104 @@ def case_outside_edit_and_rebuild() -> None:
         shutil.rmtree(folder)
 
 
+def case_regenerate_map() -> None:
+    print("\nRegenerate map: only the derived map, only when its own hash is the sole failure")
+    with isolated_private_state():
+        folder = context()
+        mg.open_context(folder)
+        approved = snapshot(folder)
+        text = read(folder, ac.CONTEXT_MAP).decode()
+        write(folder, ac.CONTEXT_MAP, text.replace("Do not edit it by hand", "Edited by hand"))
+        status = mg.open_context(folder)
+        check(not status["agents_served"] and status["needs_review"]
+              and status["regenerate"]["available"] and not status["rebuild"]["available"]
+              and status["headline_title"] == mg.REVIEW_TITLE
+              and status["headline_detail"] == mg.REVIEW_MAP_ONLY,
+              "a map edited by hand, every document still matching: Regenerate map is the one repair")
+        before = snapshot(folder)
+        p = mg.regenerate_plan(folder)
+        check(not p.blocked and not p.governing_change and p.confirm_phrase == ""
+              and [c.label for c in p.changes] == [ac.CONTEXT_MAP] and p.changes[0].diff(),
+              "its preview rewrites only the map, with a diff, under ordinary confirmation: the "
+              "map it generates is the approved one, whose hash the metadata already records")
+        check(raises(au.ActionRefused, mg.regenerate_apply, folder, p.plan_id, None)
+              and snapshot(folder) == before, "it waits for a deliberate confirmation")
+        check(ac.sha256_text(p.changes[0].new) == json.loads(read(folder, ac.METADATA))["sha256"][ac.CONTEXT_MAP]
+              and all(c.path != ac.METADATA for c in p.changes),
+              "the map it would write has exactly the hash the metadata already records, and the "
+              "metadata is not among the files it writes")
+        metadata_before = read(folder, ac.METADATA)
+        status = mg.regenerate_apply(folder, p.plan_id, True)
+        after = snapshot(folder)
+        check(status["agents_served"] and after == approved and read(folder, ac.METADATA) == metadata_before,
+              "afterwards the context is exactly the approved one: the map restored to its recorded "
+              "hash, and `.agent-context.json` byte for byte unchanged")
+
+        # A record whose settings no longer produce its own recorded map: the
+        # recorded hash cannot be reproduced, so nothing is regenerated.
+        meta = json.loads(read(folder, ac.METADATA))
+        meta["project_name"] = "Renamed by hand"
+        write(folder, ac.METADATA, (json.dumps(meta, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+        write(folder, ac.CONTEXT_MAP, text + "\nA note.\n")
+        before = snapshot(folder)
+        status = mg.open_context(folder)
+        p = mg.regenerate_plan(folder)
+        check(not status["regenerate"]["available"] and status["needs_review"]
+              and not ac.examine(folder).map_regenerable and ac.restored_map(ac.examine(folder)) is None,
+              "when the regenerated map would not have the recorded hash, Regenerate map is not offered")
+        check(p.blocked and mg.NOT_REGENERABLE in p.problems and not p.changes
+              and raises(au.ActionRefused, mg.regenerate_apply, folder, p.plan_id, True)
+              and snapshot(folder) == before and not mg.check(folder)["agents_served"],
+              "its preview is refused, applying writes nothing, the metadata is never changed to fit, "
+              "and the context stays unavailable")
+        for rel, data in approved.items():
+            if data is not None:
+                write(folder, rel.replace(os.sep, "/"), data)
+
+        # A record in an older map format: restored in that format, byte for byte.
+        from tests.agent_context import with_map_format
+        with_map_format(folder, 2)
+        older = snapshot(folder)
+        write(folder, ac.CONTEXT_MAP, read(folder, ac.CONTEXT_MAP) + b"\nA note.\n")
+        p = mg.regenerate_plan(folder)
+        status = mg.regenerate_apply(folder, p.plan_id, True)
+        check(snapshot(folder) == older and status["headline_title"] == mg.MAP_OUTDATED[0]
+              and status["rebuild"]["available"],
+              "a map recorded in format 2 is restored as that format 2 map, its metadata unchanged; "
+              "the context is then simply out of date, for Rebuild")
+        for rel, data in approved.items():
+            if data is not None:
+                write(folder, rel.replace(os.sep, "/"), data)
+
+        for label, damage in (
+                ("a governing document also changed",
+                 lambda: write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="x\n"))),
+                ("the map is missing", lambda: os.remove(os.path.join(folder, ac.CONTEXT_MAP))),
+                ("the map lists another document",
+                 lambda: write(folder, ac.CONTEXT_MAP, text.replace("`authoritative/b.md` |",
+                                                                    "`authoritative/z.md` |")))):
+            write(folder, ac.CONTEXT_MAP, text + "\nA note.\n")
+            damage()
+            before = snapshot(folder)
+            p = mg.regenerate_plan(folder)
+            check(not mg.check(folder)["regenerate"]["available"] and p.blocked
+                  and raises(au.ActionRefused, mg.regenerate_apply, folder, p.plan_id, True)
+                  and snapshot(folder) == before,
+                  f"when {label}, Regenerate map is not offered, and is refused, writing nothing")
+            for rel, data in approved.items():
+                if data is not None:
+                    write(folder, rel.replace(os.sep, "/"), data)
+        check(mg.check(folder)["agents_served"], "restored, the context is served again")
+        shutil.rmtree(folder)
+
+
 def case_plain_refusals() -> None:
     print("\nwhy agents are not served, in plain words: a heading, then what it means and what to do")
     with isolated_private_state():
         folder = context()
-        write(folder, "authoritative/a.md", b"no front matter\n")
+        write(folder, "authoritative/c.md", "﻿" + doc_text("c", "Gamma"))
         status = mg.check(folder, git=False)
-        check(not status["agents_served"] and status["state"] == ac.INVALID
+        check(not status["agents_served"] and status["state"] == ac.INVALID and not status["needs_review"]
               and (status["headline_title"], status["headline_detail"]) == mg.NOT_VALID
               and status["headline_detail"] == ("Something in this folder isn’t valid. Each problem, and how "
                                                 "to fix it, is listed below."),
@@ -233,7 +373,13 @@ def case_plain_refusals() -> None:
               "`charter check` and Connect agents get the heading and its detail as one line")
         shutil.rmtree(folder)
     every = [mg.INTERRUPTED, mg.PRIVATE_UNUSABLE, mg.CHARTER_OUTDATED, mg.LEGACY, mg.MAP_OUTDATED,
-             mg.MISMATCH, mg.NOT_VALID, (mg.STRAY_TITLE, mg.STRAY_DETAIL)]
+             mg.MISMATCH, mg.NOT_VALID, (mg.STRAY_TITLE, mg.STRAY_DETAIL),
+             (mg.REVIEW_TITLE, mg.REVIEW_DETAIL), (mg.REVIEW_TITLE, mg.REVIEW_MAP_ONLY),
+             (mg.REVIEW_TITLE, mg.REVIEW_NO_MAP)]
+    review = " ".join((mg.REVIEW_DETAIL, mg.REVIEW_MAP_ONLY, mg.REVIEW_NO_MAP)).lower()
+    check(not any(w in review for w in ("outside charter", "someone", "an agent", "edited by",
+                                        "changed by", "modified", "invalid")),
+          "the review statuses say what was observed: never who changed it, and never “invalid”")
     check(not any("Agents are refused" in t + d or "Agents are not served" in t + d for t, d in every)
           and "Agents are refused" not in ac.MAP_OUTDATED + ac.LEGACY_MAP,
           "no status, or the map's own messages, says “Agents are refused” any more")
@@ -266,16 +412,26 @@ def case_map_format_updates() -> None:
               "after Rebuild it is served, and Charter recognizes its own output: no false outside-change notice")
         check(not mg.check(folder)["outside"]["changed_outside"], "nor on a later check")
 
-        # A document edited outside Charter is still news after a Rebuild.
-        write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited in an editor.\n"))
+        with_map_format(folder, 2)
+        status = mg.open_context(folder)
+        check(not status["agents_served"] and status["headline_title"] == mg.MAP_OUTDATED[0]
+              and status["rebuild"]["available"],
+              "a map in format 2, generated before format 3, is out of date too: Rebuild is offered")
         p = mg.rebuild_plan(folder)
         status = mg.rebuild_apply(folder, p.plan_id, True)
-        check(status["agents_served"] and status["outside"]["changed_outside"]
-              and status["outside"]["paths"] == ["authoritative/a.md"]
-              and ac.CONTEXT_MAP not in status["outside"]["paths"],
-              "a document changed outside Charter is still named after a Rebuild; Charter's own files are not")
+        check(status["agents_served"] and status["map_format"]["recorded"] == ac.MAP_FORMAT_VERSION == 3,
+              "rebuilt, it records format 3 and is served")
 
-        with_map_format(folder, 3)
+        # An older map whose document also changed needs review, not just a rebuild.
+        with_map_format(folder, 2)
+        write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited in an editor.\n"))
+        status = mg.open_context(folder)
+        p = mg.rebuild_plan(folder)
+        check(status["needs_review"] and not status["rebuild"]["available"] and p.blocked,
+              "an older map whose document no longer matches needs review: Rebuild is refused")
+        generate(folder)
+
+        with_map_format(folder, ac.MAP_FORMAT_VERSION + 1)
         before = snapshot(folder)
         status = mg.open_context(folder)
         check(not status["agents_served"] and "newer version of Charter" in status["headline"]
@@ -370,17 +526,16 @@ def case_earlier_name_map() -> None:
         write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited in an editor.\n"))
         exam = ac.examine(folder)
         status = mg.check(folder, git=False)
-        check(not exam.legacy_map and len(exam.errors) > 1
+        check(not exam.legacy_map and exam.needs_review
               and "earlier name" not in status["headline"]
-              and status["headline_title"] == mg.NOT_YET
-              and status["headline_detail"] in (mg.MISMATCH[1], mg.NOT_VALID[1]),
-              "with a document also edited, it is not only an earlier-name map: the ordinary "
-              "headline, every problem listed")
+              and status["headline_title"] == mg.REVIEW_TITLE and not status["rebuild"]["available"],
+              "with a document also edited, it is not only an earlier-name map: context changes "
+              "need review, and no Rebuild is offered")
         shutil.rmtree(folder)
 
 
 def case_incomplete_context() -> None:
-    print("\nauthored documents in authoritative/, no map: opened, never created; Rebuild only when ready")
+    print("\nauthored documents in authoritative/, no map: opened, never created, never rebuilt into governance")
     with isolated_private_state():
         def authored(files: dict) -> str:
             folder = tempfile.mkdtemp(prefix="charter-authored-")
@@ -415,33 +570,73 @@ def case_incomplete_context() -> None:
               "with a document that cannot govern, Rebuild is not offered, its preview is blocked, "
               "and applying it is refused, writing nothing")
 
-        ready = authored({"authoritative/rules.md": doc_text("rules", "Rules")})
-        status = mg.open_context(ready)
-        check(status["rebuild"]["available"] and status["headline_detail"] == mg.INCOMPLETE_READY
-              and status["rebuild"]["needs_project_name"],
-              "with only valid documents, Rebuild is offered and asks for the project name")
-        waiting = mg.rebuild_plan(ready).problems
-        check(mg.NO_SETTINGS_YET in waiting and not any("lost" in p for p in waiting),
-              "its preview says it has no settings yet, never that settings were lost")
-        rules = read(ready, "authoritative/rules.md")
-        check(raises(au.ActionRefused, rebuild, ready, "Rules project"),
-              "Rebuild applies only once the person also confirms the agent guidance")
-
         def confirmed(folder: str, name: str) -> dict:
             p = mg.rebuild_plan(folder, name, ac.default_guidance())
             return mg.rebuild_apply(folder, p.plan_id, True, name, ac.default_guidance())
+
+        rules_text = doc_text("rules", "Rules")
+        ready = authored({"authoritative/rules.md": rules_text})
+        before = snapshot(ready)
+        status = mg.open_context(ready)
+        rows = {i["path"]: i["label"] for i in status["issues"] if i["kind"] == ac.INTEGRITY}
+        check(not status["agents_served"] and status["needs_review"]
+              and status["headline_title"] == mg.REVIEW_TITLE and status["headline_detail"] == mg.REVIEW_NO_MAP
+              and rows == {"authoritative/rules.md": "Not in approved context"}
+              and not status["governing"] and snapshot(ready) == before,
+              "valid governing front matter but no map: unavailable, the document not in an approved "
+              "context and not governing, and nothing written")
+        detail = status["headline_detail"]
+        row = next(i for i in status["issues"] if i["path"] == "authoritative/rules.md")
+        check("If an approved map and metadata for them exist elsewhere" in detail
+              and "If the documents are newly authored or were never mapped, there is no map to restore"
+              in detail and "were lost" not in detail
+              and "If an approved map and metadata for it exist elsewhere, restore them" in row["fix"]
+              and "newly authored or was never mapped, move it out" in row["fix"],
+              "the status and the row give both routes: restore a map that exists elsewhere, or, for "
+              "newly authored material, move it out and govern it as a candidate; neither assumes a "
+              "map was lost")
+        p = mg.rebuild_plan(ready, "Rules project", ac.default_guidance())
+        check(not status["rebuild"]["available"] and p.blocked and mg.REBUILD_NEVER_ACCEPTS in p.problems
+              and raises(au.ActionRefused, mg.rebuild_apply, ready, p.plan_id, True, "Rules project",
+                         ac.default_guidance())
+              and snapshot(ready) == before,
+              "Rebuild never maps the document into governance: not offered, its preview blocked, "
+              "applying refused, nothing written")
+
+        # The route: move the document out, establish an empty context, then govern it as a candidate.
+        outside = tempfile.mkdtemp(prefix="charter-moved-out-")
+        write(outside, "rules.md", read(ready, "authoritative/rules.md"))
+        os.remove(os.path.join(ready, "authoritative", "rules.md"))
+        status = mg.open_context(ready)
+        waiting = mg.rebuild_plan(ready).problems
+        check(status["rebuild"]["available"] and status["headline_detail"] == mg.INCOMPLETE_READY
+              and status["rebuild"]["needs_project_name"]
+              and mg.NO_SETTINGS_YET in waiting and not any("lost" in p for p in waiting),
+              "once no document remains, Rebuild is offered, asking for the project name and settings")
+        check(raises(au.ActionRefused, rebuild, ready, "Rules project"),
+              "Rebuild applies only once the person also confirms the agent guidance")
         status = confirmed(ready, "Rules project")
-        check(status["agents_served"] and read(ready, "authoritative/rules.md") == rules
-              and [d["path"] for d in status["governing"]] == ["authoritative/rules.md"],
-              "Rebuild generates the map and metadata, and the document governs unchanged")
+        check(status["agents_served"] and not status["governing"],
+              "Rebuild establishes an empty Agent Context, which governs nothing")
+        a = au.plan(ready, "add", {"title": "Rules", "body": rules_text.split("---\n", 2)[2]})
+        au.apply(ready, "add", a.request, a.plan_id, True)
+        logical = next(iter(ps.PrivateState.default().for_context(ready).candidates()))
+        g = au.plan(ready, "changeset", seeded(ready, {"alongside": logical}))
+        au.apply(ready, "changeset", g.request, g.plan_id, PHRASE)
+        status = mg.check(ready)
+        check(status["agents_served"] and [d["title"] for d in status["governing"]] == ["Rules"],
+              "added as an authority candidate and governed through a change set, it governs")
+        shutil.rmtree(outside)
         os.remove(os.path.join(ready, ".agent-context.json"))
-        check(mg.SETTINGS_UNREADABLE in mg.rebuild_plan(ready).problems,
-              "once it has a map, missing metadata is said to make its recorded settings unusable")
+        p = mg.rebuild_plan(ready)
+        check(p.blocked and mg.SETTINGS_UNREADABLE in p.problems and mg.check(ready)["needs_review"],
+              "once it has a map, missing metadata makes the settings unusable and its document "
+              "not in an approved context: no Rebuild")
 
         empty = authored({})
         status = mg.open_context(empty)
         check(status["rebuild"]["available"] and confirmed(empty, "Empty")["agents_served"],
-              "with no documents left, Rebuild makes a valid, empty Agent Context")
+              "with no documents, Rebuild makes a valid, empty Agent Context")
 
         stray = authored({"authoritative/rules.md": doc_text("rules", "Rules"), "README.md": "x\n"})
         status = mg.open_context(stray)
@@ -458,7 +653,8 @@ def case_rebuild_refusals() -> None:
         check(mg.rebuild_plan(folder).blocked and
               any("nothing to rebuild" in m for m in mg.rebuild_plan(folder).problems),
               "a valid context has nothing to rebuild")
-        write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited.\n"))
+        out_of_form(folder)
+        check(not mg.rebuild_plan(folder).blocked, "metadata out of form alone is rebuildable")
         write(folder, "scratch.txt", b"mine")
         before = snapshot(folder)
         p = mg.rebuild_plan(folder)
@@ -467,34 +663,59 @@ def case_rebuild_refusals() -> None:
         check(raises(au.ActionRefused, mg.rebuild_apply, folder, p.plan_id, True)
               and snapshot(folder) == before, "and nothing is written, the stray included")
         os.remove(os.path.join(folder, "scratch.txt"))
-        write(folder, "authoritative/b.md",
-              doc_text("b", "Beta", body="<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> topic\n"))
+        approved_b = read(folder, "authoritative/b.md")
+        for label, text in (
+                ("a merge conflict in a governing document",
+                 doc_text("b", "Beta", body="<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> topic\n")),
+                ("a governing document whose metadata now says it does not govern",
+                 doc_text("b", "Beta", authority="non-authoritative")),
+                ("an ordinary edit to a governing document", doc_text("b", "Beta", body="Edited.\n"))):
+            write(folder, "authoritative/b.md", text)
+            p = mg.rebuild_plan(folder)
+            check(p.blocked and mg.REBUILD_NEVER_ACCEPTS in p.problems
+                  and any("authoritative/b.md" in m and "does not match" in m for m in p.problems),
+                  f"{label} needs review: Rebuild is refused, naming it")
+        write(folder, "authoritative/c.md", doc_text("c", "Gamma"))
+        write(folder, "authoritative/b.md", approved_b)
         p = mg.rebuild_plan(folder)
-        check(p.blocked and any("conflict" in m for m in p.problems),
-              "a merge conflict in a governing document blocks Rebuild")
-        write(folder, "authoritative/b.md", doc_text("b", "Beta", authority="non-authoritative"))
-        check(mg.rebuild_plan(folder).blocked,
-              "so does a document whose metadata says it does not govern")
-        write(folder, "authoritative/b.md", doc_text("b", "Beta"))
+        check(p.blocked and any("authoritative/c.md" in m for m in p.problems),
+              "so is a governing document added by hand: Rebuild never maps it")
+        os.remove(os.path.join(folder, "authoritative", "c.md"))
         p = mg.rebuild_plan(folder)
         cs = ps.PrivateState.default().for_context(folder)
         cs.record_observed("x" * 64, {}, "seen", [])
-        write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited again.\n"))
+        out_of_form(folder)
+        write(folder, ac.METADATA, read(folder, ac.METADATA) + b" ")
         check(raises(au.StalePlan, mg.rebuild_apply, folder, p.plan_id, True),
-              "a document edited after the preview makes it stale")
+              "a generated file changed after the preview makes it stale")
         shutil.rmtree(folder)
 
 
 def case_rebuild_generated_damage() -> None:
-    print("\nRebuild replaces damaged or missing generated files")
+    print("\nRebuild replaces damaged or missing generated files only while no document is at stake")
     with isolated_private_state():
-        folder = context(guidance={"review_newly_discovered_material": True})
+        folder = context()
+        text = read(folder, ac.CONTEXT_MAP).decode()
+        for label, damage in (
+                ("a conflicted map", lambda: write(folder, ac.CONTEXT_MAP, "<<<<<<< HEAD\n" + text
+                                                   + "=======\nother\n>>>>>>> b\n")),
+                ("a missing map", lambda: os.remove(os.path.join(folder, ac.CONTEXT_MAP))),
+                ("a missing metadata file", lambda: os.remove(os.path.join(folder, ac.METADATA)))):
+            damage()
+            status = mg.open_context(folder)
+            check(status["needs_review"] and not status["rebuild"]["available"]
+                  and mg.rebuild_plan(folder, "Test project", ac.default_guidance()).blocked,
+                  f"{label}, with documents present: no usable map, so no Rebuild maps them")
+            generate(folder)
+        shutil.rmtree(folder)
+
+        folder = context(docs=(), guidance={"review_newly_discovered_material": True})
         text = read(folder, ac.CONTEXT_MAP).decode()
         write(folder, ac.CONTEXT_MAP, "<<<<<<< HEAD\n" + text + "=======\nother\n>>>>>>> b\n")
-        check(rebuild(folder)["agents_served"], "a conflicted map is regenerated")
+        check(rebuild(folder)["agents_served"], "with no document, a conflicted map is regenerated")
 
         os.remove(os.path.join(folder, ac.CONTEXT_MAP))
-        check(rebuild(folder)["agents_served"], "a missing map is regenerated")
+        check(rebuild(folder)["agents_served"], "and so is a missing map")
 
         remembered = {"project_name": "Test project",
                       "agent_guidance": dict(ac.default_guidance(),
@@ -550,11 +771,14 @@ def case_rebuild_generated_damage() -> None:
               and "being initialized" in offer["label"],
               "with no private record, the defaults are offered and settings are initialized")
         check(p.blocked, "and the person must still name the project and confirm them")
+        before = snapshot(empty)
         p = mg.rebuild_plan(empty, "Adopted", ac.default_guidance())
-        status = mg.rebuild_apply(empty, p.plan_id, True, "Adopted", ac.default_guidance())
-        check(status["agents_served"] and [d["path"] for d in status["governing"]] ==
-              ["authoritative/policy.md"],
-              "governing documents placed in a folder become an Agent Context through Rebuild")
+        check(p.blocked and mg.REBUILD_NEVER_ACCEPTS in p.problems
+              and raises(au.ActionRefused, mg.rebuild_apply, empty, p.plan_id, True, "Adopted",
+                         ac.default_guidance())
+              and snapshot(empty) == before,
+              "but documents placed in a folder never become governing through Rebuild, even with "
+              "every setting confirmed: nothing is written")
         shutil.rmtree(empty)
 
 
@@ -619,6 +843,7 @@ def case_git_read_only() -> None:
         git("commit", "-q", "-m", "context")
         git("checkout", "-q", "-b", "feature")
         write(folder, "authoritative/a.md", doc_text("a", "Alpha"))
+        generate(folder, "Repo context")  # a consistent change, as another checkout delivers it
         index = os.path.join(repo, ".git", "index")
         index_before = os.stat(index).st_mtime_ns
 
@@ -631,10 +856,10 @@ def case_git_read_only() -> None:
         subprocess.run = spy  # type: ignore[assignment]
         try:
             status = mg.open_context(folder)
-            p = mg.rebuild_plan(folder)
-            status = mg.rebuild_apply(folder, p.plan_id, True)
+            status = mg.check(folder)
         finally:
             subprocess.run = real  # type: ignore[assignment]
+        check(status["agents_served"], "the consistent change governs for the feature checkout")
         check(status["git"]["state"] == mg.GIT_CHECKOUT and status["git"]["branch"] == "feature",
               "the checkout's branch is shown")
         check(sorted(status["git"]["changed"]) == ["context/.agent-context.json",
@@ -863,6 +1088,13 @@ def case_untrusted_private_state() -> None:
         shutil.rmtree(folder)
 
 
+def out_of_form(folder: str) -> None:
+    """A problem Rebuild Agent Context may correct: the metadata holds exactly
+    what it should, in a form Charter does not write. No document's approved
+    status or text is in question."""
+    write(folder, ac.METADATA, json.dumps(json.loads(read(folder, ac.METADATA))).encode("utf-8"))
+
+
 def case_generated_writes_guarded() -> None:
     """Rebuild and Settings replace a file only if it still holds what the
     preview was built from; a failure to record the change afterwards is said
@@ -872,8 +1104,9 @@ def case_generated_writes_guarded() -> None:
     from app import transaction as tx
     with isolated_private_state():
         folder = context()
-        write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited outside.\n"))
+        out_of_form(folder)
         p = mg.rebuild_plan(folder)
+        check(not p.blocked, "metadata out of Charter's form is a problem Rebuild may correct")
         original = tx.Transaction.run
         meddled = "{\"edited\": \"meanwhile\"}\n"
 
@@ -893,7 +1126,7 @@ def case_generated_writes_guarded() -> None:
         check(refused and kept, "the metadata changed meanwhile: Rebuild refuses and leaves that change as it is")
 
         generate(folder)
-        write(folder, "authoritative/a.md", doc_text("a", "Alpha", body="Edited again.\n"))
+        out_of_form(folder)
         p = mg.rebuild_plan(folder)
         recorded = observation.record_rebuild
 
@@ -923,7 +1156,8 @@ def run() -> None:
     case_enclosing_context_helper()
     case_nested_context_refused()
     case_long_path_refused_cleanly()
-    case_outside_edit_and_rebuild()
+    case_outside_edit_needs_review()
+    case_regenerate_map()
     case_plain_refusals()
     case_map_format_updates()
     case_earlier_name_map()

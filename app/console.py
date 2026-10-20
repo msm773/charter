@@ -495,6 +495,8 @@ def _plan(session: Session, kind: str, request: Dict[str, Any]) -> au.Plan:
     if kind == "settings":
         return _guard(lambda: mg.settings_plan(folder, request.get("project_name"),
                                                request.get("agent_guidance")))
+    if kind == "regenerate-map":
+        return _guard(lambda: mg.regenerate_plan(folder))
     if kind in RETIRED_KINDS:
         raise ApiError(CHANGE_SET_ONLY, 409, {"change_set_only": True})
     if kind not in au.KINDS:
@@ -537,6 +539,10 @@ def apply(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
         status = _guard(lambda: mg.settings_apply(folder, plan_id, confirm,
                                                   request.get("project_name"),
                                                   request.get("agent_guidance")))
+        return {"applied": True, "kind": kind, "headline": status["headline"],
+                "follow_up": status.get("follow_up", [])}
+    if kind == "regenerate-map":
+        status = _guard(lambda: mg.regenerate_apply(folder, plan_id, confirm))
         return {"applied": True, "kind": kind, "headline": status["headline"],
                 "follow_up": status.get("follow_up", [])}
     if kind in RETIRED_KINDS or kind in au.GOVERNING_KINDS:

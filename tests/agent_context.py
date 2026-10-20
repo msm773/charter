@@ -8,9 +8,12 @@ Agent Context as the Project Asset §2, §6, §7 and the Product Specification
   * an empty context is valid, with or without `authoritative/`;
   * every other file or folder is a stray: the context is unclean, the stray is
     named and left untouched;
-  * the map and metadata must be what the documents and settings generate, and
-    the metadata's LF-normalized hashes must match, so an edit to a governing
-    document leaves the context invalid until it is rebuilt;
+  * the map and metadata are the only record of what governs: a recorded file
+    that changed, is missing or cannot be read, an unrecorded document, a map
+    whose own hash fails, and a map and metadata that disagree all need
+    review, and Rebuild clears none of them; only a map whose own hash is the
+    sole failure may be regenerated;
+  * with no usable map, no document governs, whatever its front matter says;
   * the metadata holds only versions, project name, guidance and hashes;
   * examining a folder never writes to it.
 """
@@ -60,12 +63,13 @@ def read(root: str, rel: str) -> bytes:
 
 def with_map_format(root: str, version: int) -> None:
     """Rewrite a valid context's map and metadata as a Charter generating
-    map-format `version` would have: version 1's own wording for 1, the current
-    map for a newer one (whose wording this Charter cannot know). The metadata
-    records that version and hashes consistent with the files."""
+    map-format `version` would have: an older supported version's own wording,
+    or the current map for a newer one (whose wording this Charter cannot
+    know). The metadata records that version and hashes consistent with the
+    files, as that Charter would have written them."""
     exam = ac.examine(root)
-    text = ac.render_previous_map(exam.settings, exam.documents) if version == 1 \
-        else ac.render_map(exam.settings, exam.documents)
+    text = ac.render_map_version(exam.settings, exam.documents, version) \
+        if version in ac.OLDER_MAP_FORMATS else ac.render_map(exam.settings, exam.documents)
     hashes = dict(exam.hashes, **{ac.CONTEXT_MAP: ac.sha256_text(text)})
     meta = json.loads(ac.render_metadata(exam.settings, hashes))
     meta["map_format_version"] = version
@@ -208,16 +212,18 @@ def case_strays() -> None:
 
 
 def case_invalid_front_matter() -> None:
-    print("\nincomplete or malformed governance front matter is named, not called missing")
+    print("\nan unmapped document is not in the approved context, whatever its front matter")
     root = context()
     write(root, "authoritative/draft.md",
           "---\ntitle: Draft\nstatus: draft\nauthority: authoritative\n---\n\n# Draft\n")
     exam = ac.examine(root)
-    message = next((i["message"] for i in exam.errors if i["path"] == "authoritative/draft.md"), "")
-    check(exam.state == ac.INVALID and not exam.strays and "no governance front matter" not in message
-          and "`id`" in message and "`created`" in message and "status `draft`" in message,
-          "front matter without `id`: each missing field and the invalid status are named")
-    check(("document", "authoritative/draft.md") in kinds(exam), "  as a document problem, not a stray")
+    found = [i for i in exam.errors if i["path"] == "authoritative/draft.md"]
+    check(exam.state == ac.INVALID and not exam.strays and len(found) == 1
+          and found[0]["kind"] == ac.INTEGRITY and found[0]["state"] == ac.UNRECORDED
+          and found[0]["label"] == "Not in approved context",
+          "governance front matter without `id`: one chip, Not in approved context")
+    check("cannot govern" not in found[0]["message"] and "invalid" not in found[0]["message"].lower(),
+          "  and it is never called invalid: its shape is not what is wrong")
     os.remove(os.path.join(root, "authoritative", "draft.md"))
     write(root, "authoritative/open.md", "---\nid: open\ntitle: Open\n\n# Never closed\n")
     exam = ac.examine(root)
@@ -233,85 +239,234 @@ def case_invalid_front_matter() -> None:
     shutil.rmtree(root)
 
 
-def case_outside_edits_need_rebuild() -> None:
-    print("\nchanges made outside Charter")
+def attention(exam: ac.Examination) -> dict:
+    """Each file that needs review, by path, with its observed state."""
+    return {i["path"]: i["state"] for i in exam.integrity}
+
+
+def rebuildable(exam: ac.Examination) -> bool:
+    """Whether the console would offer Rebuild Agent Context."""
+    return any(i["kind"] == ac.GENERATED_KIND for i in exam.errors) and not exam.rebuild_blockers
+
+
+def needs_review(exam: ac.Examination, expected: dict, label: str) -> None:
+    check(exam.state == ac.INVALID and exam.needs_review and attention(exam) == expected
+          and not rebuildable(exam) and not exam.map_regenerable and not exam.fingerprint,
+          f"{label}: context changes need review, and neither Rebuild nor Regenerate map is offered")
+
+
+def case_context_changes_need_review() -> None:
+    print("\ncontext changes need review: each kind of mismatch fails closed")
     root = context()
+    before = snapshot(root)
+    recorded = json.loads(read(root, ac.METADATA))["sha256"]
     write(root, "authoritative/a.md", doc_text("a", "Alpha", body="Edited.\n"))
     exam = ac.examine(root)
-    check(exam.state == ac.INVALID and ("generated", "authoritative/a.md") in kinds(exam),
-          "an edit to a governing document leaves the context invalid: its hash no longer matches")
-    check(not exam.rebuild_blockers, "and Rebuild Agent Context is what clears it")
-    generate(root)
-    check(ac.examine(root).valid, "after regeneration the edited context is valid")
+    needs_review(exam, {"authoritative/a.md": ac.CHANGED}, "a governing document whose text changed")
+    row = exam.integrity[0]
+    check(row["label"] == "Does not match approved context"
+          and row["recorded_sha256"] == recorded["authoritative/a.md"]
+          and row["current_sha256"] == ac.sha256_text(read(root, "authoritative/a.md").decode()),
+          "  it does not match the approved context, with its recorded and current hashes")
+    words = (row["message"] + " " + row["fix"]).lower()
+    check(not any(w in words for w in ("outside charter", "edited by", "changed by", "someone",
+                                       "agent changed", "modified", "mtime", "modification")),
+          "  and nothing says who or what changed it, or when")
+    check("authoritative/a.md" in {d.path for d in exam.documents},
+          "  it stays readable for Revise, which files its current text as a candidate")
+    write(root, "authoritative/a.md", before["authoritative" + os.sep + "a.md"])
+    check(ac.examine(root).valid, "restoring the approved text makes the context valid again")
+
+    os.remove(os.path.join(root, "authoritative", "b.md"))
+    exam = ac.examine(root)
+    needs_review(exam, {"authoritative/b.md": ac.MISSING}, "a recorded document missing from disk")
+    check(exam.integrity[0]["label"] == "Missing from context"
+          and exam.integrity[0]["recorded_sha256"] == recorded["authoritative/b.md"]
+          and "withdraw it through a change set once the Agent Context is valid again"
+          in exam.integrity[0]["fix"],
+          "  a synthetic row for the missing path: restore it, then withdraw it if intended")
+    write(root, "authoritative/b.md", before["authoritative" + os.sep + "b.md"])
 
     write(root, "authoritative/c.md", doc_text("c", "Gamma"))
     exam = ac.examine(root)
-    check(exam.state == ac.INVALID and ("generated", "authoritative/c.md") in kinds(exam),
-          "a governing document added by hand is invalid until rebuilt: it is not recorded")
-    generate(root)
-    os.remove(os.path.join(root, "authoritative", "b.md"))
-    exam = ac.examine(root)
-    check(exam.state == ac.INVALID and ("generated", "authoritative/b.md") in kinds(exam),
-          "a governing document deleted by hand is invalid until rebuilt")
-    generate(root)
+    needs_review(exam, {"authoritative/c.md": ac.UNRECORDED}, "a valid document the map does not list")
+    check(exam.integrity[0]["label"] == "Not in approved context"
+          and "invalid" not in exam.integrity[0]["message"].lower()
+          and "authoritative/c.md" not in {d.path for d in exam.documents},
+          "  not in the approved context, never called invalid, and never governing")
+    os.remove(os.path.join(root, "authoritative", "c.md"))
 
-    text = read(root, ac.CONTEXT_MAP).decode().replace("Alpha", "Alfa")
-    write(root, ac.CONTEXT_MAP, text)
+    write(root, "authoritative/a.md", b"---\nid: a\n\xff\n---\n")
     exam = ac.examine(root)
-    check(exam.state == ac.INVALID and ("generated", ac.CONTEXT_MAP) in kinds(exam),
-          "a hand edit to the map is invalid")
-    generate(root)
-    os.remove(os.path.join(root, ac.METADATA))
+    needs_review(exam, {"authoritative/a.md": ac.UNVERIFIABLE}, "a recorded file that cannot be read")
+    check(exam.integrity[0]["label"] == "Cannot verify file" and not exam.integrity[0]["current_sha256"],
+          "  Cannot verify file, without claiming its text changed")
+    write(root, "authoritative/a.md", "﻿" + before["authoritative" + os.sep + "a.md"].decode())
+    needs_review(ac.examine(root), {"authoritative/a.md": ac.CHANGED},
+                 "a recorded document saved with a byte-order mark")
+    write(root, "authoritative/a.md", doc_text("a", "Alpha", body="<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n"))
+    needs_review(ac.examine(root), {"authoritative/a.md": ac.CHANGED},
+                 "a recorded document left with merge-conflict markers")
+    write(root, "authoritative/a.md", before["authoritative" + os.sep + "a.md"])
+
+    meta = json.loads(read(root, ac.METADATA))
+    meta["sha256"]["authoritative/b.md"] = "0" * 64
+    write(root, ac.METADATA, json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+    needs_review(ac.examine(root), {"authoritative/b.md": ac.CHANGED},
+                 "a recorded hash changed in the metadata")
+    write(root, ac.METADATA, before[ac.METADATA])
+
+    write(root, "authoritative/c.md", doc_text("c", "Gamma"))
+    meta = json.loads(read(root, ac.METADATA))
+    meta["sha256"]["authoritative/c.md"] = ac.sha256_text(doc_text("c", "Gamma"))
+    write(root, ac.METADATA, json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+    needs_review(ac.examine(root), {ac.METADATA: ac.CHANGED},
+                 "metadata that records a document the map does not list")
+    write(root, ac.METADATA, before[ac.METADATA])
+    os.remove(os.path.join(root, "authoritative", "c.md"))
+
+    meta = json.loads(read(root, ac.METADATA))
+    del meta["sha256"][ac.CONTEXT_MAP]
+    write(root, ac.METADATA, json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+    needs_review(ac.examine(root), {ac.METADATA: ac.CHANGED}, "metadata that records no hash for the map")
+    write(root, ac.METADATA, before[ac.METADATA])
+
+    check(ac.examine(root).valid, "with every file restored, the context is valid")
+    check(snapshot(root) == before, "and examining never wrote anything")
+    shutil.rmtree(root)
+
+    print("\nRegenerate map: only for a map whose own hash is the sole failure")
+    root = context()
+    text = read(root, ac.CONTEXT_MAP).decode()
+    write(root, ac.CONTEXT_MAP, text + "\nA note added by hand.\n")
     exam = ac.examine(root)
-    check(exam.state == ac.INVALID and ("generated", ac.METADATA) in kinds(exam)
-          and not exam.rebuild_blockers, "a missing metadata file is invalid, and rebuildable")
-    generate(root)
-    os.remove(os.path.join(root, ac.CONTEXT_MAP))
-    check(ac.examine(root).state == ac.INVALID, "a missing map is invalid")
+    check(exam.needs_review and attention(exam) == {ac.CONTEXT_MAP: ac.CHANGED}
+          and exam.map_regenerable and not rebuildable(exam),
+          "a map edited by hand, still listing the recorded documents, which all match: regenerable")
+    check(ac.restored_map(exam) == text and ac.sha256_text(ac.restored_map(exam)) == exam.recorded_map_sha256
+          == json.loads(read(root, ac.METADATA))["sha256"][ac.CONTEXT_MAP],
+          "  the restored map is the approved one, byte for byte, with exactly the recorded hash")
+    meta_text = read(root, ac.METADATA)
+    meta = json.loads(meta_text)
+    meta["agent_guidance"]["review_newly_discovered_material"] = True
+    write(root, ac.METADATA, json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+    exam = ac.examine(root)
+    check(exam.needs_review and ac.restored_map(exam) is None and not exam.map_regenerable,
+          "  but when the recorded settings no longer produce the recorded hash, nothing can be "
+          "restored, and it is not regenerable")
+    write(root, ac.METADATA, meta_text)
+    exam = ac.examine(root)
+    for rel, t in ac.render_generated(exam.settings, exam.documents, exam.texts).items():
+        write(root, rel, t)
+    check(ac.examine(root).valid, "regenerated from the recorded documents, it is valid again")
+    for label, edit in (
+            ("drops a listed document",
+             lambda t: t.replace("| [Beta](authoritative/b.md) | A scope. | `authoritative/b.md` |\n", "")),
+            ("adds an unrecorded document",
+             lambda t: t.replace("| [Beta](authoritative/b.md) | A scope. | `authoritative/b.md` |\n",
+                                 "| [Beta](authoritative/b.md) | A scope. | `authoritative/b.md` |\n"
+                                 "| [Gamma](authoritative/c.md) | A scope. | `authoritative/c.md` |\n")),
+            ("has no readable listing", lambda t: t.replace("## Current governing documents", "## Other"))):
+        write(root, ac.CONTEXT_MAP, edit(text))
+        exam = ac.examine(root)
+        check(exam.needs_review and not exam.map_regenerable and not rebuildable(exam)
+              and attention(exam).get(ac.METADATA) == ac.CHANGED,
+              f"a map that {label} does not list what the metadata records: not regenerable")
+    write(root, ac.CONTEXT_MAP, text + "\nA note.\n")
+    write(root, "authoritative/a.md", doc_text("a", "Alpha", body="Edited.\n"))
+    check(not ac.examine(root).map_regenerable, "nor when a document also does not match")
+    write(root, "authoritative/a.md", doc_text("a", "Alpha"))
+    write(root, "authoritative/c.md", doc_text("c", "Gamma"))
+    check(not ac.examine(root).map_regenerable, "nor when an unrecorded document is present")
+    os.remove(os.path.join(root, "authoritative", "c.md"))
+    os.remove(os.path.join(root, "authoritative", "b.md"))
+    check(not ac.examine(root).map_regenerable, "nor when a recorded document is missing")
+    shutil.rmtree(root)
+
+    print("\nno usable map: no document governs, whatever its front matter")
+    for label, damage in (
+            ("no metadata", lambda r: os.remove(os.path.join(r, ac.METADATA))),
+            ("no map", lambda r: os.remove(os.path.join(r, ac.CONTEXT_MAP))),
+            ("neither file", lambda r: [os.remove(os.path.join(r, n)) for n in ac.GENERATED]),
+            ("unusable metadata", lambda r: write(r, ac.METADATA, "{not json")),
+            ("a map with merge-conflict markers",
+             lambda r: write(r, ac.CONTEXT_MAP, "<<<<<<< ours\n" + read(r, ac.CONTEXT_MAP).decode()
+                             + ">>>>>>> theirs\n"))):
+        root = context()
+        damage(root)
+        exam = ac.examine(root)
+        check(exam.no_record and exam.record_mode == ac.NO_RECORD and not exam.documents
+              and attention(exam) == {"authoritative/a.md": ac.UNRECORDED,
+                                      "authoritative/b.md": ac.UNRECORDED}
+              and not rebuildable(exam) and not exam.map_regenerable,
+              f"{label}: each document is not in an approved context, and no Rebuild is offered")
+        generated = [i for i in exam.errors if i["kind"] == ac.GENERATED_KIND]
+        check(generated and all(i["fix"] == ac.NO_RECORD_FIX and "Use Rebuild" not in i["fix"]
+                                for i in generated),
+              "  and the missing or unusable generated file says to restore it, never to rebuild it")
+        shutil.rmtree(root)
+    root = context()
+    for name in ac.GENERATED:
+        os.remove(os.path.join(root, name))
+    shutil.rmtree(os.path.join(root, "authoritative"))
+    os.mkdir(os.path.join(root, "authoritative"))
+    exam = ac.examine(root)
+    check(ac.is_incomplete_context(root) and not exam.needs_review and rebuildable(exam)
+          and not exam.documents,
+          "once no document remains, Rebuild may establish an empty context, governing nothing")
+    shutil.rmtree(root)
+
+    print("\nan internally consistent checkout is served, whatever produced it")
+    root = context()
+    write(root, "authoritative/a.md", doc_text("a", "Alpha", body="Merged from another branch.\n"))
+    write(root, "authoritative/c.md", doc_text("c", "Gamma"))
+    generate(root)  # as another machine's Charter wrote it, then committed and pulled
+    exam = ac.examine(root)
+    check(exam.valid and not exam.needs_review and len(exam.documents) == 3,
+          "a context another Charter generated, as Git delivers it, is valid and served")
     shutil.rmtree(root)
 
 
 def case_invalid_documents() -> None:
-    print("\ninvalid documents")
+    print("\nunmapped and unreadable documents")
     for label, text in (
             ("a non-authoritative document in `authoritative/`",
              doc_text("c", "Gamma", authority="non-authoritative")),
             ("a superseded document in `authoritative/`", doc_text("c", "Gamma", status="superseded")),
             ("an unknown status", doc_text("c", "Gamma", status="draft")),
             ("a missing required field", doc_text("c", "Gamma").replace("created: 2026-10-06\n", "")),
-            ("a duplicate id", doc_text("a", "Gamma")),
+            ("a duplicate id", doc_text("a", "Gamma"))):
+        root = context()
+        write(root, "authoritative/c.md", text)
+        exam = ac.examine(root)
+        check(exam.state == ac.INVALID and attention(exam) == {"authoritative/c.md": ac.UNRECORDED}
+              and exam.rebuild_blockers and [d.path for d in exam.documents]
+              == ["authoritative/a.md", "authoritative/b.md"],
+              f"{label}, unmapped, is not in the approved context, and blocks a rebuild")
+        shutil.rmtree(root)
+    for label, text in (
             ("unresolved merge-conflict markers",
              doc_text("c", "Gamma", body="<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\n")),
-            ("a byte-order mark", "\ufeff" + doc_text("c", "Gamma"))):
+            ("a byte-order mark", "\ufeff" + doc_text("c", "Gamma")),
+            ("text that is not UTF-8", b"---\nid: c\n\xff\n---\n")):
         root = context()
         write(root, "authoritative/c.md", text)
         exam = ac.examine(root)
         check(exam.state == ac.INVALID and ("document", "authoritative/c.md") in kinds(exam)
               and exam.rebuild_blockers and not exam.documents,
-              f"{label} is invalid, and blocks a rebuild")
+              f"an unmapped file with {label} cannot be read as a document, and blocks a rebuild")
         shutil.rmtree(root)
-    root = context()
-    write(root, "authoritative/c.md", b"---\nid: c\n\xff\n---\n")
-    check(ac.examine(root).state == ac.INVALID, "a document that is not UTF-8 is invalid")
-    shutil.rmtree(root)
 
     root = context()
     write(root, "authoritative/A.md", doc_text("A", "Upper"))
     if not os.path.exists(os.path.join(root, "authoritative", "a.md")) or \
             read(root, "authoritative/a.md") != read(root, "authoritative/A.md"):
         exam = ac.examine(root)
-        check(exam.state == ac.INVALID and any("letter case" in i["message"] for i in exam.errors),
-              "two paths that differ only by letter case are invalid")
+        check(exam.state == ac.INVALID and attention(exam) == {"authoritative/A.md": ac.UNRECORDED},
+              "a path that differs from a governing one only by letter case is not in the approved "
+              "context")
     else:
         print("  - letter-case collision not checked: this filesystem ignores case")
-    shutil.rmtree(root)
-
-    root = context()
-    map_text = read(root, ac.CONTEXT_MAP).decode()
-    write(root, ac.CONTEXT_MAP, "<<<<<<< HEAD\n" + map_text + ">>>>>>> topic\n")
-    exam = ac.examine(root)
-    check(exam.state == ac.INVALID and not exam.rebuild_blockers,
-          "a conflicted map is invalid, and only the generated files need rebuilding")
     shutil.rmtree(root)
 
     root = context()
@@ -404,8 +559,13 @@ def case_map() -> None:
           "it states the governing predicate")
     check("| [Alpha](authoritative/a.md) | A scope. | `authoritative/a.md` |" in text,
           "it lists each governing document with title, scope and logical path")
-    check("read\n`AGENT-CONTEXT.md` again and start over" in text and ".agent-context.json" in text,
-          "it tells a direct reader to start over on a missing link or hash mismatch")
+    check("read\n`AGENT-CONTEXT.md` again once and start over" in text and ".agent-context.json" in text,
+          "it tells a direct reader to reread once and start over on a missing link or hash mismatch")
+    flat = " ".join(text.split())
+    check("If it still does not match, stop: do not rely on anything you read from this Agent "
+          "Context earlier, and tell the person that the Agent Context no longer matches its map, "
+          "rather than guessing or continuing." in flat,
+          "and, if it still does not match, to stop, not rely on what it read, and tell the person")
     check("charter propose --context ." in text, "its proposal route is `charter propose --context .`")
     for word in ("cgu", "CGU", "Context Governance", "base_commit", "surface", "publish",
                  "workspace", "`created`", "related_finding", "archive"):
@@ -445,31 +605,39 @@ def case_map() -> None:
           "the map tells an agent what a `duplicate` result means")
 
     print("\nmap-format versions: older is out of date, newer means this Charter is")
-    check(ac.MAP_FORMAT_VERSION == 2 and ac.OLDER_MAP_FORMATS == (1,),
-          "this Charter generates map-format version 2 and recognizes version 1 as older")
+    check(ac.MAP_FORMAT_VERSION == 3 and ac.OLDER_MAP_FORMATS == (1, 2),
+          "this Charter generates map-format version 3 and recognizes versions 1 and 2 as older")
     root = context(guidance={g: True for g in ac.GUIDANCE_IDS})
     exam = ac.examine(root)
-    check(exam.valid and exam.map_format == ac.FORMAT_CURRENT and exam.recorded_map_format == 2,
-          "a context it generates records map-format version 2")
+    check(exam.valid and exam.map_format == ac.FORMAT_CURRENT and exam.recorded_map_format == 3,
+          "a context it generates records map-format version 3")
     previous = ac.render_previous_map(exam.settings, exam.documents)
     check("Context-impact check before a proposal" in previous and "`duplicate`" not in previous
           and "and do not know the\nfolder that holds it" in previous
           and "do not run\n`charter propose`" in ac.render_map(exam.settings, exam.documents),
           "version 1 had the earlier headings, no duplicate result, and let an MCP agent run "
-          "`charter propose`; version 2 tells it not to")
-    with_map_format(root, 1)
-    exam = ac.examine(root)
-    check(not exam.valid and exam.map_format == ac.FORMAT_OLDER and exam.map_outdated
-          and [i["message"] for i in exam.errors] == [ac.MAP_OUTDATED]
-          and exam.errors[0]["kind"] == ac.GENERATED_KIND and not exam.rebuild_blockers
-          and exam.settings is not None,
-          "a version-1 context is out of date, for exactly that reason: Rebuild is offered, with its settings kept")
-    check(not any(ch.isdigit() for ch in ac.MAP_OUTDATED), "and the message names no version number")
-    for rel, text in ac.render_generated(exam.settings, exam.documents, exam.texts).items():
-        write(root, rel, text)
-    check(ac.examine(root).valid, "regenerated, it is current and valid again")
+          "`charter propose`; later versions tell it not to")
+    v2 = ac.render_map_version(exam.settings, exam.documents, 2)
+    check("read\n`AGENT-CONTEXT.md` again and start over." in v2 and "stop:" not in v2
+          and "`duplicate`" in v2 and "do not run\n`charter propose`" in v2,
+          "version 2 told a direct reader only to reread and start over; version 3 adds when to stop")
+    for version in ac.OLDER_MAP_FORMATS:
+        generate(root, guidance={g: True for g in ac.GUIDANCE_IDS})
+        with_map_format(root, version)
+        exam = ac.examine(root)
+        check(not exam.valid and exam.map_format == ac.FORMAT_OLDER and exam.map_outdated
+              and [i["message"] for i in exam.errors] == [ac.MAP_OUTDATED]
+              and exam.errors[0]["kind"] == ac.GENERATED_KIND and not exam.rebuild_blockers
+              and exam.settings is not None and not exam.needs_review,
+              f"a version-{version} context is out of date, for exactly that reason: Rebuild is "
+              "offered, with its settings kept")
+        for rel, text in ac.render_generated(exam.settings, exam.documents, exam.texts).items():
+            write(root, rel, text)
+        check(ac.examine(root).valid and ac.examine(root).recorded_map_format == 3,
+              "  regenerated, it is current, in version 3, and valid again")
+    check(not any(ch.isdigit() for ch in ac.MAP_OUTDATED), "the message names no version number")
 
-    with_map_format(root, 3)
+    with_map_format(root, ac.MAP_FORMAT_VERSION + 1)
     exam = ac.examine(root)
     check(not exam.valid and exam.charter_outdated and not exam.map_outdated
           and [i["message"] for i in exam.errors] == [ac.CHARTER_OUTDATED]
@@ -494,9 +662,9 @@ def case_map() -> None:
     with_map_format(root, 1)
     write(root, "authoritative/a.md", read(root, "authoritative/a.md") + b"Edited.\n")
     exam = ac.examine(root)
-    check(not exam.valid and not exam.map_outdated
-          and any("does not match the hash" in i["message"] for i in exam.errors),
-          "an older map whose document no longer matches its hash is a real mismatch, not just out of date")
+    check(not exam.valid and not exam.map_outdated and exam.needs_review
+          and attention(exam) == {"authoritative/a.md": ac.CHANGED} and not rebuildable(exam),
+          "an older map whose document no longer matches its hash needs review, not just a rebuild")
     shutil.rmtree(root)
     root = context(guidance={"review_newly_discovered_material": True})
     check(json.loads(read(root, ac.METADATA))["agent_guidance"]["review_newly_discovered_material"]
@@ -523,7 +691,7 @@ def run() -> None:
     case_tolerated_files()
     case_strays()
     case_invalid_front_matter()
-    case_outside_edits_need_rebuild()
+    case_context_changes_need_review()
     case_invalid_documents()
     case_scope_warning()
     case_metadata()
