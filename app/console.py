@@ -127,8 +127,9 @@ def _documents(folder: str, cs: ps.ContextState, exam: ac.Examination) -> List[D
     archived = au.archived_metas(cs)
     candidates = []
     revises_count: Dict[str, int] = {}
-    for logical in cs.candidates():
-        meta, body = parse_front_matter(cs.read_candidate(logical) or "")
+    texts, unreadable = cs.readable_candidates()
+    for logical in sorted(texts):
+        meta, body = parse_front_matter(texts[logical])
         meta = meta or {}
         entry = _document(meta, logical, "candidate")
         # Revision lineage: the governing document this candidate revises, by its
@@ -147,10 +148,45 @@ def _documents(folder: str, cs: ps.ContextState, exam: ac.Examination) -> List[D
         entry["co_revisions"] = max(0, revises_count.get(entry["revises_path"], 0) - 1) \
             if entry["revises_path"] else 0
         docs.append(entry)
-    for name in cs.archived():
-        meta, _body = parse_front_matter(cs.read_archived(name) or "")
+    for logical in unreadable:
+        # Shown by its logical path, marked, with nothing read from it.
+        docs.append(dict(_document({}, logical, "candidate"), unreadable=True, source_kind="",
+                         source_agent="", created="", change_summary="", revises_path="",
+                         revises_title="", revises_current=True, co_revisions=0))
+    archived_texts, archived_unreadable = cs.readable_archived()
+    for name in sorted(archived_texts):
+        meta, _body = parse_front_matter(archived_texts[name])
         docs.append(_document(meta or {}, f"archive/{name}", "archived"))
+    for name in archived_unreadable:
+        docs.append(dict(_document({}, f"archive/{name}", "archived"), unreadable=True))
     return docs
+
+
+def _unusable_candidate_files(cs: ps.ContextState) -> List[str]:
+    """The names of entries among the candidates that cannot be one, for the
+    person to see. Listing them never fails the page."""
+    try:
+        return cs.unusable_candidate_files()
+    except (OSError, ps.PrivateStateError):
+        return []
+
+
+CANNOT_READ = "This authority candidate's file cannot be read as UTF-8 text, so Charter cannot show it."
+CANNOT_READ_ARCHIVED = "This archived document's file cannot be read as UTF-8 text, so Charter cannot show it."
+
+
+def _candidate_text(cs: ps.ContextState, path: str) -> str:
+    """A listed candidate's text, or a plain refusal when its file cannot be read."""
+    return _private_text(cs.read_candidate, path, CANNOT_READ)
+
+
+def _private_text(read_fn: Callable[[str], Optional[str]], name: str,
+                  refusal: str = CANNOT_READ_ARCHIVED) -> str:
+    """A listed private document's text, or `refusal` when its file cannot be read."""
+    try:
+        return read_fn(name) or ""
+    except ps.PrivateStateError:
+        raise ApiError(refusal)
 
 
 def _active_change_sets(folder: str) -> int:
@@ -219,6 +255,7 @@ def state(session: Session) -> Dict[str, Any]:
                 proposals=proposals, change_sets={"active": _active_change_sets(folder)},
                 recovered=recovered, issues=exam.issues,
                 documents=_documents(folder, cs, exam),
+                unusable_candidate_files=_unusable_candidate_files(cs),
                 agent_guidance=[{"id": g["id"], "label": g["label"],
                                  "on": bool(guidance.get(g["id"])),
                                  "summary": GUIDANCE_SUMMARY[g["id"]]}
@@ -353,9 +390,9 @@ def preview(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
         if path in {d.path for d in exam.documents}:
             text, kind = exam.texts[path], "governing"
         elif path in cs.candidates():
-            text, kind = cs.read_candidate(path) or "", "candidate"
+            text, kind = _candidate_text(cs, path), "candidate"
         elif path.startswith("archive/") and path[len("archive/"):] in cs.archived():
-            text, kind = cs.read_archived(path[len("archive/"):]) or "", "archived"
+            text, kind = _private_text(cs.read_archived, path[len("archive/"):]), "archived"
         else:
             raise ApiError("Only documents this page lists can be read here, named exactly as it "
                            "lists them.")
@@ -390,12 +427,12 @@ def compare(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     governing = {d.path: d for d in exam.documents}
     if not isinstance(cand, str) or cand not in cs.candidates():
         raise ApiError("Only an authority candidate this page lists can be compared.")
-    left = cs.read_candidate(cand) or ""
+    left = _candidate_text(cs, cand)
     left_title = _title_of(left, cand)
     if isinstance(against, str) and against in governing:
         right, right_title = exam.texts[against], governing[against].title
     elif isinstance(against, str) and against != cand and against in cs.candidates():
-        right = cs.read_candidate(against) or ""
+        right = _candidate_text(cs, against)
         right_title = _title_of(right, against)
     else:
         raise ApiError("Compare against a governing document this map lists, or another candidate.")
@@ -417,7 +454,7 @@ def draft(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(path, str) and path in {d.path for d in exam.documents}:
         text, kind = exam.texts[path], "governing"
     elif isinstance(path, str) and path in cs.candidates():
-        text, kind = cs.read_candidate(path) or "", "candidate"
+        text, kind = _candidate_text(cs, path), "candidate"
     else:
         raise ApiError("Only a governing document or an authority candidate can be drafted from, "
                        "named exactly as the page lists it.")

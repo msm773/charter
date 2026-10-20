@@ -99,6 +99,9 @@ class Situation:
     candidates: Dict[str, Tuple[Document, str]]
     archived: List[str]
     governing_names: List[str]
+    # Candidates whose file cannot be read as text: set aside, so that every
+    # other candidate and action stays usable, and never used themselves.
+    unreadable: List[str] = field(default_factory=list)
 
     @property
     def governing(self) -> Dict[str, Document]:
@@ -107,8 +110,10 @@ class Situation:
     def all_ids(self) -> set:
         ids = {d.id for d in self.exam.documents}
         ids |= {doc.id for doc, _text in self.candidates.values()}
-        for name in self.archived:
-            text = self.cs.read_archived(name) or ""
+        # An archived document that cannot be read gives no id; it never
+        # stops the others being counted.
+        texts, _unreadable = self.cs.readable_archived()
+        for text in texts.values():
             meta, _body = parse_front_matter(text)
             if meta and meta.get("id"):
                 ids.add(str(meta["id"]))
@@ -133,12 +138,13 @@ def situation(folder: str, state: Optional[ps.PrivateState] = None) -> Situation
     cs = state.for_context(folder)
     exam = ac.examine(cs.folder)
     candidates: Dict[str, Tuple[Document, str]] = {}
-    for logical in cs.candidates():
-        text = cs.read_candidate(logical) or ""
+    texts, unreadable = cs.readable_candidates()
+    for logical, text in texts.items():
         meta, body = parse_front_matter(text)
         candidates[logical] = (Document(path=logical, meta=meta or {}, body=body), text)
     return Situation(folder=cs.folder, exam=exam, cs=cs, candidates=candidates,
-                     archived=cs.archived(), governing_names=_authoritative_paths(cs.folder))
+                     archived=cs.archived(), governing_names=_authoritative_paths(cs.folder),
+                     unreadable=unreadable)
 
 
 # --- plans ----------------------------------------------------------------------------
@@ -237,6 +243,9 @@ def _text_field(request: Dict[str, Any], key: str, required: bool = False) -> Op
     return value
 
 
+UNREADABLE_CANDIDATE = ("This authority candidate's file cannot be read as UTF-8 text, so Charter "
+                        "cannot use it. Nothing was changed.")
+
 FRONT_MATTER_IN_BODY = ("The text begins with a front-matter block. Remove it: the title and scope are "
                         "set in their own fields, and Charter assigns everything else.")
 
@@ -287,6 +296,8 @@ class _Builder:
         return f"{ps.CANDIDATES}/{ps.candidate_name(logical)}"
 
     def require_candidate(self, logical: Any) -> Tuple[Document, str]:
+        if isinstance(logical, str) and logical in self.sit.unreadable:
+            raise ActionRefused(UNREADABLE_CANDIDATE)
         if not isinstance(logical, str) or logical not in self.sit.candidates:
             raise ActionRefused("There is no such authority candidate.")
         return self.sit.candidates[logical]
@@ -488,8 +499,9 @@ def revision_lineage(meta: Dict[str, Any], documents: List[Document], hashes: Di
 def archived_metas(cs: ps.ContextState) -> List[Dict[str, Any]]:
     """The front matter of every archived document, for following lineage."""
     out = []
-    for name in cs.archived():
-        meta, _body = parse_front_matter(cs.read_archived(name) or "")
+    texts, _unreadable = cs.readable_archived()
+    for text in texts.values():
+        meta, _body = parse_front_matter(text)
         if isinstance(meta, dict):
             out.append(meta)
     return out

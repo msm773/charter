@@ -218,12 +218,30 @@ class Target:
         self.candidates = set(cs.candidates())
         self.names = sorted(set(exam.texts) - {ac.CONTEXT_MAP})
 
+    def cannot_read(self, path: str) -> bool:
+        """Whether `path` names a candidate whose file cannot be read. For the
+        person's own console only: what an agent is told never separates it
+        from a target that does not exist."""
+        if path not in self.candidates:
+            return False
+        try:
+            self.cs.read_candidate(path)
+        except ps.PrivateStateError:
+            return True
+        return False
+
     def text_of(self, path: str) -> Optional[str]:
         """The target's whole current text, LF-normalized, or None."""
         if path in self.governing:
             return self.exam.texts[path]
         if path in self.candidates:
-            return self.cs.read_candidate(path)
+            # A candidate whose file cannot be read has no text to check
+            # against: the proposal is refused as for any target it cannot
+            # use, never with a different answer that would tell it apart.
+            try:
+                return self.cs.read_candidate(path)
+            except ps.PrivateStateError:
+                return None
         return None
 
 
@@ -908,6 +926,11 @@ def records(cs: ps.ContextState) -> Tuple[List[Dict[str, Any]], List[Dict[str, A
     return filed, unexpected
 
 
+# A pending proposal whose candidate target is there but cannot be read: the
+# person is told so, never that it no longer exists (console only).
+TARGET_UNREADABLE = "Charter cannot read the file of the candidate it targets."
+
+
 def staleness(proposal: Dict[str, Any], target: Target) -> List[str]:
     """Why a filed proposal no longer applies as written, or []."""
     op, path = proposal["operation"], proposal["target_path"]
@@ -916,6 +939,8 @@ def staleness(proposal: Dict[str, Any], target: Target) -> List[str]:
         # name, so a taken name is resolved rather than reported.
         return []
     current = target.text_of(path)
+    if current is None and target.cannot_read(path):
+        return [TARGET_UNREADABLE]
     if current is None:
         return ["Its target no longer exists."]
     if ac.sha256_text(current) != proposal.get("base_sha256"):
@@ -992,7 +1017,8 @@ def listing(folder: str, state: Optional[ps.PrivateState] = None) -> Dict[str, A
                       "reason": p.get("reason", ""),
                       "expected_context_impact": p.get("expected_context_impact"),
                       "proposed_meta": p.get("proposed_meta") or {},
-                      "stale": bool(stale), "stale_reasons": stale})
+                      "stale": bool(stale), "stale_reasons": stale,
+                      "target_unreadable": stale == [TARGET_UNREADABLE]})
     return {"pending": [s for s in shown if s["source"] == AGENT],
             "imported": [s for s in shown if s["source"] == IMPORTED],
             "unexpected": unexpected}

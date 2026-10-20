@@ -82,6 +82,7 @@ def detail(ctx: changeset.Ctx, draft: Dict[str, Any]) -> Dict[str, Any]:
         return {"path": path, "title": doc.title if doc else path,
                 "scope": str(doc.meta.get("scope") or "") if doc else "",
                 "present": doc is not None,
+                "unreadable": path in now.unreadable,
                 "origin": "agent-proposal" if source.startswith("Agent Proposal ") else "",
                 "source_kind": source_kind,
                 "source_agent": source_agent,

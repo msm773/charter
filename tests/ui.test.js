@@ -609,6 +609,35 @@ for (const file of ["markdown.js", "app.js"]) {
     && !/Source unknown|Human Proposal/.test(serialize(vm.runInThisContext("docRow")({ kind: "candidate",
       path: "authority-candidates/u.md", title: "U", source_kind: "create" }))),
     "the source tag names an agent only when one is known, and never invents an identity");
+  console.log("\nA candidate file Charter cannot use is marked, never acted on");
+  const unreadableCard = vm.runInThisContext("docRow")({ kind: "candidate", path: "authority-candidates/bad.md",
+    title: "authority-candidates/bad.md", scope: "", unreadable: true, source_kind: "" });
+  const unreadableTitle = unreadableCard.querySelector(".title-row");
+  check(unreadableTitle.querySelector(".title").textContent === "authority-candidates/bad.md"
+    && unreadableTitle.querySelector(".chip").textContent === "Cannot read file"
+    && unreadableTitle.children.length === 2
+    && unreadableCard.querySelector(".path strong").textContent === "Filename: "
+    && !unreadableCard.querySelectorAll("button").length && !unreadableCard.querySelector(".source-tag"),
+    "an unreadable candidate's card shows its path, then Cannot read file, a Filename: label, and no action at all");
+  const unreadableArchive = vm.runInThisContext("docRow")({ kind: "archived", path: "archive/old.md",
+    title: "archive/old.md", scope: "", unreadable: true });
+  check(unreadableArchive.querySelector(".title-row .chip").textContent === "Cannot read file"
+    && !unreadableArchive.querySelectorAll("button").length,
+    "an unreadable archived document, wherever it is shown, says Cannot read file and offers no action");
+  const gone = vm.runInThisContext("candidateGoneChip");
+  check(gone({ unreadable: true }).textContent === "Cannot read file"
+    && gone({ present: false }).textContent === "No longer an authority candidate",
+    "in a change set, an unreadable candidate says Cannot read file, and a removed one that it is no longer a candidate");
+  vm.runInThisContext("state.unusable_candidate_files = ['Kappa copy.md', 'nested']; renderKnowledge();");
+  const unusableGroup = $("candidatesUnusableGroup");
+  check(unusableGroup && $("candidatesUnusableGroupLabel").textContent === "Files Charter cannot use (2)"
+    && unusableGroup.getAttribute("aria-labelledby") === "candidatesUnusableGroupLabel"
+    && unusableGroup.querySelectorAll(".doc").map((r) => r.textContent).join("|") === "Kappa copy.md|nested"
+    && !unusableGroup.querySelectorAll("button").length,
+    "entries that cannot be candidates are grouped under Files Charter cannot use (N), by name only, with no action");
+  vm.runInThisContext("state.unusable_candidate_files = []; renderKnowledge();");
+  check(!$("candidatesUnusableGroup") && $("candidatesUnusable").textContent === "",
+    "with none, the group is not shown");
   const pickLabel = vm.runInThisContext("candidateLabel")(
     { title: "X", source_kind: "proposal", revises_title: "Alpha", scope: "short scope",
       change_summary: "changes 1 line" }, true);
@@ -1903,6 +1932,15 @@ for (const file of ["markdown.js", "app.js"]) {
     "a list card stays compact: its review collapsed, and two actions, Review proposal… and Reject proposal");
   check(staleCard.classList.contains("is-stale") && /Stale/.test(staleCard.querySelector("header").textContent),
     "a stale proposal is marked stale in the list");
+  const staleRecord = fixture.proposals.pending.find((p) => p.stale);
+  const unreadableTarget = vm.runInThisContext("proposalCard")(Object.assign({}, staleRecord, {
+    proposal_id: "p-unreadable-target", target_unreadable: true,
+    stale_reasons: ["Charter cannot read the file of the candidate it targets."] }));
+  check(staleRecord && staleRecord.target_unreadable === false
+    && unreadableTarget.classList.contains("is-stale")
+    && unreadableTarget.querySelector("header .chip.stale").textContent === "Cannot read target"
+    && !/Stale|no longer exists/.test(unreadableTarget.querySelector("header").textContent),
+    "a proposal whose candidate target cannot be read says Cannot read target, never Stale or that it no longer exists");
   check(!$("proposalsImportedGroup").hidden
     && $("importedProposals").querySelectorAll(".proposal").length === fixture.proposals.imported.length,
     "imported proposals are listed apart");

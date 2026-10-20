@@ -396,8 +396,11 @@ class Now:
         self._texts: Dict[str, str] = {p: t for p, t in self.exam.texts.items()
                                        if p in self.governing}
         self.candidates: Dict[str, Document] = {}
-        for logical in ctx.cs.candidates():
-            text = ctx.cs.read_candidate(logical) or ""
+        # A candidate whose file cannot be read is not one a plan can use, and
+        # never stops the others being read.
+        texts, unreadable = ctx.cs.readable_candidates()
+        self.unreadable = set(unreadable)
+        for logical, text in texts.items():
             meta, body = parse_front_matter(text)
             self.candidates[logical] = Document(path=logical, meta=meta or {}, body=body)
             self._texts[logical] = text
@@ -463,6 +466,8 @@ def _seed(now: Now, start: Any) -> Dict[str, Any]:
         raise ChangeSetError("`start` is either `candidate` — with an optional `decision` and "
                              "`target` — or `withdraw`.")
     cand = start["candidate"]
+    if isinstance(cand, str) and cand in now.unreadable:
+        raise ChangeSetError(f"`{cand}` cannot be read as text, so it cannot be planned.")
     if not isinstance(cand, str) or cand not in now.candidates:
         raise ChangeSetError(f"`{cand}` is not an authority candidate now.")
     changes: Dict[str, Any] = {"candidates": [cand]}
@@ -552,6 +557,8 @@ def _change(draft: Dict[str, Any], now: Now, changes: Dict[str, Any]) -> None:
             raise ChangeSetError("`candidates` must list authority candidates.")
         kept: List[str] = []
         for path in given:
+            if path in now.unreadable and path not in draft["candidates"]:
+                raise ChangeSetError(f"`{path}` cannot be read as text, so it cannot be planned.")
             if path not in now.candidates and path not in draft["candidates"]:
                 raise ChangeSetError(f"`{path}` is not an authority candidate now.")
             if path not in kept:
@@ -610,7 +617,10 @@ def refresh(ctx: Ctx, draft_id: str) -> Dict[str, Any]:
         old = draft["pins"]
         changed: List[Dict[str, str]] = []
         for path in draft["candidates"]:
-            if path not in now.candidates:
+            if path in now.unreadable:
+                changed.append({"document": path, "change": "its file cannot be read; remove it "
+                                                            "from this change set"})
+            elif path not in now.candidates:
                 changed.append({"document": path, "change": "is no longer an authority candidate; "
                                                             "remove it from this change set"})
             elif old["candidates"].get(path) != now.sha(path):
@@ -805,7 +815,11 @@ def stale_reasons(draft: Dict[str, Any], now: Now) -> List[Dict[str, Any]]:
                                               "then refresh this change set."))
         return out
     for path in draft["candidates"]:
-        if path not in now.candidates:
+        if path in now.unreadable:
+            out.append(_reason("candidate-unreadable", "This candidate's file cannot be read as "
+                                                       "text, so it cannot be applied. Remove it "
+                                                       "from this change set.", path))
+        elif path not in now.candidates:
             out.append(_reason("candidate-missing", "This is no longer an authority candidate. "
                                                     "Remove it from this change set.", path))
         elif pins["candidates"].get(path) != now.sha(path):

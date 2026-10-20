@@ -71,6 +71,10 @@ CHANGESETS = "changesets"
 STAGING = "staging"
 LOCKS = "locks"
 SUBFOLDERS = (CANDIDATES, ARCHIVE, PROPOSALS, CHANGESETS, STAGING, LOCKS)
+# Files an operating system may leave in any folder it shows, as the Agent
+# Context tolerates them (`agent_context.SYSTEM_FILES`): never reported as
+# candidates Charter cannot use.
+_SYSTEM_FILES = (".ds_store", "thumbs.db", "desktop.ini")
 # Beside `contexts/`: the folders the person cleared from the Recent list.
 RECENT_CLEARED = "recent-cleared.json"
 # Beside it: when each folder was last opened in the console, to order Recent.
@@ -549,6 +553,12 @@ class ContextState:
                       if not name_problem(n) and os.path.isfile(os.path.join(folder, n))
                       and not os.path.islink(os.path.join(folder, n)))
 
+    def _entries(self, sub: str) -> List[str]:
+        folder = self.path(sub)
+        if not os.path.isdir(folder):
+            return []
+        return os.listdir(folder)
+
     def candidates(self) -> List[str]:
         """Every candidate's logical path."""
         return [logical_candidate(n) for n in self._markdown(CANDIDATES)]
@@ -560,13 +570,61 @@ class ContextState:
     def read_candidate(self, logical: str) -> Optional[str]:
         return _read_text(self.candidate_file(logical))
 
+    def readable_candidates(self) -> Tuple[Dict[str, str], List[str]]:
+        """Every candidate's text by logical path, and the logical paths of
+        those whose file cannot be read as UTF-8 text. One such file never
+        stops the others being read, and is never repaired, moved or removed;
+        a candidate removed meanwhile is in neither."""
+        texts: Dict[str, str] = {}
+        unreadable: List[str] = []
+        for logical in self.candidates():
+            try:
+                text = self.read_candidate(logical)
+            except PrivateStateError:
+                unreadable.append(logical)
+                continue
+            if text is not None:
+                texts[logical] = text
+        return texts, unreadable
+
+    def unusable_candidate_files(self) -> List[str]:
+        """The name of every entry among the candidates that cannot be one: a
+        name no candidate may have, a folder, or a link. Names only — nothing
+        is opened, followed or changed. Operating-system files such as
+        `desktop.ini` are not listed."""
+        folder = self.path(CANDIDATES)
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return []
+        usable = set(self._markdown(CANDIDATES))
+        return sorted(n for n in names if n not in usable and n.lower() not in _SYSTEM_FILES)
+
     def read_archived(self, name: str) -> Optional[str]:
         return _read_text(self.archive_file(name))
+
+    def readable_archived(self) -> Tuple[Dict[str, str], List[str]]:
+        """Every archived document's text by name, and the names of those whose
+        file cannot be read as UTF-8 text, as `readable_candidates` does for
+        candidates: set aside, never repaired, moved or removed."""
+        texts: Dict[str, str] = {}
+        unreadable: List[str] = []
+        for name in self.archived():
+            try:
+                text = self.read_archived(name)
+            except PrivateStateError:
+                unreadable.append(name)
+                continue
+            if text is not None:
+                texts[name] = text
+        return texts, unreadable
 
     def taken_names(self, governing_paths: Iterable[str] = ()) -> set:
         """Every document file name taken by a governing document, a candidate
         or an archived document, letter case folded."""
-        taken = {_fold(n) for n in self._markdown(CANDIDATES)}
+        # Every entry among the candidates, usable or not, so that a new
+        # candidate never lands on a folder, link or unreadable file.
+        taken = {_fold(n) for n in self._entries(CANDIDATES)}
         taken |= {_fold(n) for n in self._markdown(ARCHIVE)}
         taken |= {_fold(p.rsplit("/", 1)[-1]) for p in governing_paths}
         return taken

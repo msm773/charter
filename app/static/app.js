@@ -878,6 +878,14 @@ function renderKnowledge() {
   const governing = groups.governing.length;
   $("governingGroupLabel").textContent = groupLabel("Governing Documents", governing);
   $("governingGroup").hidden = !governing;
+  /* Entries among the candidates that cannot be one: names only, no action. */
+  const unusable = $("candidatesUnusable");
+  unusable.textContent = "";
+  const names = state.unusable_candidate_files || [];
+  if (names.length) {
+    unusable.appendChild(recordGroup("candidatesUnusableGroup", "Files Charter cannot use",
+      names.map((name) => el("div", { class: "doc is-unusable" }, [el("div", { class: "path", text: name })]))));
+  }
 }
 
 /* The shared section break: a group of related records under a compact
@@ -963,6 +971,11 @@ const SOURCE_LABEL = { proposal: "Agent Proposal", create: "Created by person", 
 const sourceTag = (c) => (c.source_kind === "proposal" && c.source_agent
   ? `Proposed by: ${c.source_agent}` : SOURCE_LABEL[c.source_kind] || "");
 
+/* A candidate whose file cannot be read: marked, never used. */
+const CANNOT_READ = "Cannot read file";
+/* Why a change set's candidate is no longer one it can use. */
+const candidateGoneChip = (c) => chip(c.unreadable ? CANNOT_READ : "No longer an authority candidate", "stale");
+
 function competingNotice(co) {
   /* "with a count when more than one other candidate exists." */
   return "Another revision candidate exists for this document." + (co > 1 ? ` ${co} others in all.` : "");
@@ -972,7 +985,17 @@ function competingNotice(co) {
 const attentionOf = (path) => ((state.status && state.status.issues) || [])
   .find((i) => i.kind === "integrity" && i.path === path) || null;
 
+/* An unreadable candidate's — or archived document's — card: its logical path
+   and the one status, with no action, since every action reads it. */
+function unreadableRow(doc) {
+  return el("div", { class: "doc is-unreadable" }, [el("div", {}, [
+    el("div", { class: "title-row" }, [el("span", { class: "title", text: doc.title }), chip(CANNOT_READ, "warn")]),
+    el("div", { class: "path labelled" }, [el("strong", { text: "Filename: " }), el("span", { text: doc.path })]),
+  ])]);
+}
+
 function docRow(doc) {
+  if (doc.unreadable) return unreadableRow(doc);
   const isCandidate = doc.kind === "candidate";
   const tag = isCandidate ? sourceTag(doc) : "";
   const labelled = (cls, label, text) => el("div", { class: cls + " labelled" }, [el("strong", { text: label + " " }),
@@ -1490,7 +1513,7 @@ function proposalCard(p) {
     el("header", {}, [
       proposalHeading(p, `proposalTitle-${key}`, "h4"),
       kind === "path" ? chip(PATH_TITLE_LABEL, null) : null,
-      p.stale ? chip("Stale", "stale") : null,
+      p.stale ? chip(p.target_unreadable ? "Cannot read target" : "Stale", "stale") : null,
     ]),
     proposalMeta(p),
     el("p", { class: "proposal-reason proposal-reason-preview", id: `proposalReason-${key}` }, [
@@ -2971,7 +2994,7 @@ function planCandidate(cs, c, i, active) {
     el("div", { class: "cs-row-head" }, [
       el("div", { class: "cs-row-name" }, [
         el("div", { class: "title-row" }, [el("span", { class: "title", text: c.title }),
-          c.present ? null : chip("No longer an authority candidate", "stale")]),
+          c.present ? null : candidateGoneChip(c)]),
         provenance ? el("div", { class: "path cs-provenance", text: provenance }) : null,
       ]),
     ]),
@@ -3156,7 +3179,7 @@ function candidateScope(c, row, effect, nested) {
   ] : [el("dt", { text: "Candidate's scope" }), el("dd", { text: c.scope || "None stated" })]);
   compare.classList.add(row ? "scope-compare-row" : "scope-compare-one");
   return el("div", { class: nested ? "cs-scope-detail" : "cs-scope" }, [
-    c.present || nested ? null : chip("No longer an authority candidate", "stale"),
+    c.present || nested ? null : candidateGoneChip(c),
     compare,
     el("p", { class: "hint cs-scope-note", text: "Scope is the candidate's own metadata: change it with "
       + "Edit details on the candidate." }),

@@ -577,6 +577,29 @@ Git.
   `submit_proposal`, and refuses a rebuilt context as `server-outdated`, until
   it restarts. The `mcp` module's own documentation no longer says the
   configured folder's path may be disclosed.
+- **A candidate file Charter cannot use no longer stops other work.** A
+  candidate file that is not UTF-8 text, or that the system refuses to open,
+  used to fail the console's whole page and every authority action, related
+  or not. Now it is set aside: every other candidate, Create candidate,
+  Retire, proposal intake and change sets without it work as before, and
+  agents are served as before — no candidate condition is a context problem.
+  Its card shows its logical path and **Cannot read file**, with no action;
+  Read, Edit and Compare refuse it in plain words; it is never offered to a
+  change set, and a draft that includes it is stale with
+  `candidate-unreadable` until the person removes it. A proposal to amend or
+  retire it is refused exactly as one for a name that does not exist. Entries
+  among the candidates that cannot be one — a name no candidate may have, a
+  folder, a link — are listed by name only under **Files Charter cannot use
+  (N)**, never opened or followed, and a new candidate never takes one's
+  name. An archived document that cannot be read is set aside the same way:
+  the console's state marks it unreadable, reading it is refused in plain
+  words, lineage and new ids come from the archive it can read, and a later
+  retirement takes a free name beside it. A proposal awaiting review whose
+  candidate target cannot be read shows **Cannot read target** and "Charter
+  cannot read the file of the candidate it targets." — never that the target
+  no longer exists — while an agent submitting against it is still answered
+  `target_unavailable`, exactly as for a name that does not exist. Observing
+  any of it writes nothing, and Charter repairs, moves or removes nothing.
 - **Removed:** governance workspaces, published surfaces, bindings,
   publication and repair, registration and identity, configuration migration,
   capability records, every Git write (commits, recovery commits, branch
