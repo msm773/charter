@@ -58,7 +58,7 @@ As you work, each agent brings a different perspective. Your product agent might
 
 Here's how Charter fits into that process:
 
-1. **Develop the idea.** Work with one or more agents to explore a feature, resolve questions, and reach a decision. Agents suggest changes as **Agent Proposals**: an agent that can run `charter propose` files one itself, in Charter's proposal JSON format, and an agent that can't returns that JSON for you to bring in with **Import agent proposal…**. Your own material doesn't go through Agent Proposals: add it yourself with **Create candidate**.
+1. **Develop the idea.** Work with one or more agents to explore a feature, resolve questions, and reach a decision. Agents suggest changes as **Agent Proposals**: an agent that can run `charter propose` files one itself, in Charter's proposal JSON format, and an agent that can't returns that JSON for you to bring in with **Import agent proposals…**. Your own material doesn't go through Agent Proposals: add it yourself with **Create candidate**.
 2. **Review and govern.** Review proposals and accept the ones worth considering. When you're ready, use a **change set** to make candidates govern—each replacing a governing document or governing alongside—or to withdraw one. You decide what becomes authoritative.
 3. **Carry the knowledge forward.** Your agents can retrieve the updated governing context. New sessions and other agents can build on those decisions rather than rediscovering them.
 
@@ -157,6 +157,15 @@ And the process continues as your project evolves.
    - **This copy isn't on PATH yet:** on macOS/Linux, `This shell runs:` names the other copy, and the output gives this copy's `add-to-path` command by its full path, such as `/home/you/tools/charter/charter add-to-path`. Run it and add the line it prints: that line puts this copy ahead of the other one. On Windows, the output says to remove the other copy's folder from your PATH, then gives this copy's command by its full paths, for PowerShell, such as `& C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path`.
 
    Then reopen the terminal and check again with this copy's full-path check command, as above. If it reports `nothing:`, see [Troubleshooting](#troubleshooting).
+
+**Read an Agent Context from your terminal.** Once `charter` is on your PATH, name an Agent Context by its full path to read and check it:
+
+```powershell
+charter C:\work\my-project-context
+charter "C:\work\my project context" --list
+```
+
+It's exactly `charter read --context <full path>`, with the same options (`--list`, `--document <path-or-id>`, `--heading <heading>`, `--json`), the same checks, output and exit codes. Quote a path that contains spaces or characters your shell treats specially. It needs the full path: `charter .` or a folder name on its own only prints a hint, because Charter never guesses which folder you mean. This shortcut is for you; the instructions **Connect Agents** gives your agents keep their full-path form on purpose, so PATH can't send them to another copy of Charter.
 
 **Optional PDF import:** From the Charter folder on Windows, run:
 
@@ -314,6 +323,8 @@ Choose how your agent will read its context:
 | **File access** | Hosts that can read the Agent Context folder | Agents read files directly, without Charter observing or validating the read |
 
 Prefer them in that order: MCP whenever the host supports it, command-line access when it doesn't, and file access only when neither is possible.
+
+You install Charter once. For MCP, register one server for each Agent Context an agent host should read: each registration serves exactly the one folder it names.
 
 Charter never changes an agent host's configuration for you: it shows the commands and settings, and you apply them.
 
@@ -802,9 +813,9 @@ It prints one JSON object. Its `result`, and the command's exit code:
 | `pending` | 0 | Filed for review, with a `proposal_id`. |
 | `refused` | 3 | Not filed; each listed problem says what to correct. |
 | `unavailable` | 4 | Not filed; submit again unchanged only if `retryable` is `true`. |
-| `duplicate` | 5 | Not filed: an identical proposal is already awaiting review. Change its text, or ask a person to replace the waiting one in the console. |
+| `duplicate` | 5 | Not filed: the same proposal is already awaiting review. Change the proposal, or ask a person to replace the waiting one in the console. |
 
-A proposal is a duplicate only when its JSON text is character for character the same as one still awaiting review in the same Agent Context—whitespace and a byte-order mark included—whether that one was filed by an agent or imported. Any difference makes it a new proposal, and a proposal already accepted or rejected never counts.
+A proposal is a duplicate when its content is the same as one still awaiting review in the same Agent Context, whether that one was filed by an agent or imported, from pasted JSON or a file. Charter compares the proposal's fields, not how the JSON was written: different spacing, key order, JSON escapes, or a leading byte-order mark don't make a new proposal, but a different `agent`, `reason`, `expected_context_impact`, or any other field does. A proposal already accepted or rejected never counts.
 
 From the Agent Context folder, the agent needs `charter` on its PATH; through command-line access, its instruction names this copy by its full paths, so PATH plays no part. Either way it needs permission to write Charter's private state. An agent that read the context through MCP, or can't run Charter, returns the JSON instead, for you to [import](#importing-a-proposal): `AGENT-CONTEXT.md` tells it so. `--context` names the Agent Context itself, as `.` or its full path; Charter never searches for one, and if the folder named isn't an Agent Context, the agent is told to return the JSON rather than look for it. If the Agent Context's map format doesn't match the Charter that runs the command—the map is out of date, or that Charter is—it files nothing and returns `unavailable`, not retryable, saying which.
 
@@ -826,14 +837,25 @@ Any other field is refused. Amending a governing document creates a revision can
 
 #### Importing a proposal
 
-1. In **Agent Proposals**, choose **Import agent proposal…**.
-2. Paste the agent's JSON into **Agent proposal JSON**.
-3. Choose **Check proposal**. If it fails, a short error says why, and **Import** stays unavailable. Any edit needs a fresh check.
-4. Choose **Import**. The proposal appears under **Imported by You**, marked as imported.
+1. In **Agent Proposals**, choose **Import agent proposals…**.
+2. Add the proposals: paste an agent's JSON into **Agent proposal JSON**, choose **Choose files…** to pick one or more `.json` files, or drop files onto the drop area (it's also a button: press it to pick files). Each pasted text and each file becomes one row. A file's name appears only in that row: Charter never receives or keeps it.
+3. Choose **Check proposals**. Charter checks each row exactly as `charter propose` would, reading a file's bytes exactly as that command reads its input, and writes nothing. Each row shows one status:
 
-   If exactly the same JSON is already awaiting review, nothing is filed and the panel asks, for example: *An identical proposal, "Incident Response," is already awaiting review. Replace it?* **Replace** updates that one waiting proposal with this submission—its received time and source—without adding another; **Cancel** changes nothing.
+   | Status | Meaning |
+   | --- | --- |
+   | **Ready** | It would be filed. |
+   | **Already awaiting review** | The same proposal is waiting already. **Replace…** offers to update that one instead. |
+   | **Same as another selected item** | Another row in the list has the same proposal. |
+   | **Stale** | The governing document it changes was changed after the agent read it. |
+   | **Refused** | It can't be filed as written; the row says why. |
+   | **Malformed** | It's too large, isn't UTF-8 text, isn't JSON, or isn't one JSON object. |
 
-**Cancel** clears and closes the panel without importing. Import is only for an agent's proposal; to add your own material, use **Create candidate**.
+   If the Agent Context can't accept proposals right now, the panel says **Unavailable** once instead, and nothing can be imported.
+4. Only **Ready** rows can be selected, and each starts selected. Rows with any other status don't get in the way. Choose **Import N proposals**: Charter checks the selected rows again and files all of them or none. If one is no longer ready—say its target changed meanwhile—nothing is filed and the rows show what they are now. Imported proposals appear under **Imported by You**; nothing is accepted, and no candidate or change set is made.
+
+Adding, removing, or changing a row needs a fresh check. **Replace…** works one row at a time, apart from any import: it asks, for example, *An identical proposal, "Incident Response," is already awaiting review. Replace it?* **Replace** updates that one waiting proposal with this row—its received time and source—without adding another; **Cancel** changes nothing.
+
+You can import up to 20 proposals at a time. **Cancel**, or leaving Agent Proposals, clears the list and closes the panel without importing. Import is only for an agent's proposals; to add your own material, use **Create candidate**.
 
 #### Reviewing a proposal
 
@@ -853,7 +875,7 @@ Charter files each proposal itself, in its private state, and records what it fi
 An unexpected record is never a proposal: it can't be accepted or rejected, and Charter leaves it unchanged.
 
 - **View contents** shows its text. For a record that isn't a regular file—a folder, a link, or another special file—it says what the record is instead; Charter never opens or follows one.
-- **Import a copy…** opens **Import agent proposal…** with its text filled in. Check it and import it like any agent's JSON. The file itself stays where it is. A record that isn't a regular file has no text, so it offers no **Import a copy…**.
+- **Import a copy…** opens **Import agent proposals…** with its text filled in. Check it and import it like any agent's JSON. The file itself stays where it is. A record that isn't a regular file has no text, so it offers no **Import a copy…**.
 
 To remove an unexpected record from the list, delete the file it names yourself. It's in `contexts/<key>/proposals/pending/` in [private state](#private-state), in the `<key>` folder whose `context.json` names this Agent Context's folder. Charter never moves or deletes it.
 
@@ -899,7 +921,7 @@ A pull, merge, or checkout that leaves the context internally consistent is serv
 
   On Linux the folder is `~/.local/state/charter`. If `ls -ld` names another account as the owner, don't change it: ask whoever manages the computer. If the message instead says the folder belongs to another account, or isn't a plain folder, Charter can't use it until that is resolved.
 - **MCP refuses the context:** Run `charter check --context <folder>`, or open the folder in the console and follow [Check context health](#check-context-health). After a direct edit to a governing document, Rebuild won't accept it: restore the approved text, or keep the edit with **Revise…** and govern it through a change set; see [When context changes need review](#when-context-changes-need-review). If an unexpected file or folder (such as `CLAUDE.md`, notes, or an empty subfolder under `authoritative/`) is inside the Agent Context, move it out; Charter won't move or delete it.
-- **`charter propose` is refused, unavailable, or a duplicate:** Exit code 3 (`refused`) lists each problem to correct; exit code 4 (`unavailable`) means Charter couldn't file proposals on this computer; exit code 5 (`duplicate`) means the same proposal is already waiting—change its text, or replace the waiting one by [importing it](#importing-a-proposal) and choosing **Replace**. If the agent can't fix a refusal, have it return the JSON and import it.
+- **`charter propose` is refused, unavailable, or a duplicate:** Exit code 3 (`refused`) lists each problem to correct; exit code 4 (`unavailable`) means Charter couldn't file proposals on this computer; exit code 5 (`duplicate`) means the same proposal is already waiting—change the proposal, or replace the waiting one by [importing it](#importing-a-proposal) and choosing **Replace**. If the agent can't fix a refusal, have it return the JSON and import it.
 - **Agent can't connect:** Run `charter mcp --context <folder> --check`. This diagnoses the folder and this copy of Charter, **not** the host configuration. Start a new session after MCP configuration changes, and connect again if you moved Charter or changed its Python.
 
 **Windows Claude Code / VS Code edge case:** If `claude mcp list` shows a connection but VS Code has no Charter tools, local-scope registration may depend on the exact project path spelling (including `C:` versus `c:`). In Command Prompt, `cd /d c:\path\to\project` using the spelling shown by VS Code, rerun the [Claude Code Command Prompt registration](#claude-code), and start a new conversation. Keep local scope for this workaround.
@@ -998,6 +1020,7 @@ charter check --context <folder>
 charter mcp --context <folder> [--check]
 charter compare --context <folder> --base <revision> [--prompt | --packet <destination> [--accept-git-warning]] [--json]
 charter read --context <absolute-folder> [--list | --document <path-or-id> [--heading <heading>]] [--json]
+charter <absolute-folder> [--list | --document <path-or-id> [--heading <heading>]] [--json]
 charter propose --context <. | full path>
 charter add-to-path [--check]
 charter --version
@@ -1008,6 +1031,7 @@ charter --version
 - **`charter mcp`** — Runs the read-only stdio MCP server; `--check` provides diagnostics.
 - **`charter compare`** — Compares the Agent Context with its folder at a Git base you name and prepares advisory review material. Reads Git only; exits **0** when a comparison was made, **1** when it couldn't be made or the requested material couldn't be produced, **2** for an unusable command line.
 - **`charter read`** — Command-line access for an agent without MCP: prints the map, the governing-document list, one document, or one section, validated as MCP validates it. `--context` must be a full path. Text ends with the line `<<<END CHARTER READ>>>`; `--json` prints one JSON object. Writes nothing; exits **0** when served, **1** when refused, **2** for `bad-arguments`. See [Agents that run commands](#agents-that-run-commands-without-mcp).
+- **`charter <absolute-folder>`** — Your shortcut for `charter read --context <absolute-folder>`, with the same options, output and exit codes. The first word must be a full path; anything that is neither a command nor a full path prints a hint and exits **2**. Agent instructions keep the full-path `charter read` form.
 - **`charter propose`** — Submits one Agent Proposal as JSON on standard input, sent as ASCII JSON. `--context` is `.` in the Agent Context folder, or its full path as a command-line access instruction gives it. Exits **0** `pending`, **3** `refused`, **4** `unavailable`, **5** `duplicate`. See [Filing a proposal from an agent](#filing-a-proposal-from-an-agent).
 - **`charter --version`** — Says which copy of Charter this is: version, build, launcher, `charter.py` and Python paths, and map format.
 - **`charter add-to-path`** — On Windows, adds `charter` to your user PATH; `--check` reports what a new program would run. On macOS/Linux, changes nothing: it prints the `export` line to add and the shell startup file to add it to; `--check` reports `This shell runs:` using the current shell's PATH, and says what to do if that isn't this copy. On macOS/Linux, both exit **0** only when this shell already runs this copy as `charter`, and **1** otherwise.

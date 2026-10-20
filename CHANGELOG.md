@@ -495,6 +495,50 @@ Git.
   a format-3 Charter refuses a rebuilt context as `server-outdated` until it
   restarts, and an older copy run by `charter read` as `charter-outdated`. MCP
   has no proposal route, as before.
+- **`charter <full path>`: a person's shortcut for reading an Agent Context.**
+  With `charter` on PATH, `charter C:\work\my-context [--list | --document
+  <path-or-id> [--heading <heading>]] [--json]` is exactly `charter read
+  --context <full path> …`: the same validation, output, completeness marker,
+  refusals, messages and exit codes, and no private state, activity or Recent
+  entry. It is chosen only when the first word is a full path, which no
+  subcommand or option can be. Any other first word that is not a command —
+  `.`, a folder name, `C:folder`, `\folder` — names no Agent Context: one hint
+  on standard error, "… is not a command or a full path. To read an Agent
+  Context: charter <full path>", and exit 2, never a relative path tried.
+  `--help` shows it; every subcommand, `--version`, and the full-path commands
+  Connect Agents gives agents are unchanged.
+- **Duplicate proposals are the same content, whatever the route.** A proposal
+  now duplicates a waiting one when its checked content is the same, every
+  field counting — `agent`, `reason` and `expected_context_impact` included —
+  whether it came through `charter propose`, pasted JSON or a chosen file.
+  Whitespace, key order, JSON escapes and leading byte-order marks no longer
+  make a second proposal of the same one. Each new record keeps the canonical
+  `proposal_sha256` beside `submitted_sha256`, the digest of the exact bytes
+  submitted, which an earlier copy of Charter still matches on. Waiting records
+  from before take part unchanged: their fingerprint is recomputed from the
+  proposal they hold, and nothing is rewritten. Every route reads submitted
+  bytes as `charter propose` reads standard input: strict UTF-8, every leading
+  byte-order mark removed, then surrounding whitespace, then one JSON value —
+  so whitespace before a byte-order mark is not JSON, and UTF-16 is not UTF-8.
+  Deeply nested JSON that Python cannot parse is now refused as `not_json`
+  rather than reported as `unavailable`. The `duplicate` message says "change
+  the proposal".
+- **Import Agent Proposals: several at once, from files too.** The panel, now
+  opened with **Import agent proposals…**, keeps the pasted-JSON field and adds
+  **Choose files…** and a drop area, which is also a button, for one or more
+  JSON files. Each paste and each file is one row; a file's bytes are sent
+  base64-encoded, never decoded by the page, and its name stays in the panel:
+  it is never sent to Charter or kept. **Check proposals** writes nothing and
+  gives each row one status — Ready, Already awaiting review, Same as another
+  selected item, Stale, Refused or Malformed — or reports the Agent Context
+  once as Unavailable. Only Ready rows can be selected, and each starts
+  selected; **Import N proposals** checks them again under the writer and
+  intake locks and files all of them or none, in one transaction, so even the
+  process dying part-way leaves none. Any change to the list needs a fresh
+  check; **Replace…** works on one row, apart from any import; at most 20 items
+  at a time. Importing never accepts a proposal or makes a candidate or change
+  set. The console's import API now takes `items`, each `{"text": …}` or
+  `{"bytes": <base64>}`, with `/api/proposals/import/replace` for Replace.
 - **Removed:** governance workspaces, published surfaces, bindings,
   publication and repair, registration and identity, configuration migration,
   capability records, every Git write (commits, recovery commits, branch

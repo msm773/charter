@@ -562,58 +562,133 @@ def proposals(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     return _guard(lambda: apx.listing(folder))
 
 
-def _import_json(body: Dict[str, Any]) -> Any:
-    text = body.get("json")
-    if not isinstance(text, str) or not text.strip():
-        raise ApiError("Paste the proposal JSON the agent returned.")
-    if len(text.encode("utf-8")) > apx.MAX_INPUT:
-        raise ApiError("That proposal is too large.")
+# Import Agent Proposals (UI Standards, Agent Proposals): each item is one pasted
+# text or one chosen file. A file's bytes arrive base64-encoded, never decoded by
+# the page, and every item is then read exactly as `charter propose` reads its
+# standard input (`agent_proposals.read_submission`). No item carries a file
+# name: the page keeps those to itself.
+MALFORMED_MESSAGES = {
+    "too_large": "This proposal is too large.",
+    "not_utf8": "This is not UTF-8 text.",
+    "not_json": "This is not JSON.",
+    "not_an_object": "This is not one JSON object.",
+}
+_MAX_B64 = (apx.MAX_INPUT + 2) // 3 * 4
+
+
+def _item_bytes(item: Any) -> bytes:
+    """One item's submitted bytes, or apx.Malformed: a file's bytes exactly, or a
+    pasted text's UTF-8."""
+    if not isinstance(item, dict) or len(item) != 1 or not ({"bytes", "text"} & set(item)):
+        raise ApiError("Each item is one pasted text or one file.")
+    if "text" in item:
+        if not isinstance(item["text"], str):
+            raise ApiError("Each item is one pasted text or one file.")
+        try:
+            return item["text"].encode("utf-8")
+        except UnicodeEncodeError:  # a lone surrogate: no UTF-8 text holds one
+            raise apx.Malformed("not_utf8")
+    encoded = item["bytes"]
+    if not isinstance(encoded, str):
+        raise ApiError("Each item is one pasted text or one file.")
+    if len(encoded) > _MAX_B64:
+        raise apx.Malformed("too_large")
     try:
-        return hs.loads_strict(text.lstrip("\ufeff"))
-    except ValueError:
-        raise ApiError("That is not valid JSON. Paste the one JSON object the agent returned.")
+        return base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise ApiError("A file could not be read.")
+
+
+def _import_items(body: Dict[str, Any]) -> List[Tuple[Any, Any]]:
+    """(the JSON value each item holds, or its Malformed; its submitted bytes)."""
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        raise ApiError("Add a proposal to check: paste its JSON, or choose or drop a file.")
+    if len(items) > apx.MAX_BATCH:
+        raise ApiError(f"Check at most {apx.MAX_BATCH} proposals at a time.")
+    out: List[Tuple[Any, Any]] = []
+    for item in items:
+        try:
+            data = _item_bytes(item)
+        except apx.Malformed as exc:
+            out.append((exc, None))
+            continue
+        try:
+            out.append((apx.read_submission(data), data))
+        except apx.Malformed as exc:
+            out.append((exc, data))
+    return out
+
+
+def _import_rows(assessed: List[Dict[str, Any]], target: Any) -> List[Dict[str, Any]]:
+    """Each item's status for the page: no record, path or digest beyond what
+    the person needs \u2014 a waiting proposal's id and title, for Replace."""
+    out = []
+    for a in assessed:
+        row: Dict[str, Any] = {"status": a["status"]}
+        if a["status"] == apx.MALFORMED:
+            code = a.get("code") or "not_an_object"
+            row["message"] = MALFORMED_MESSAGES[code]
+        elif a["status"] in (apx.STALE, apx.REFUSED):
+            row["problems"] = [{k: p[k] for k in ("code", "message", "field") if k in p}
+                               for p in a["problems"]]
+        elif a["status"] == apx.AWAITING:
+            title, _kind = apx.title_of(a["waiting"]["proposal"], target, target.cs)
+            row["waiting"] = {"proposal_id": a["waiting"]["proposal_id"], "title": title}
+        elif a["status"] == apx.SAME:
+            row["same_as"] = a["same_as"]
+        else:
+            p = a["proposal"]
+            title, _kind = apx.title_of(p, target, target.cs)
+            row["summary"] = {"title": title, "agent": p["agent"], "operation": p["operation"]}
+        out.append(row)
+    return out
 
 
 def import_check(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
-    """Check a returned proposal exactly as `charter propose` would, filing nothing."""
+    """Check each item exactly as `charter propose` would, writing nothing.
+    When the Agent Context cannot accept proposals now, the answer says so once
+    (`unavailable`) and gives no item a status."""
     folder = session.require()
-    raw = _import_json(body)
+    items = _import_items(body)
     try:
         target = apx.open_target(folder)
     except apx.Unavailable as exc:
-        raise ApiError(exc.message)
-    proposal, problems = apx.check(raw, target)
-    if problems:
-        return {"ok": False, "problems": problems}
-    return {"ok": True, "problems": [], "summary": {
-        "agent": proposal["agent"], "operation": proposal["operation"],
-        "target_path": proposal["target_path"], "reason": proposal["reason"]}}
+        return {"unavailable": {"message": exc.message}, "items": []}
+    return {"unavailable": None, "items": _import_rows(apx.assess(target, [r for r, _ in items]), target)}
 
 
 def import_file(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
-    """File a returned proposal as imported, after the person has checked it.
-
-    The pasted text exactly as given is its duplicate identity. A duplicate of
-    one still awaiting a decision is not filed: the result names the waiting
-    proposal, for the person to replace (`replace`, its id) or leave."""
+    """File the selected items as imported proposals, all of them or none,
+    after the person has checked them (`agent_proposals.file_batch`). Nothing
+    is accepted, and no candidate or change set is made."""
     folder = session.require()
     if body.get("confirm") is not True:
         raise ApiError("Confirm the import to file it.")
-    raw = _import_json(body)
-    submitted = body["json"]
-    if body.get("replace") is not None:
-        return apx.replace(folder, raw, body.get("replace"), source=apx.IMPORTED, submitted=submitted)
-    result = apx.file(folder, raw, source=apx.IMPORTED, submitted=submitted)
-    if result.get("result") == "duplicate":
+    items = _import_items(body)
+    result = apx.file_batch(folder, items, source=apx.IMPORTED)
+    if result["result"] == "refused" and "items" in result:
         try:
             target = apx.open_target(folder)
-            waiting = apx.find_duplicate(target.cs, apx.submission_identity(submitted))
-        except apx.Unavailable:
-            waiting = None
-        if waiting is not None:
-            title, _kind = apx.title_of(waiting["proposal"], target, target.cs)
-            result["waiting"] = {"proposal_id": waiting["proposal_id"], "title": title}
+        except apx.Unavailable as exc:
+            return apx.unavailable_result(exc)
+        return {"result": "refused", "items": _import_rows(result["items"], target)}
+    if result["result"] == "pending":
+        return {"result": "pending", "count": len(result["proposal_ids"]),
+                "proposal_ids": result["proposal_ids"]}
     return result
+
+
+def import_replace(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Replace one waiting proposal with one item of the same content, in place
+    (UI Standards: separately from any import of selected rows)."""
+    folder = session.require()
+    if body.get("confirm") is not True:
+        raise ApiError("Confirm the replacement to make it.")
+    [(raw, data)] = _import_items({"items": [body.get("item")]})
+    if isinstance(raw, apx.Malformed):
+        raise ApiError(MALFORMED_MESSAGES[raw.code])
+    return apx.replace(folder, raw, body.get("replace"), source=apx.IMPORTED, submitted=data)
 
 
 def unexpected(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -766,7 +841,8 @@ POST_ROUTES = {
     "/api/intake/stage": stage,
     "/api/plan": plan, "/api/apply": apply, "/api/acknowledge": acknowledge,
     "/api/proposals": proposals, "/api/proposals/import/check": import_check,
-    "/api/proposals/import": import_file, "/api/proposals/unexpected": unexpected,
+    "/api/proposals/import": import_file, "/api/proposals/import/replace": import_replace,
+    "/api/proposals/unexpected": unexpected,
 }
 # Every route that changes anything, or reads private state, answers only the
 # console's own page.

@@ -1670,49 +1670,267 @@ async function viewUnexpected(u, asImport) {
       el("pre", { class: "code", id: "unexpectedText", text: got.text })]));
 }
 
-/* Import: a proposal an agent returned as JSON, checked exactly as `charter
-   propose` checks it, then filed only when the person confirms. */
-/* Import Agent Proposal: the fallback for an agent that could not file its
-   own proposal JSON. Proposals are agent-submitted material; a person adds
-   their own through Create candidate. The panel belongs to Agent Proposals:
-   leaving that area closes it and drops whatever was pasted or checked. */
-let importPanel = null;  // the open Import Agent Proposal panel
+/* Import Agent Proposals: the fallback for an agent that could not file its
+   own proposal JSON (UI Standards, Agent Proposals). Proposals are
+   agent-submitted material; a person adds their own through Create candidate.
+
+   Each pasted text and each chosen or dropped file is one row. A file's bytes
+   are sent exactly as they are, base64-encoded, never decoded here, so the
+   server reads them exactly as `charter propose` reads its standard input. A
+   file's name is shown in its row and nowhere else: it is never sent to
+   Charter. Check proposals writes nothing. Only Ready rows can be selected;
+   the import files exactly the selected rows as checked, all of them or none,
+   and any change to the list disables it until the list is checked again. The
+   panel belongs to Agent Proposals: leaving that area, or Cancel, discards
+   every row, check result and selection. */
+let importPanel = null;  // the open Import Agent Proposals panel
 let importSeq = 0;
+const IMPORT_MAX = 20;
+const IMPORT_STATUS = {
+  ready: ["Ready", "ok"],
+  awaiting: ["Already awaiting review", "warn"],
+  same: ["Same as another selected item", "warn"],
+  stale: ["Stale", "stale"],
+  refused: ["Refused", "stale"],
+  malformed: ["Malformed", "stale"],
+};
+
+/* A file's bytes as base64, read without decoding them as text. */
+function fileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).slice(String(reader.result).indexOf(",") + 1));
+    reader.onerror = () => reject(new Error(`${file.name} could not be read.`));
+    reader.readAsDataURL(file);
+  });
+}
 
 function startImport(prefill) {
   review = null;
   const seq = ++importSeq;
-  const box = el("textarea", { id: "importJson", rows: 12, spellcheck: "false" });
+  const live = () => seq === importSeq;
+  let files = [];           // { key, name, bytes } in the order added
+  let checked = null;       // { items: [{ key, row }], unavailable } for the list as it was checked
+  let nextKey = 0;
+  const box = el("textarea", { id: "importJson", rows: 10, spellcheck: "false" });
   box.value = prefill || "";
-  const result = el("div", { id: "importResult" });
-  /* Import files exactly the JSON that passed Check proposal: any edit
-     disables it again, and clears what the last check said. */
-  const importButton = el("button", { class: "btn", id: "btnFileImport", text: "Import", disabled: "" });
-  let passed = null;  // the exact text that passed, while it is still what the field holds
-  const invalidate = () => { passed = null; importButton.disabled = true; result.textContent = ""; };
+  const picker = el("input", { type: "file", id: "importFiles", accept: ".json,application/json",
+    multiple: "", hidden: "" });
+  const rows = el("ul", { class: "import-rows", id: "importRows", "aria-live": "polite" });
+  const notice = el("div", { id: "importNotice" });
+  const importButton = el("button", { class: "btn", id: "btnFileImport", type: "button",
+    text: "Import", disabled: "" });
+
+  /* The rows as they stand: the pasted text, when there is one, then each file. */
+  const current = () => (box.value.trim() ? [{ key: "paste", name: null, text: box.value }] : [])
+    .concat(files.map((f) => ({ key: f.key, name: f.name, bytes: f.bytes })));
+  const payload = (item) => (item.name === null ? { text: item.text } : { bytes: item.bytes });
+  const selected = () => [...rows.querySelectorAll("input.import-select")]
+    .filter((c) => c.checked && !c.disabled).map((c) => c.dataset.key);
+
+  function invalidate() {
+    checked = null;
+    notice.textContent = "";
+    draw();
+  }
+
+  function countLabel() {
+    const n = selected().length;
+    importButton.textContent = !checked || checked.unavailable ? "Import"
+      : n === 1 ? "Import 1 proposal" : `Import ${n} proposals`;
+    importButton.disabled = !checked || checked.unavailable || n === 0;
+  }
+
+  function draw() {
+    rows.textContent = "";
+    const items = current();
+    items.forEach((item) => {
+      const found = checked && checked.items.find((c) => c.key === item.key);
+      const row = found ? found.row : null;
+      const name = item.name === null ? "Pasted JSON" : item.name;
+      const li = el("li", { class: "import-row", "data-key": item.key });
+      const head = el("div", { class: "import-row-head" });
+      if (row && row.status === "ready") {
+        const tick = el("input", { type: "checkbox", class: "import-select", id: `importSelect-${item.key}`,
+          "data-key": item.key, checked: "", onchange: countLabel });
+        head.appendChild(tick);
+        head.appendChild(el("label", { for: `importSelect-${item.key}`, class: "import-name", text: name }));
+      } else {
+        head.appendChild(el("span", { class: "import-name", text: name }));
+      }
+      if (row) head.appendChild(chip(IMPORT_STATUS[row.status][0], IMPORT_STATUS[row.status][1]));
+      if (item.name !== null) {
+        head.appendChild(el("button", { class: "btn ghost small", type: "button", text: "Remove",
+          "aria-label": `Remove ${name}`, onclick: () => {
+            files = files.filter((f) => f.key !== item.key);
+            invalidate();
+          } }));
+      }
+      li.appendChild(head);
+      if (row) li.appendChild(rowDetail(row, item));
+      rows.appendChild(li);
+    });
+    rows.hidden = !items.length;
+    countLabel();
+  }
+
+  /* What a checked row says: a Ready row's title, why another is not ready,
+     and, for one already awaiting review, Replace… on its own. */
+  function rowDetail(row, item) {
+    const detail = el("div", { class: "import-detail" });
+    if (row.status === "ready") {
+      detail.appendChild(el("span", { class: "hint", text: `${row.summary.title} · from ${row.summary.agent}` }));
+    } else if (row.status === "malformed") {
+      detail.appendChild(el("span", { text: row.message }));
+    } else if (row.status === "stale" || row.status === "refused") {
+      detail.appendChild(el("span", {}, withCode(row.problems.map((p) =>
+        (p.field ? `\`${p.field}\` — ` : "") + p.message).join(" "))));
+    } else if (row.status === "same") {
+      detail.appendChild(el("span", { text: "Another item in this list has the same content." }));
+    } else if (row.status === "awaiting") {
+      const ask = el("div", { class: "import-replace", hidden: "" });
+      const open = el("button", { class: "btn ghost small", type: "button", text: "Replace…" });
+      const replaceButton = el("button", { class: "btn small", type: "button", text: "Replace" });
+      ask.appendChild(el("p", { class: "import-replace-text",
+        text: `An identical proposal, “${row.waiting.title},” is already awaiting review. Replace it?` }));
+      ask.appendChild(el("div", { class: "actions" }, [replaceButton,
+        el("button", { class: "btn small", type: "button", text: "Cancel", onclick: () => {
+          ask.hidden = true; open.hidden = false; if (open.focus) open.focus();
+        } })]));
+      open.addEventListener("click", () => {
+        open.hidden = true; ask.hidden = false; if (replaceButton.focus) replaceButton.focus();
+      });
+      replaceButton.addEventListener("click", () => replaceOne(item, row.waiting.proposal_id, replaceButton));
+      detail.appendChild(el("span", { text: `The same proposal, “${row.waiting.title},” is already awaiting review.` }));
+      detail.appendChild(open);
+      detail.appendChild(ask);
+    }
+    return detail;
+  }
+
+  async function addFiles(list) {
+    const chosen = [...(list || [])];
+    if (!chosen.length) return;
+    if (current().length + chosen.length > IMPORT_MAX) {
+      toast(`Import at most ${IMPORT_MAX} proposals at a time.`, true);
+      return;
+    }
+    let read;
+    try { read = await Promise.all(chosen.map(fileBase64)); }
+    catch (err) { if (live()) toast(err.message, true); return; }
+    if (!live()) return;
+    chosen.forEach((file, i) => files.push({ key: "f" + (nextKey++), name: file.name, bytes: read[i] }));
+    invalidate();
+  }
+
+  async function runCheck() {
+    const items = current();
+    if (!items.length) { toast("Paste an agent proposal as JSON, or choose or drop a file.", true); return; }
+    invalidate();
+    let answer;
+    try { answer = await call("/api/proposals/import/check", { items: items.map(payload) }); }
+    catch (err) { if (live()) toast(err.message, true); return; }
+    if (!live()) return;
+    // The list may have changed while the check was on its way: it then stays unchecked.
+    if (JSON.stringify(current()) !== JSON.stringify(items)) return;
+    if (answer.unavailable) {
+      checked = { items: [], unavailable: true };
+      notice.appendChild(el("div", { class: "note error", id: "importUnavailable", role: "alert" },
+        [el("strong", { text: "Unavailable. " }), ...withCode(answer.unavailable.message)]));
+    } else {
+      checked = { items: items.map((item, i) => ({ key: item.key, row: answer.items[i] })), unavailable: false };
+    }
+    draw();
+  }
+
+  async function runImport() {
+    if (!checked || checked.unavailable) return;
+    const keys = selected();
+    const items = current().filter((item) => keys.indexOf(item.key) !== -1);
+    if (!items.length) return;
+    importButton.disabled = true;
+    let filed;
+    try {
+      filed = await call("/api/proposals/import", { items: items.map(payload), confirm: true });
+    } catch (err) { if (live()) { countLabel(); toast(err.message, true); } return; }
+    if (!live()) return;
+    if (filed.result === "pending") {
+      importPanel = null;
+      closeReview();
+      await refreshQuiet();
+      toast(filed.count === 1 ? "Imported the agent proposal for review. It is not context."
+        : `Imported ${filed.count} agent proposals for review. They are not context.`);
+      return;
+    }
+    if (filed.result === "refused" && filed.items) {
+      // Nothing was filed: the selected rows show what they are now.
+      items.forEach((item, i) => {
+        const at = checked.items.find((c) => c.key === item.key);
+        if (at) at.row = filed.items[i];
+      });
+      draw();
+      notice.textContent = "";
+      notice.appendChild(el("div", { class: "note error", id: "importNotFiled", role: "alert",
+        text: "Nothing was imported: not every selected proposal is still ready. Review the list, "
+          + "then import again." }));
+      return;
+    }
+    countLabel();
+    toast(filed.problem ? filed.problem.message : (filed.problems || []).map((p) => p.message).join(" "), true);
+  }
+
+  async function replaceOne(item, proposalId, button) {
+    button.disabled = true;
+    let done;
+    try {
+      done = await call("/api/proposals/import/replace", { item: payload(item), replace: proposalId, confirm: true });
+    } catch (err) { if (live()) { button.disabled = false; toast(err.message, true); } return; }
+    if (!live()) return;
+    if (done.result !== "pending") {
+      button.disabled = false;
+      toast(done.problem ? done.problem.message : (done.problems || []).map((p) => p.message).join(" "), true);
+      return;
+    }
+    if (item.name === null) box.value = ""; else files = files.filter((f) => f.key !== item.key);
+    invalidate();
+    await refreshQuiet();
+    if (!live()) return;
+    toast("Replaced the waiting proposal with this one, for review. It is not context.");
+  }
+
   box.addEventListener("input", invalidate);
-  importButton.addEventListener("click", () => {
-    if (passed === null || passed !== box.value) { invalidate(); return; }
-    fileImport(passed, importButton, seq);
-  });
+  picker.addEventListener("change", () => { const list = picker.files; addFiles(list); picker.value = ""; });
+  const choose = () => picker.click();
+  const dropArea = el("button", { class: "drop import-drop", id: "importDrop", type: "button",
+    "aria-describedby": "importDropHint", onclick: choose },
+  [el("span", { text: "Drop proposal JSON files here" }),
+    el("span", { class: "hint", id: "importDropHint", text: "or press to choose files" })]);
+  ["dragenter", "dragover"].forEach((evt) => dropArea.addEventListener(evt, (e) => {
+    e.preventDefault(); dropArea.classList.add("over");
+  }));
+  ["dragleave", "drop"].forEach((evt) => dropArea.addEventListener(evt, (e) => {
+    e.preventDefault(); dropArea.classList.remove("over");
+  }));
+  dropArea.addEventListener("drop", (e) => addFiles(e.dataTransfer && e.dataTransfer.files));
+  importButton.addEventListener("click", runImport);
+
   const inner = el("div", { class: "inner" }, [
     el("p", { class: "note", id: "importInstruction" }, [
-      document.createTextNode("Paste an agent proposal as JSON below. Use "),
+      document.createTextNode("Paste an agent proposal as JSON, or choose or drop proposal JSON files. Use "),
       el("strong", { text: "Create candidate" }),
-      document.createTextNode(" for material you want to add yourself. The JSON must follow Charter’s "
-        + "proposal format; Charter checks it before anything is filed."),
+      document.createTextNode(" for material you want to add yourself. Charter checks every proposal "
+        + "before anything is filed."),
     ]),
     el("div", { class: "field" }, [el("label", { for: "importJson", text: "Agent proposal JSON" }), box]),
-    result,
+    el("div", { class: "import-files" }, [
+      el("button", { class: "btn ghost", id: "btnChooseImportFiles", type: "button", text: "Choose files…",
+        onclick: choose }),
+      picker, dropArea]),
+    rows,
+    notice,
     el("div", { class: "actions import-actions" }, [
-      el("button", { class: "btn ghost", id: "btnCheckImport", text: "Check proposal", onclick: async () => {
-        const text = box.value;
-        invalidate();
-        if (await checkImport(text, result, seq) && seq === importSeq && box.value === text) {
-          passed = text;
-          importButton.disabled = false;
-        }
-      } }),
+      el("button", { class: "btn ghost", id: "btnCheckImport", type: "button", text: "Check proposals",
+        onclick: runCheck }),
       importButton,
       el("button", { class: "btn ghost", id: "btnCancelImport", type: "button", text: "Cancel", onclick: () => {
         const opener = panelOpener;
@@ -1721,12 +1939,14 @@ function startImport(prefill) {
       } }),
     ]),
   ]);
-  showFormPanel("Import Agent Proposal", inner, { close: false });
+  showFormPanel("Import Agent Proposals", inner, { close: false });
   importPanel = inner;
+  draw();
 }
 
-/* Leaving Agent Proposals: the import panel closes, and its pasted JSON, its
-   check result and any answer still on its way are discarded. */
+/* Leaving Agent Proposals, or Cancel: the import panel closes, and its rows,
+   their check results and selection, and any answer still on its way are
+   discarded. */
 function discardImport() {
   importSeq++;
   const panel = importPanel;
@@ -1738,76 +1958,6 @@ function discardImport() {
     panelOpener = null;
     $("review").textContent = "";
   }
-}
-
-/* Check proposal: true when the JSON would be filed. A passing check says
-   nothing — it only enables Import. A failing one is one concise error. */
-async function checkImport(text, result, seq) {
-  result.textContent = "";
-  let checked;
-  const fail = (message) => {
-    if (seq !== importSeq) return false;
-    result.appendChild(el("div", { class: "note error", id: "importError", role: "alert" }, withCode(message)));
-    return false;
-  };
-  try { checked = await call("/api/proposals/import/check", { json: text }); }
-  catch (err) { return fail(err.message); }
-  if (seq !== importSeq) return false;
-  if (!checked.ok) {
-    return fail("Not a valid agent proposal: " + checked.problems.map((p) =>
-      (p.field ? `\`${p.field}\` — ` : "") + p.message).join(" "));
-  }
-  return true;
-}
-
-async function fileImport(text, button, seq, replace) {
-  button.disabled = true;
-  let filed;
-  try {
-    filed = await call("/api/proposals/import",
-      Object.assign({ json: text, confirm: true }, replace ? { replace } : {}));
-  } catch (err) { button.disabled = false; toast(err.message, true); return; }
-  if (seq !== importSeq) return;
-  if (filed.result === "duplicate" && filed.waiting && !replace) {
-    button.disabled = false;
-    askToReplace(text, filed.waiting, seq);
-    return;
-  }
-  if (filed.result !== "pending") {
-    button.disabled = false;  // the person can correct and try again
-    toast(filed.result === "refused" ? filed.problems.map((p) => p.message).join(" ") : filed.problem.message, true);
-    return;
-  }
-  importPanel = null;
-  closeReview();
-  await refreshQuiet();
-  toast(replace ? "Replaced the waiting proposal with this one, for review. It is not context."
-    : "Imported the agent proposal, for review. It is not context.");
-}
-
-/* An exact duplicate of a proposal still awaiting review is never filed as a
-   second one. The panel asks, in place of its own actions, whether to replace
-   the waiting proposal with this submission; Cancel changes nothing. */
-function askToReplace(text, waiting, seq) {
-  const panel = importPanel;
-  if (!panel) return;
-  const actions = panel.querySelector(".import-actions");
-  const prompt = el("div", { class: "note warn import-duplicate", id: "importDuplicate", role: "alert" }, [
-    el("p", { id: "importDuplicateText",
-      text: `An identical proposal, “${waiting.title},” is already awaiting review. Replace it?` }),
-  ]);
-  const close = () => { prompt.remove(); if (actions) actions.hidden = false; };
-  const replaceButton = el("button", { class: "btn", id: "btnReplaceImport", type: "button", text: "Replace",
-    onclick: () => fileImport(text, replaceButton, seq, waiting.proposal_id) });
-  prompt.appendChild(el("div", { class: "actions" }, [replaceButton,
-    el("button", { class: "btn", id: "btnCancelReplace", type: "button", text: "Cancel", onclick: () => {
-      close();
-      const again = panel.querySelector("#btnFileImport");
-      if (again && again.focus) again.focus();
-    } })]));
-  if (actions) actions.hidden = true;
-  panel.querySelector("#importResult").appendChild(prompt);
-  if (replaceButton.focus) replaceButton.focus();
 }
 
 /* ---------------------------------------------------------- connect agents */

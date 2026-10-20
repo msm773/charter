@@ -382,7 +382,7 @@ def case_recent_order() -> None:
 
 
 def case_import_duplicate() -> None:
-    print("\nimporting an exact duplicate of a waiting proposal: named for the person, replaced in place")
+    print("\nimporting a duplicate of a waiting proposal: named for the person, replaced in place")
     with isolated_private_state():
         from app import agent_proposals as apx
         folder = context()
@@ -395,25 +395,40 @@ def case_import_duplicate() -> None:
         cs = ps.PrivateState.default().for_context(folder)
         pending = os.path.join(cs.base, ps.PROPOSALS, apx.PENDING)
         before = sorted(os.listdir(pending))
-        dup = console.import_file(session, {"json": text, "confirm": True})
-        check(dup["result"] == "duplicate"
-              and dup["waiting"] == {"proposal_id": filed["proposal_id"], "title": "Waiting rule"}
-              and sorted(os.listdir(pending)) == before,
-              "the same text imported is not filed: the person is told which proposal waits, by its title")
-        check(console.import_file(session, {"json": text + "\n", "confirm": True})["result"] == "pending",
-              "a trailing newline makes it a distinct proposal")
-        replaced = console.import_file(session, {"json": text, "confirm": True,
-                                                 "replace": filed["proposal_id"]})
+        for label, variant in (("the same text", text), ("with a trailing newline", text + "\n"),
+                               ("reindented", json.dumps(json.loads(text), indent=2))):
+            row = console.import_check(session, {"items": [{"text": variant}]})["items"][0]
+            check(row == {"status": "awaiting",
+                          "waiting": {"proposal_id": filed["proposal_id"], "title": "Waiting rule"}},
+                  f"{label}: Already awaiting review, naming the waiting proposal by its title")
+            dup = console.import_file(session, {"items": [{"text": variant}], "confirm": True})
+            check(dup["result"] == "refused" and [r["status"] for r in dup["items"]] == ["awaiting"]
+                  and sorted(os.listdir(pending)) == before,
+                  "  and importing it files nothing")
+        replaced = console.import_replace(session, {"item": {"text": text + "\n"}, "confirm": True,
+                                                    "replace": filed["proposal_id"]})
         listed = apx.listing(folder)
         same = [p for p in listed["pending"] + listed["imported"] if p["proposal_id"] == filed["proposal_id"]]
         check(replaced == {"result": "pending", "proposal_id": filed["proposal_id"]}
               and len(same) == 1 and same[0]["source"] == apx.IMPORTED
-              and len(os.listdir(pending)) == len(before) + 1,
+              and sorted(os.listdir(pending)) == before,
               "Replace updates that proposal in place, now imported: still one, and no extra record")
-        check(console.import_file(session, {"json": text + "  ", "confirm": True,
-                                            "replace": filed["proposal_id"]})["result"] == "refused",
-              "only an identical submission can replace it")
+        other = json.dumps(dict(json.loads(text), reason="Needed more."))
+        check(console.import_replace(session, {"item": {"text": other}, "confirm": True,
+                                               "replace": filed["proposal_id"]})["result"] == "refused",
+              "only a submission with the same content can replace it")
+        check(raises_api(lambda: console.import_replace(session, {"item": {"text": text},
+                                                                  "replace": filed["proposal_id"]})),
+              "a replacement needs the person's confirmation")
         shutil.rmtree(folder)
+
+
+def raises_api(fn) -> bool:
+    try:
+        fn()
+    except console.ApiError:
+        return True
+    return False
 
 
 def case_stage_leaves_nothing() -> None:
@@ -687,8 +702,10 @@ def case_request_boundary() -> None:
             # B4: a non-finite JSON value in an imported proposal is a clean refusal, not a 500.
             inner = ('{"agent":"a","operation":"create","target_path":"authority-candidates/n.md",'
                      '"reason":"r","proposed_body":"x","expected_context_impact":[Infinity]}')
-            status, raw = req("POST", "/api/proposals/import/check", {"json": inner})
-            check(status == 400, "a non-finite value inside an imported proposal is refused as not valid JSON, not a 500")
+            status, raw = req("POST", "/api/proposals/import/check", {"items": [{"text": inner}]})
+            row = json.loads(raw)["items"][0] if status == 200 else {}
+            check(status == 200 and row == {"status": "malformed", "message": "This is not JSON."},
+                  "a non-finite value inside an imported proposal is Malformed, not JSON — not a 500")
         finally:
             httpd.shutdown()
             httpd.server_close()

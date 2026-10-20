@@ -831,9 +831,78 @@ def case_identity() -> None:
               "`charter check` reports the same identity, with the map format the Agent Context records")
 
 
+def case_shorthand_through_launchers() -> None:
+    """The person's shorthand, `charter <absolute folder> …`, reaches Charter
+    through each launcher and shell with its folder intact — spaces included —
+    and answers exactly as `charter read --context` does."""
+    print("\nthe shorthand through each launcher and shell")
+    with tempfile.TemporaryDirectory(prefix="charter launch ") as tmp:
+        state = os.path.join(tmp, "state")
+        good = valid_context(os.path.join(tmp, "with space"))
+        direct = [sys.executable, os.path.join(ROOT, "charter.py")]
+        want = subprocess.run(direct + ["read", "--context", good, "--list"],
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+        check(want.returncode == 0 and want.stdout.endswith(b"<<<END CHARTER READ>>>\n"),
+              "`charter read --context <folder with a space> --list` serves")
+        out = subprocess.run(direct + [good, "--list"], stdin=subprocess.DEVNULL,
+                             capture_output=True, timeout=120)
+        check((out.returncode, out.stdout, out.stderr) == (0, want.stdout, b""),
+              "`python charter.py <folder> --list`: the same bytes and exit code")
+        if os.name == "nt":
+            from tests.package import release_bytes
+            bin_dir = os.path.join(tmp, "bin")
+            os.mkdir(bin_dir)
+            with open(os.path.join(ROOT, "charter.cmd"), "rb") as fh:
+                launcher = release_bytes("charter.cmd", fh.read())
+            with open(os.path.join(bin_dir, "charter.cmd"), "wb") as fh:
+                fh.write(launcher)
+            with open(os.path.join(bin_dir, "charter.py"), "w", encoding="utf-8") as fh:
+                fh.write(SHIM.format(root=ROOT, state=state))
+            env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""))
+            # Command Prompt, as a person types it: the folder quoted.
+            out = subprocess.run(f'charter "{good}" --list', cwd=tmp, stdin=subprocess.DEVNULL,
+                                 capture_output=True, env=env, shell=True, timeout=120)
+            check((out.returncode, out.stdout, out.stderr) == (0, want.stdout, b""),
+                  'Command Prompt: `charter "C:\\…\\with space\\context" --list` answers exactly '
+                  "as `charter read --context` does")
+            slashed = good.replace("\\", "/")
+            out = subprocess.run(f'charter "{slashed}" --list', cwd=tmp, stdin=subprocess.DEVNULL,
+                                 capture_output=True, env=env, shell=True, timeout=120)
+            check(out.returncode == 0 and out.stdout == want.stdout,
+                  "  and with forward slashes, `C:/…/context`")
+            out = subprocess.run("charter context --list", cwd=os.path.dirname(good),
+                                 stdin=subprocess.DEVNULL, capture_output=True, env=env, shell=True,
+                                 timeout=120)
+            check(out.returncode == 2 and out.stdout == b"" and out.stderr.startswith(
+                b"context is not a command or a full path."),
+                  "  a relative folder name gets the hint and exit 2, even run from beside it")
+            powershell = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32",
+                                      "WindowsPowerShell", "v1.0", "powershell.exe")
+            quoted = "'" + good.replace("'", "''") + "'"
+            out = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command",
+                                  f"charter {quoted} --list; exit $LASTEXITCODE"],
+                                 cwd=tmp, stdin=subprocess.DEVNULL, capture_output=True, env=env,
+                                 timeout=120)
+            check(out.returncode == 0 and out.stdout.replace(b"\r\n", b"\n") == want.stdout,
+                  "PowerShell: `charter 'C:\\…\\with space\\context' --list` answers the same, exit 0")
+            check(not os.path.exists(state), "  none of them created private state")
+        bash = find_bash()
+        if not bash:
+            print("  skip: no bash on this computer")
+            return
+        charter = unix_path(bash, os.path.join(ROOT, "charter"))
+        for form, label in ((unix_path(bash, good), "a POSIX path"),) + (
+                ((good, "a quoted Windows path"),) if os.name == "nt" else ()):
+            out = run_bash(bash, f'"{charter}" "{form}" --list', dict(os.environ))
+            check(out.returncode == 0 and out.stdout == want.stdout and out.stderr == b"",
+                  f"Bash: `charter` with {label} that holds a space answers exactly as `charter read "
+                  "--context` does")
+
+
 def run() -> None:
     case_bash_launcher()
     case_cmd_launcher()
+    case_shorthand_through_launchers()
     case_no_earlier_launcher()
     case_found_through_path()
     case_launchers_are_executable()

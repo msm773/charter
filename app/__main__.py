@@ -10,8 +10,15 @@
     charter propose --context .              (one Agent Proposal, as JSON on stdin)
     charter add-to-path [--check]
     charter --version
+    charter <absolute-agent-context-folder> [--list | --document <path-or-id> [--heading <heading>]] [--json]
 
 `python charter.py …` runs the same commands from any directory.
+
+The last form is a person's shorthand for `charter read --context <folder> …`
+(Agent Context as the Project Asset §9): exactly that command, chosen only
+when the first word is an absolute path, which no subcommand or option can be.
+A first word that is none of the three is answered with a one-line hint on
+standard error and exit 2: it is never resolved as a relative path.
 """
 from __future__ import annotations
 
@@ -21,6 +28,11 @@ import sys
 from typing import Any, Dict, List
 
 PROG = "charter"
+
+SUBCOMMANDS = ("serve", "check", "mcp", "compare", "read", "propose", "add-to-path")
+
+SHORTHAND_USAGE = ("charter <absolute-agent-context-folder> [--list | --document <path-or-id> "
+                   "[--heading <heading>]] [--json]")
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -98,8 +110,12 @@ def cmd_add_to_path(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog=PROG, description="Charter: one trusted context "
-                                                       "for every AI agent on your project.")
+    p = argparse.ArgumentParser(
+        prog=PROG, description="Charter: one trusted context for every AI agent on your project.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="To read an Agent Context from a terminal, name it by its full path:\n\n  "
+               + SHORTHAND_USAGE + "\n\nis the same as `charter read --context "
+               "<absolute-agent-context-folder> …`.")
     # Handled in `main` before parsing; listed here for --help.
     p.add_argument("--version", action="store_true",
                    help="say which copy of Charter this is: version, build, launcher, Python and "
@@ -165,6 +181,19 @@ def main(argv=None) -> int:
     words = list(sys.argv[1:] if argv is None else argv)
     if words == ["--version"]:
         return cmd_version()
+    if words and os.path.isabs(words[0]):
+        from . import read
+        if read.absolute(words[0]):
+            # The shorthand (§9): exactly `charter read --context <folder> …`,
+            # so a repeated `--context` is that command's `bad-arguments`.
+            return read.main(["--context", words[0]] + words[1:])
+    if words and not words[0].startswith("-") and words[0] not in SUBCOMMANDS:
+        # Neither an option, a subcommand nor a full path: no Agent Context is
+        # named, and the word is never tried as a relative path.
+        shown = words[0] if words[0] else '""'
+        sys.stderr.write(f"{shown} is not a command or a full path. To read an Agent Context: "
+                         "charter <full path>\n")
+        return 2
     if words[:1] == ["read"]:
         # Command-Line Access: exactly one answer on stdout and nothing on
         # stderr, for a bad command line too, so argparse never sees it.

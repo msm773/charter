@@ -39,13 +39,24 @@ confirmation; it never changes governing context. Accepting or rejecting it
 removes the proposal: Charter keeps no proposal history, no decided record and
 no rejection reason.
 
-A proposal is a duplicate when the text submitted for it — the JSON exactly as
-given, whitespace and any byte-order mark included, never parsed or trimmed
-first — is character for character the text of a proposal still awaiting a
-decision in the same Agent Context, from either source. Decided proposals are
+A proposal is a duplicate when its checked content is the same as that of a
+proposal still awaiting a decision in the same Agent Context, however either
+was submitted (Product Specification §3.2): its `proposal_sha256`, the SHA-256
+of one canonical serialization of the checked proposal, every field included,
+equals the one recomputed from the waiting record's stored proposal. So
+whitespace, key order, JSON escaping and leading byte-order marks never make a
+proposal distinct, while a different `agent`, `reason` or impact always does.
+Records filed before `proposal_sha256` existed take part unchanged: it is
+recomputed, never read back, and no record is rewritten. Decided proposals are
 gone, so they never match. `charter propose` refuses a duplicate, changing
 nothing; in the console a person may instead replace the waiting proposal in
 place.
+
+Each record also keeps `submitted_sha256`, the SHA-256 of the exact bytes
+submitted — standard input, a chosen file, or pasted text as UTF-8 — which is
+how an earlier copy of Charter, sharing this private state, still recognizes
+a byte-identical resubmission. Every route reads those bytes the same way
+(`read_submission`).
 """
 from __future__ import annotations
 
@@ -111,7 +122,7 @@ def refused_result(problems: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 DUPLICATE_MESSAGE = ("An identical proposal is already awaiting review in this Agent Context, so "
                      "this one was not filed. Do not submit it again unchanged: change the "
-                     "proposal's text, or ask a person to replace the waiting proposal in "
+                     "proposal, or ask a person to replace the waiting proposal in "
                      "Charter's console.")
 
 
@@ -122,10 +133,59 @@ def duplicate_result() -> Dict[str, Any]:
 
 
 def submission_identity(submitted: Any) -> str:
-    """The identity of a submission's text exactly as given: the SHA-256 of
-    its UTF-8 bytes, with nothing trimmed, decoded or re-serialized."""
+    """The transport digest, `submitted_sha256`: the SHA-256 of the submitted
+    bytes exactly as given — text as its UTF-8 — with nothing trimmed,
+    decoded or re-serialized. Kept in every record so that an earlier copy of
+    Charter still matches a byte-identical resubmission; this copy matches by
+    `proposal_fingerprint` instead."""
     data = submitted if isinstance(submitted, (bytes, bytearray)) else str(submitted).encode("utf-8")
     return hashlib.sha256(bytes(data)).hexdigest()
+
+
+FINGERPRINT_PREFIX = "charter-proposal/1\n"
+_NULL_AS_ABSENT = ("proposed_meta", "expected_context_impact")
+
+
+def proposal_fingerprint(proposal: Dict[str, Any]) -> str:
+    """`proposal_sha256`: the checked proposal's content identity (Product
+    Specification §3.2). Every field counts. The fields are serialized with
+    sorted keys, no whitespace and ASCII escapes, so nothing about how the JSON
+    was written — whitespace, key order, escaping, a byte-order mark — can
+    change it; an optional field given as null counts as absent. Characters are
+    compared exactly, with no Unicode normalization. The prefix names this
+    form, so a later form can never match it by accident."""
+    fields = {k: v for k, v in proposal.items() if not (k in _NULL_AS_ABSENT and v is None)}
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                           allow_nan=False)
+    return hashlib.sha256((FINGERPRINT_PREFIX + canonical).encode("ascii")).hexdigest()
+
+
+class Malformed(Exception):
+    """Submitted bytes that are not one proposal's JSON: `too_large`,
+    `not_utf8` or `not_json`."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def read_submission(data: bytes) -> Any:
+    """The JSON value a submission's bytes hold, read exactly as `charter
+    propose` reads its standard input, for every route: at most MAX_INPUT
+    bytes, strict UTF-8, every leading U+FEFF (byte-order mark) removed, then
+    surrounding whitespace, then one strict JSON value. Raises Malformed. A
+    value that is not an object is the checker's `not_an_object`."""
+    if len(data) > MAX_INPUT:
+        raise Malformed("too_large")
+    try:
+        text = bytes(data).decode("utf-8")
+    except UnicodeDecodeError:
+        raise Malformed("not_utf8")
+    text = text.lstrip("﻿").strip()
+    try:
+        return hs.loads_strict(text)
+    except (ValueError, RecursionError):
+        raise Malformed("not_json")
 
 
 def unavailable_result(exc: Unavailable) -> Dict[str, Any]:
@@ -479,11 +539,41 @@ def _active_ledger(cs: ps.ContextState) -> Dict[str, Any]:
             if os.path.isfile(os.path.join(folder, pid + ".json"))}
 
 
-def find_duplicate(cs: ps.ContextState, identity: str) -> Optional[Dict[str, Any]]:
-    """The waiting proposal submitted with exactly this text, or None. A
-    record filed before Charter kept submission identities never matches."""
+def record_fingerprint(record: Dict[str, Any]) -> Optional[str]:
+    """`proposal_fingerprint` of a filed record's stored proposal, recomputed —
+    never read from the record — so every waiting record takes part, however
+    old, without being rewritten. None for a stored proposal it cannot read."""
+    proposal = record.get("proposal")
+    if not isinstance(proposal, dict):
+        return None
+    try:
+        return proposal_fingerprint(proposal)
+    except (TypeError, ValueError):
+        return None
+
+
+def find_duplicate(cs: ps.ContextState, fingerprint: str) -> Optional[Dict[str, Any]]:
+    """The waiting proposal with this checked content (`proposal_fingerprint`),
+    or None. Only records the intake ledger vouches for are compared."""
     filed, _unexpected = records(cs)
-    return next((r for r in filed if r.get("submitted_sha256") == identity), None)
+    return next((r for r in filed if record_fingerprint(r) == fingerprint), None)
+
+
+def _new_record(cs: ps.ContextState, proposal_id: str, source: str, proposal: Dict[str, Any],
+                fingerprint: str, submitted: Any) -> Dict[str, Any]:
+    record = {"version": RECORD_VERSION, "proposal_id": proposal_id, "source": source,
+              "received": _now(), "proposal": proposal, "proposal_sha256": fingerprint}
+    if submitted is not None:
+        record["submitted_sha256"] = submission_identity(submitted)
+    return record
+
+
+def _unused_id(cs: ps.ContextState, taken: Optional[set] = None) -> str:
+    proposal_id = new_id()
+    while os.path.exists(cs.path(ps.PROPOSALS, PENDING, proposal_id + ".json")) \
+            or proposal_id in (taken or ()):
+        proposal_id = new_id()
+    return proposal_id
 
 
 def _busy() -> Unavailable:
@@ -494,28 +584,23 @@ def _busy() -> Unavailable:
 def file(folder: str, raw: Any, source: str = AGENT,
          state: Optional[ps.PrivateState] = None, submitted: Any = None) -> Dict[str, Any]:
     """Check one proposal and file it as an untrusted private review record,
-    unless it duplicates one still awaiting a decision. `submitted` is the
-    text exactly as given; without it, the record keeps no identity and is
-    never matched. Returns the one result object."""
-    identity = submission_identity(submitted) if submitted is not None else ""
+    unless its checked content duplicates one still awaiting a decision.
+    `submitted` is the bytes or text exactly as given, kept only as the
+    record's transport digest. Returns the one result object."""
     try:
         target = open_target(folder, state)
         proposal, problems = check(raw, target)
         if problems:
             return refused_result(problems)
+        fingerprint = proposal_fingerprint(proposal)
         cs = target.cs
         with cs.lock("intake", INTAKE_TIMEOUT) as held:
             if not held:
                 raise _busy()
-            if identity and find_duplicate(cs, identity) is not None:
+            if find_duplicate(cs, fingerprint) is not None:
                 return duplicate_result()  # nothing written
-            proposal_id = new_id()
-            while os.path.exists(cs.path(ps.PROPOSALS, PENDING, proposal_id + ".json")):
-                proposal_id = new_id()
-            record = {"version": RECORD_VERSION, "proposal_id": proposal_id, "source": source,
-                      "received": _now(), "proposal": proposal}
-            if identity:
-                record["submitted_sha256"] = identity
+            proposal_id = _unused_id(cs)
+            record = _new_record(cs, proposal_id, source, proposal, fingerprint, submitted)
             data = _record_bytes(record)
             ledger = _active_ledger(cs)
             # The ledger vouches for the record before the record exists: a write
@@ -532,30 +617,27 @@ def file(folder: str, raw: Any, source: str = AGENT,
 
 def replace(folder: str, raw: Any, proposal_id: Any, source: str = IMPORTED,
             state: Optional[ps.PrivateState] = None, submitted: Any = None) -> Dict[str, Any]:
-    """Replace a waiting proposal with an identical submission, in place: the
-    same proposal, now with this submission's received time, source and
-    checked content. No second proposal, and no record of what it replaced.
-    Refused unless `proposal_id` still awaits a decision with exactly the
-    submitted text."""
-    if submitted is None:
-        return refused_result([_problem("not_duplicate", "Only an identical proposal can replace one.")])
-    identity = submission_identity(submitted)
+    """Replace a waiting proposal with a submission of the same checked
+    content, in place: the same proposal, now with this submission's received
+    time, source, checked content and digests. No second proposal, and no
+    record of what it replaced. Refused unless `proposal_id` still awaits a
+    decision with the same content."""
     try:
         target = open_target(folder, state)
         proposal, problems = check(raw, target)
         if problems:
             return refused_result(problems)
+        fingerprint = proposal_fingerprint(proposal)
         cs = target.cs
         with cs.lock("intake", INTAKE_TIMEOUT) as held:
             if not held:
                 raise _busy()
-            waiting = find_duplicate(cs, identity)
+            waiting = find_duplicate(cs, fingerprint)
             if waiting is None or waiting["proposal_id"] != proposal_id:
                 return refused_result([_problem(
-                    "not_duplicate", "That proposal is no longer awaiting review with exactly this "
-                                     "text. Check the proposal again.")])
-            record = {"version": RECORD_VERSION, "proposal_id": proposal_id, "source": source,
-                      "received": _now(), "proposal": proposal, "submitted_sha256": identity}
+                    "not_duplicate", "That proposal is no longer awaiting review with the same "
+                                     "content. Check the proposal again.")])
+            record = _new_record(cs, proposal_id, source, proposal, fingerprint, submitted)
             data = _record_bytes(record)
             ledger = _active_ledger(cs)
             ledger[proposal_id] = {"sha256": hashlib.sha256(data).hexdigest(), "source": source}
@@ -564,6 +646,109 @@ def replace(folder: str, raw: Any, proposal_id: Any, source: str = IMPORTED,
         return pending_result(proposal_id)
     except Unavailable as exc:
         return unavailable_result(exc)
+    except (ps.PrivateStateError, hs.HostStateError, OSError) as exc:
+        return unavailable_result(write_failure(exc))
+
+
+# --- several proposals at once: the console's import ------------------------------------
+
+# Each item's status (UI and Interaction Standards, Agent Proposals).
+READY, AWAITING, SAME, STALE, REFUSED, MALFORMED = (
+    "ready", "awaiting", "same", "stale", "refused", "malformed")
+MAX_BATCH = 20
+
+
+def assess(target: Target, items: List[Any]) -> List[Dict[str, Any]]:
+    """Each item's status against the Agent Context now, writing nothing.
+
+    An item is the JSON value `read_submission` read, or the Malformed it
+    raised. One with the same checked content as a waiting proposal is
+    AWAITING (with that record); one with the same content as an earlier item
+    is SAME; so only the first of several identical items can be READY."""
+    out: List[Dict[str, Any]] = []
+    seen: Dict[str, int] = {}
+    for index, item in enumerate(items):
+        if isinstance(item, Malformed):
+            out.append({"status": MALFORMED, "code": item.code})
+            continue
+        proposal, problems = check(item, target)
+        if problems:
+            codes = {p["code"] for p in problems}
+            status = MALFORMED if codes == {"not_an_object"} else \
+                STALE if "stale" in codes else REFUSED
+            out.append({"status": status, "problems": problems})
+            continue
+        fingerprint = proposal_fingerprint(proposal)
+        waiting = find_duplicate(target.cs, fingerprint)
+        if waiting is not None:
+            out.append({"status": AWAITING, "waiting": waiting, "fingerprint": fingerprint})
+        elif fingerprint in seen:
+            out.append({"status": SAME, "same_as": seen[fingerprint], "fingerprint": fingerprint})
+        else:
+            out.append({"status": READY, "proposal": proposal, "fingerprint": fingerprint})
+        seen.setdefault(fingerprint, index)
+    return out
+
+
+def file_batch(folder: str, items: List[Tuple[Any, Any]], source: str = IMPORTED,
+               state: Optional[ps.PrivateState] = None,
+               fault: Optional[Any] = None) -> Dict[str, Any]:
+    """File every item, or none: the console's import of the proposals a
+    person selected. Each item is (the value `read_submission` read, or its
+    Malformed; the submitted bytes or text). Under the writer and intake
+    locks every item is assessed again; unless every one is READY nothing is
+    written and the result is `refused` with each item's status. Otherwise
+    the ledger vouches for every record first, and the records are written in
+    one transaction (`transaction.Transaction`), so a failure — even the
+    process dying — leaves none of them: a ledger entry without its record
+    vouches for nothing. `fault` is for tests (`Transaction`)."""
+    try:
+        if not items or len(items) > MAX_BATCH:
+            return refused_result([_problem("batch_size", f"Import from 1 to {MAX_BATCH} "
+                                                          "proposals at a time.")])
+        cs = open_target(folder, state).cs
+        with cs.lock("writer", INTAKE_TIMEOUT) as writer:
+            if not writer:
+                raise _busy()
+            with cs.lock("intake", INTAKE_TIMEOUT) as held:
+                if not held:
+                    raise _busy()
+                target = open_target(folder, state)  # the context as it is now, under the locks
+                assessed = assess(target, [raw for raw, _submitted in items])
+                if any(a["status"] != READY for a in assessed):
+                    return {"result": "refused", "items": assessed}
+                previous = _ledger(cs)
+                ledger = _active_ledger(cs)
+                taken: set = set()
+                writes = []
+                ids = []
+                for (raw, submitted), a in zip(items, assessed):
+                    proposal_id = _unused_id(cs, taken)
+                    taken.add(proposal_id)
+                    data = _record_bytes(_new_record(cs, proposal_id, source, a["proposal"],
+                                                     a["fingerprint"], submitted))
+                    ledger[proposal_id] = {"sha256": hashlib.sha256(data).hexdigest(),
+                                           "source": source}
+                    writes.append(tx.Write(tx.PRIVATE, f"{ps.PROPOSALS}/{PENDING}/{proposal_id}.json",
+                                           data.decode("utf-8"), tx.ABSENT))
+                    ids.append(proposal_id)
+                _write_ledger(cs, ledger)
+                try:
+                    tx.Transaction(cs, writes, fault=fault).run()
+                except Exception:
+                    try:
+                        _write_ledger(cs, previous)  # tidy only: unmatched entries vouch for nothing
+                    except (ps.PrivateStateError, hs.HostStateError, OSError):
+                        pass
+                    raise
+        return {"result": "pending", "proposal_ids": ids}
+    except Unavailable as exc:
+        return unavailable_result(exc)
+    except tx.TransactionError as exc:
+        return unavailable_result(Unavailable(
+            "intake_unavailable", "Charter could not file these proposals, so none was filed. "
+                                  "Check them again and import them again.", retryable=True)
+                                  if exc.restored else write_failure(exc))
     except (ps.PrivateStateError, hs.HostStateError, OSError) as exc:
         return unavailable_result(write_failure(exc))
 

@@ -16,8 +16,10 @@ outcome — a bad command line included:
     unavailable   not filed; submit again unchanged only if `retryable`; exit 4
     duplicate     not filed; an identical proposal already awaits review; exit 5
 
-A duplicate is decided on standard input exactly as given — every byte,
-whitespace and any byte-order mark included — never on the parsed JSON.
+A duplicate is decided on the checked proposal's content, never on how its JSON
+was written: whitespace, key order, escaping and byte-order marks make no
+proposal distinct (Product Specification §3.2). Standard input is read by
+`agent_proposals.read_submission`, as every route reads a submission.
 
 See `agent_proposals` for the fields and the rules.
 """
@@ -29,7 +31,6 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from . import agent_proposals as apx
-from . import host_state as hs
 
 EXIT = {"pending": 0, "refused": 3, "unavailable": 4, "duplicate": 5}
 
@@ -45,8 +46,13 @@ It prints one JSON object whose `result` is `pending` (filed; exit 0),
 `refused` (not filed: correct each problem; exit 3), `unavailable` (not
 filed; submit again unchanged only if `retryable` is true; exit 4) or
 `duplicate` (not filed: an identical proposal is already awaiting review;
-change its text, or ask a person to replace it in the console; exit 5).
+change the proposal, or ask a person to replace it in the console; exit 5).
 """
+
+
+MALFORMED = {"too_large": "The proposal is too large.",
+             "not_utf8": "Standard input is not UTF-8 text.",
+             "not_json": "Standard input is not one JSON object."}
 
 
 def _context_argument(argv: List[str]) -> Optional[str]:
@@ -65,20 +71,13 @@ def submit(argv: List[str], data: bytes) -> Dict[str, Any]:
             "bad_command", "Name the Agent Context with `--context`, exactly as your project "
                            "instructions or the context map give, with one JSON proposal on "
                            "standard input. Do not search for an Agent Context.")])
-    if len(data) > apx.MAX_INPUT:
-        return apx.refused_result([apx._problem("too_large", "The proposal is too large.")])
     try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return apx.refused_result([apx._problem("not_utf8", "Standard input is not UTF-8 text.")])
-    text = text.lstrip("\ufeff").strip()
-    try:
-        raw = hs.loads_strict(text)
-    except ValueError:
-        return apx.refused_result([apx._problem("not_json", "Standard input is not one JSON "
-                                                            "object.")])
-    # The duplicate identity is of the bytes exactly as given, before the
-    # mark and surrounding whitespace were set aside for parsing.
+        raw = apx.read_submission(data)
+    except apx.Malformed as exc:
+        return apx.refused_result([apx._problem(exc.code, MALFORMED[exc.code])])
+    # The transport digest is of the bytes exactly as given, before the mark
+    # and surrounding whitespace were set aside for parsing; duplicates are
+    # matched on the checked content (`agent_proposals.proposal_fingerprint`).
     return apx.file(os.path.abspath(os.path.expanduser(folder)), raw, source=apx.AGENT,
                     submitted=bytes(data))
 

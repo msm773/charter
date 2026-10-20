@@ -13,9 +13,14 @@ Product Specification §3.2–§3.3, the Proposal Review Standard, UI Standards:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import importlib.util
 import json
 import os
+import re
 import shutil
+import subprocess
 import tempfile
 import sys
 
@@ -26,6 +31,7 @@ from app import agent_proposals as apx  # noqa: E402
 from app import authority as au  # noqa: E402
 from app import console  # noqa: E402
 from app import private_store as ps  # noqa: E402
+from app import transaction as tx  # noqa: E402
 from app.docs import parse_front_matter  # noqa: E402
 from tests.agent_context import context, doc_text, read, snapshot, write  # noqa: E402
 from tests.harness import isolated_private_state  # noqa: E402
@@ -238,40 +244,48 @@ def case_import() -> None:
                 "reason": "Clarify.", "base_sha256": sha(folder, "authoritative/a.md"),
                 "proposed_body": "Clearer.\n"}
         bad = dict(good, base_commit="abc")
-        checked = console.import_check(session, {"json": json.dumps(bad)})
-        check(not checked["ok"] and ("unknown_field", "base_commit") in
+
+        def row(proposal) -> dict:
+            text = proposal if isinstance(proposal, str) else json.dumps(proposal)
+            return console.import_check(session, {"items": [{"text": text}]})["items"][0]
+
+        def imp(proposal, **more) -> dict:
+            return console.import_file(session, dict({"items": [{"text": json.dumps(proposal)}]}, **more))
+
+        checked = row(bad)
+        check(checked["status"] == "refused" and ("unknown_field", "base_commit") in
               {(p["code"], p.get("field")) for p in checked["problems"]},
               "it is checked exactly as `charter propose` checks it")
-        checked = console.import_check(session, {"json": json.dumps(good)})
-        check(checked["ok"] and checked["summary"]["target_path"] == "authoritative/a.md"
+        checked = row(good)
+        check(checked["status"] == "ready" and checked["summary"]["operation"] == "amend"
               and apx.listing(folder)["imported"] == [], "checking files nothing")
-        check(raises(console.ApiError, console.import_file, session, {"json": json.dumps(good)}),
-              "filing needs the person's confirmation")
-        filed = console.import_file(session, {"json": json.dumps(good), "confirm": True})
+        check(raises(console.ApiError, imp, good), "filing needs the person's confirmation")
+        filed = imp(good, confirm=True)
         check(filed["result"] == "pending" and
-              [p["proposal_id"] for p in apx.listing(folder)["imported"]] == [filed["proposal_id"]],
+              [p["proposal_id"] for p in apx.listing(folder)["imported"]] == filed["proposal_ids"],
               "confirmed, it is filed as imported")
-        check(raises(console.ApiError, console.import_check, session, {"json": "{not json"}),
-              "text that is not JSON is refused")
+        check(row("{not json") == {"status": "malformed", "message": "This is not JSON."},
+              "text that is not JSON is Malformed")
 
         imported = len(apx.listing(folder)["imported"])
         for what, body in (("front matter", "---\ntitle: Clearer\nauthority: authoritative\n---\n\nClearer.\n"),
                            ("front matter after a byte-order mark and blank lines",
                             "﻿\n\n---\nid: x\n---\nClearer.\n")):
             fronted = dict(good, proposed_body=body)
-            checked = console.import_check(session, {"json": json.dumps(fronted)})
-            check(not checked["ok"] and [p["code"] for p in checked["problems"]] == ["front_matter_in_body"]
+            checked = row(fronted)
+            check(checked["status"] == "refused"
+                  and [p["code"] for p in checked["problems"]] == ["front_matter_in_body"]
                   and "Remove it and submit again" in checked["problems"][0]["message"],
                   f"an imported body beginning with {what} is refused, with the correction")
-            filed = console.import_file(session, {"json": json.dumps(fronted), "confirm": True})
+            filed = imp(fronted, confirm=True)
             check(filed["result"] == "refused" and len(apx.listing(folder)["imported"]) == imported,
                   f"and confirming it files nothing ({what})")
         created = {"agent": "chat-agent", "operation": "create", "target_path": "authority-candidates/new-rule.md",
                    "reason": "A rule.", "proposed_body": "---\nlayout: post\n---\n\nRule.\n"}
-        check(not console.import_check(session, {"json": json.dumps(created)})["ok"],
+        check(row(created)["status"] == "refused",
               "so is an imported create whose body begins with another tool's front matter")
         ruled = dict(created, proposed_body="---\nA thematic break, then prose.\n---\n\nRule.\n")
-        check(console.import_check(session, {"json": json.dumps(ruled)})["ok"],
+        check(row(ruled)["status"] == "ready",
               "a body that only opens with a thematic break is accepted for import")
         shutil.rmtree(folder)
 
@@ -515,17 +529,71 @@ def case_duplicates() -> None:
         imported = apx.file(folder, raw, source=apx.IMPORTED, submitted=text)
         check(imported["result"] == "duplicate" and state_files(cs) == before,
               "the same text imported in the console matches across sources")
+        reordered = json.dumps(dict(reversed(list(raw.items()))))
+        escaped = json.dumps(raw, ensure_ascii=True).replace("Dup", "\\u0044up")
         for label, variant in (("a trailing newline", text + "\n"), ("a leading space", " " + text),
                                ("a byte-order mark", "\ufeff" + text),
-                               ("different spacing", json.dumps(raw, indent=1))):
-            result = apx.file(folder, raw, submitted=variant)
-            check(result["result"] == "pending", f"{label} makes it distinct: filed as its own proposal")
+                               ("two byte-order marks, as bytes", b"\xef\xbb\xbf" * 2 + text.encode()),
+                               ("different spacing", json.dumps(raw, indent=1)),
+                               ("its keys reordered", reordered),
+                               ("JSON escapes for the same characters", escaped)):
+            result = apx.file(folder, apx.read_submission(
+                variant if isinstance(variant, bytes) else variant.encode("utf-8")),
+                submitted=variant)
+            check(result == apx.duplicate_result(),
+                  f"{label}: the same checked content, so a duplicate (Product Specification \u00a73.2)")
+        check(state_files(cs) == before, "  and none of them wrote anything")
+        check(apx.file(folder, raw) == apx.duplicate_result(),
+              "a filing with no submitted bytes is matched by its content too")
+        for field, value in (("agent", "other"), ("reason", "Twice."),
+                             ("expected_context_impact", {"related": []}),
+                             ("proposed_body", "# Dup\n\nText. \n")):
+            result = apx.file(folder, dict(raw, **{field: value}))
+            check(result["result"] == "pending", f"a different `{field}` makes a distinct proposal")
+        check(apx.file(folder, dict(raw, expected_context_impact={"related": []}))
+              == apx.duplicate_result(), "  and the same impact again is a duplicate of that one")
+        check(apx.file(folder, dict(raw, proposed_meta=None)) == apx.duplicate_result()
+              and apx.file(folder, dict(raw, expected_context_impact=None)) == apx.duplicate_result(),
+              "an optional `proposed_meta` or `expected_context_impact` given as null is the same as "
+              "one left out")
         check(len(apx.listing(folder)["pending"]) == 5, "five distinct proposals now wait")
-        bom = apx.file(folder, raw, submitted=b"\xef\xbb\xbf" + text.encode("utf-8"))
-        check(bom["result"] == "duplicate",
-              "a byte-order mark submitted as bytes matches the same mark submitted as text")
-        no_identity = apx.file(folder, raw)
-        check(no_identity["result"] == "pending", "a filing with no submitted text is never matched")
+
+        print("\nthe record keeps both digests; matching recomputes the content one")
+        record = json.loads(open(cs.path(ps.PROPOSALS, apx.PENDING, first["proposal_id"] + ".json"),
+                                 encoding="utf-8").read())
+        check(record["submitted_sha256"] == apx.submission_identity(text.encode("utf-8"))
+              and record["proposal_sha256"] == apx.proposal_fingerprint(raw)
+              and record["proposal"] == raw and record["version"] == apx.RECORD_VERSION,
+              "a new record keeps `submitted_sha256`, the bytes' digest, beside `proposal_sha256`")
+        check(apx.proposal_fingerprint(dict(raw, expected_context_impact="\u00e9"))
+              == apx.proposal_fingerprint(json.loads(json.dumps(dict(raw, expected_context_impact="\u00e9"),
+                                                                ensure_ascii=False))),
+              "raw and escaped non-ASCII text have one fingerprint")
+        # A record an earlier Charter filed: without `proposal_sha256`, and once
+        # without either digest. Written exactly as that Charter wrote them, and
+        # vouched for by the ledger, as it would have been.
+        for pid, extra, label in (("p-20250101-cccccccc", {}, "neither digest"),
+                                  ("p-20250101-dddddddd", {"submitted_sha256": "e" * 64},
+                                   "only its `submitted_sha256`")):
+            old_raw = {"agent": "old", "operation": "create",
+                       "target_path": "authority-candidates/old.md", "reason": pid,
+                       "proposed_body": "# Old\n"}
+            old_record = dict({"version": 1, "proposal_id": pid, "source": apx.AGENT,
+                               "received": "2025-01-01T00:00:00Z", "proposal": old_raw}, **extra)
+            data = apx._record_bytes(old_record)
+            with open(cs.path(ps.PROPOSALS, apx.PENDING, pid + ".json"), "wb") as fh:
+                fh.write(data)
+            ledger = apx._ledger(cs)
+            ledger[pid] = {"sha256": hashlib.sha256(data).hexdigest(), "source": apx.AGENT}
+            apx._write_ledger(cs, ledger)
+            pending_before = sorted(inbox_files(cs))
+            check(apx.file(folder, json.loads(json.dumps(old_raw, indent=3)), submitted=b"{}")
+                  == apx.duplicate_result() and sorted(inbox_files(cs)) == pending_before
+                  and open(cs.path(ps.PROPOSALS, apx.PENDING, pid + ".json"), "rb").read() == data,
+                  f"a waiting record an earlier Charter filed, with {label}, is matched by its content, "
+                  "and left byte for byte as it was")
+        for pid in ("p-20250101-cccccccc", "p-20250101-dddddddd"):
+            decide(folder, "reject-proposal", {"proposal_id": pid})
 
         print("\ndecided proposals never match")
         pid = first["proposal_id"]
@@ -557,10 +625,300 @@ def case_duplicates() -> None:
         check(len(inbox_files(cs)) == len(apx._ledger(cs)) and f"{waiting}.json" in inbox_files(cs)
               and not any(os.path.exists(cs.path(ps.PROPOSALS, d)) for d in apx.LEGACY_DECIDED),
               "one record, one ledger entry: no second proposal, and no record of what it replaced")
-        check(apx.replace(folder, raw, waiting, submitted=text + " ")["result"] == "refused",
-              "only an identical submission can replace it")
+        check(new["proposal_sha256"] == apx.proposal_fingerprint(raw)
+              and new["submitted_sha256"] == apx.submission_identity(text),
+              "  the replaced record carries this submission's digests")
+        check(apx.replace(folder, raw, waiting, submitted=text + " ")["result"] == "pending",
+              "the same content written differently may replace it too")
+        check(apx.replace(folder, dict(raw, reason="Other."), waiting, submitted=text)["result"]
+              == "refused", "only a submission with the same content can replace it")
         check(apx.replace(folder, raw, pid, submitted=text)["result"] == "refused",
               "and only a proposal still awaiting review")
+        shutil.rmtree(folder)
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def _session(folder: str):
+    session = console.Session()
+    console.open_context(session, {"path": folder})
+    return session
+
+
+def case_submission_parity() -> None:
+    print("\none reading of submitted bytes: `charter propose`, pasted JSON and a chosen file")
+    with isolated_private_state() as state_root:
+        folder, cs, _cand = setup()
+        session = _session(folder)
+        launch = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_launch.py")
+
+        def cli(data: bytes) -> dict:
+            p = subprocess.run([sys.executable, launch, os.path.dirname(state_root), "propose",
+                                "--context", folder], input=data, capture_output=True)
+            return json.loads(p.stdout)
+
+        def proposal(name: str, **more) -> dict:
+            return dict({"agent": "parity", "operation": "create",
+                         "target_path": f"authority-candidates/{name}.md", "reason": "Parity.",
+                         "proposed_body": f"# {name.title()} caf\u00e9\n\nText.\n"}, **more)
+
+        bom = b"\xef\xbb\xbf"
+        cases = [
+            ("UTF-8 without a byte-order mark", json.dumps(proposal("plain")).encode(), "ready"),
+            ("one leading UTF-8 byte-order mark", bom + json.dumps(proposal("one-bom")).encode(), "ready"),
+            ("two leading byte-order marks", bom * 2 + json.dumps(proposal("two-bom")).encode(), "ready"),
+            ("whitespace, then a byte-order mark", b"  " + bom + json.dumps(proposal("ws-bom")).encode(),
+             "not_json"),
+            ("malformed UTF-8", json.dumps(proposal("bad")).encode().replace(b"Parity", b"P\xffrity"),
+             "not_utf8"),
+            ("UTF-16 with its byte-order mark", ("\ufeff" + json.dumps(proposal("utf16"))).encode("utf-16-le"),
+             "not_utf8"),
+            ("raw non-ASCII UTF-8", json.dumps(proposal("raw"), ensure_ascii=False).encode("utf-8"), "ready"),
+            ("escaped non-ASCII", json.dumps(proposal("escaped"), ensure_ascii=True).encode("ascii"), "ready"),
+            ("not one object", b"[1, 2]", "not_an_object"),
+        ]
+        for label, data, expected in cases:
+            items = [{"bytes": _b64(data)}]
+            try:
+                items.append({"text": data.decode("utf-8")})
+            except UnicodeDecodeError:
+                pass
+            before = state_files(cs)
+            rows = console.import_check(session, {"items": items})["items"]
+            check(state_files(cs) == before, f"{label}: checking it wrote nothing")
+            statuses = {r["status"] for r in rows}
+            if expected == "ready":
+                # The file is checked first; its pasted text is the same content.
+                check([r["status"] for r in rows] == ["ready", "same"],
+                      f"  as a file it is Ready, and as pasted text the same content")
+                out = cli(data)
+                check(out["result"] == "pending", "  `charter propose` files the same bytes")
+                record = json.load(open(cs.path(ps.PROPOSALS, apx.PENDING, out["proposal_id"] + ".json"),
+                                        encoding="utf-8"))
+                check(record["submitted_sha256"] == hashlib.sha256(data).hexdigest(),
+                      "  its transport digest is of the bytes exactly as given")
+                again = console.import_check(session, {"items": items})["items"]
+                check(all(r["status"] == "awaiting" for r in again),
+                      "  then, as a file or pasted, it is Already awaiting review: one queue")
+            else:
+                cli_code = cli(data)["problems"][0]["code"]
+                message = console.MALFORMED_MESSAGES[expected]
+                check(statuses == {"malformed"} and all(r["message"] == message for r in rows)
+                      and cli_code == expected,
+                      f"  Malformed ({message}) in the console, and `{expected}` from `charter propose`")
+        rows = console.import_check(session, {"items": [
+            {"bytes": _b64(json.dumps(proposal("raw")).encode())},
+            {"text": json.dumps(proposal("raw"), indent=4, ensure_ascii=False)},
+            {"text": json.dumps(dict(reversed(list(proposal("raw").items()))))}]})["items"]
+        check([r["status"] for r in rows] == ["awaiting"] * 3,
+              "escaped, reindented and reordered copies of a filed proposal all match it")
+        oversized = b" " * apx.MAX_INPUT + b"{}"
+        rows = console.import_check(session, {"items": [{"bytes": _b64(oversized)}]})["items"]
+        check(rows == [{"status": "malformed", "message": "This proposal is too large."}]
+              and cli(oversized)["problems"][0]["code"] == "too_large",
+              "more than the input limit is too large on both routes")
+        shutil.rmtree(folder)
+
+
+def case_console_import() -> None:
+    print("\nImport Agent Proposals: per-item checks, then the selected items, all or none")
+    with isolated_private_state():
+        folder, cs, cand = setup()
+        session = _session(folder)
+        gov = ac.examine(folder).documents[0]
+        gov_text = ac.read_text(folder, gov.path)
+        cand_text = cs.read_candidate(cand)
+
+        def create(name: str, **more) -> dict:
+            return dict({"agent": "importer", "operation": "create",
+                         "target_path": f"authority-candidates/{name}.md", "reason": f"Add {name}.",
+                         "proposed_body": f"# {name}\n\nText.\n"}, **more)
+
+        waiting = create("waiting")
+        check(apx.file(folder, waiting)["result"] == "pending", "a proposal is already waiting")
+        ready = create("ready")
+        items = [
+            {"text": json.dumps(ready)},
+            {"bytes": _b64(b"\xef\xbb\xbf" + json.dumps(ready, indent=2).encode())},
+            {"text": json.dumps(waiting)},
+            {"text": json.dumps({"agent": "a", "operation": "amend", "target_path": gov.path,
+                                 "reason": "Late.", "base_sha256": "0" * 64,
+                                 "proposed_body": "New.\n"})},
+            {"text": json.dumps(dict(ready, base_commit="abc"))},
+            {"bytes": _b64(b"not json")},
+        ]
+        before = state_files(cs)
+        answer = console.import_check(session, {"items": items})
+        statuses = [r["status"] for r in answer["items"]]
+        check(answer["unavailable"] is None
+              and statuses == ["ready", "same", "awaiting", "stale", "refused", "malformed"],
+              "statuses: Ready, Same as another item, Already awaiting review, Stale, Refused, Malformed")
+        check(state_files(cs) == before, "checking wrote nothing")
+        rows = answer["items"]
+        check(rows[0]["summary"] == {"title": "ready", "agent": "importer", "operation": "create"}
+              and rows[1]["same_as"] == 0 and rows[2]["waiting"]["title"] == "waiting"
+              and rows[3]["problems"][0]["code"] == "stale"
+              and rows[4]["problems"][0]["code"] == "unknown_field"
+              and not re.search(r"[0-9a-f]{64}", json.dumps(answer))
+              and cs.base not in json.dumps(answer),
+              "each row says only what the person needs: no digest or private location")
+        for bad in ({"bytes": _b64(b"{}"), "name": "proposal.json"}, {"path": "C:/x.json"}, "text"):
+            try:
+                console.import_check(session, {"items": [bad]})
+                refused = False
+            except console.ApiError:
+                refused = True
+            check(refused, f"an item carrying anything but its text or bytes is refused: {bad!r}")
+        try:
+            console.import_check(session, {"items": [{"text": "{}"}] * (apx.MAX_BATCH + 1)})
+            too_many = False
+        except console.ApiError:
+            too_many = True
+        check(too_many, f"at most {apx.MAX_BATCH} items are checked at a time")
+
+        print("\n  the import files the selected items, all or none")
+        second = create("second")
+        done = console.import_file(session, {"items": [items[0], {"text": json.dumps(second)}],
+                                             "confirm": True})
+        check(done["result"] == "pending" and done["count"] == 2,
+              "two selected Ready items: both filed")
+        listed = {p["proposal_id"]: p for p in apx.listing(folder)["imported"]}
+        check(set(done["proposal_ids"]) <= set(listed) and len(apx._ledger(cs)) == len(inbox_files(cs)),
+              "  as imported proposals, each vouched for by the ledger")
+        check(ac.read_text(folder, gov.path) == gov_text and cs.read_candidate(cand) == cand_text
+              and not os.path.exists(cs.path(ps.PROPOSALS, "accepted")),
+              "  nothing accepted: no governing document, candidate or change set changed")
+        before = state_files(cs)
+        third, fourth = create("third"), create("fourth")
+        mixed = console.import_file(session, {"items": [{"text": json.dumps(third)},
+                                                        {"text": json.dumps(waiting)}], "confirm": True})
+        check(mixed["result"] == "refused" and [r["status"] for r in mixed["items"]] == ["ready", "awaiting"]
+              and state_files(cs) == before,
+              "a selection with one item not ready files nothing, and says what each item is now")
+        amend_cand = {"agent": "a", "operation": "amend", "target_path": cand, "reason": "Tweak.",
+                      "base_sha256": ac.sha256_text(cand_text), "proposed_body": "Tweaked.\n"}
+        pair = [{"text": json.dumps(fourth)}, {"text": json.dumps(amend_cand)}]
+        check([r["status"] for r in console.import_check(session, {"items": pair})["items"]]
+              == ["ready", "ready"], "two items check Ready")
+        plan = au.plan(folder, "edit-candidate", {"candidate": cand, "body": "Changed meanwhile.\n"})
+        au.apply(folder, "edit-candidate", plan.request, plan.plan_id, True)
+        before = state_files(cs)
+        late = console.import_file(session, {"items": pair, "confirm": True})
+        check(late["result"] == "refused" and [r["status"] for r in late["items"]] == ["ready", "refused"]
+              and state_files(cs) == before,
+              "a target changed between the check and the import: nothing filed, not even the other item")
+        try:
+            console.import_file(session, {"items": pair})
+            unconfirmed = False
+        except console.ApiError:
+            unconfirmed = True
+        check(unconfirmed, "an import needs the person's confirmation")
+
+        print("\n  a failure part-way leaves none of them")
+        fifth, sixth = create("fifth"), create("sixth")
+        batch = [(fifth, json.dumps(fifth).encode()), (sixth, json.dumps(sixth).encode())]
+        ledger_before = apx._ledger(cs)
+        before_files = inbox_files(cs)
+        seen = []
+
+        def fail_second(step: str) -> None:
+            if step.startswith("replace:"):
+                seen.append(step)
+                if len(seen) == 2:
+                    raise RuntimeError("disk full")
+        result = apx.file_batch(folder, batch, fault=fail_second)
+        check(len(seen) == 2 and result["result"] == "unavailable" and result["retryable"] is True
+              and inbox_files(cs) == before_files and apx._ledger(cs) == ledger_before,
+              "the second record failing after the first was written: both are gone, the ledger as it was")
+
+        class Died(BaseException):
+            pass
+
+        def die_second(step: str) -> None:
+            if step.startswith("replace:"):
+                seen.append(step)
+                if len(seen) == 4:
+                    raise Died()
+        try:
+            apx.file_batch(folder, batch, fault=die_second)
+            died = False
+        except Died:
+            died = True
+        check(died and tx.interrupted(cs), "the process dying part-way leaves its journal")
+        check(apx.file(folder, create("meanwhile"))["result"] == "unavailable",
+              "  intake refuses until the write is recovered")
+        au.recover(folder)
+        check(not tx.interrupted(cs) and inbox_files(cs) == before_files
+              and {r["proposal_id"] for r in apx.records(cs)[0]} == {f[:-5] for f in before_files},
+              "  and recovery removes every record it wrote: none of the batch is left")
+        done = apx.file_batch(folder, batch)
+        check(done["result"] == "pending" and len(done["proposal_ids"]) == 2, "  then it files cleanly")
+
+        print("\n  Replace, one item at a time")
+        replaced = console.import_replace(session, {"item": {"bytes": _b64(json.dumps(waiting, indent=1).encode())},
+                                                    "replace": answer["items"][2]["waiting"]["proposal_id"],
+                                                    "confirm": True})
+        record = json.load(open(cs.path(ps.PROPOSALS, apx.PENDING, replaced["proposal_id"] + ".json"),
+                                encoding="utf-8"))
+        check(replaced["result"] == "pending" and record["source"] == apx.IMPORTED
+              and record["submitted_sha256"] == hashlib.sha256(json.dumps(waiting, indent=1).encode()).hexdigest(),
+              "a waiting proposal is replaced in place by one item of the same content")
+
+        print("\n  an Agent Context that cannot accept proposals")
+        write(folder, "notes.txt", "stray")
+        answer = console.import_check(session, {"items": [{"text": json.dumps(create("x"))}]})
+        check(answer["items"] == [] and answer["unavailable"]["message"],
+              "it is Unavailable, once, and no item has a status")
+        check(console.import_file(session, {"items": [{"text": json.dumps(create("x"))}],
+                                            "confirm": True})["result"] == "unavailable",
+              "  and nothing can be imported")
+        shutil.rmtree(folder)
+
+
+def case_readme_import() -> None:
+    print("\nthe README describes content duplicates and Import Agent Proposals")
+    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "README.md"),
+              encoding="utf-8") as fh:
+        readme = fh.read()
+    check("character for character" not in readme
+          and "Charter compares the proposal's fields, not how the JSON was written" in readme
+          and "a different `agent`, `reason`, `expected_context_impact`, or any other field does" in readme,
+          "a duplicate is the same content, every field counting")
+    check("choose **Import agent proposals…**" in readme and "**Choose files…**" in readme
+          and "A file's name appears only in that row: Charter never receives or keeps it." in readme
+          and "files all of them or none" in readme
+          and all(f"| **{s}** |" in readme for s in ("Ready", "Already awaiting review",
+                                                     "Same as another selected item", "Stale",
+                                                     "Refused", "Malformed"))
+          and "**Unavailable**" in readme and "up to 20 proposals at a time" in readme,
+          "importing: paste, choose or drop; each status; all or none; file names stay in the browser")
+
+
+def case_older_copy_reads_new_records() -> None:
+    print("\nan earlier copy of Charter, sharing this private state, reads the new records")
+    head = subprocess.run(["git", "show", "HEAD:app/agent_proposals.py"], capture_output=True,
+                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if head.returncode != 0 or b"proposal_sha256" in head.stdout:
+        print("  skip: no earlier committed copy to compare with")
+        return
+    spec = importlib.util.spec_from_loader("app._earlier_agent_proposals", loader=None)
+    earlier = importlib.util.module_from_spec(spec)
+    earlier.__package__ = "app"
+    exec(compile(head.stdout.decode("utf-8"), "earlier agent_proposals.py", "exec"), earlier.__dict__)
+    with isolated_private_state():
+        folder, cs, _cand = setup()
+        text = json.dumps({"agent": "a", "operation": "create", "target_path": "authority-candidates/e.md",
+                           "reason": "Both copies.", "proposed_body": "# E\n"})
+        new = apx.file(folder, json.loads(text), submitted=text.encode())
+        imported = apx.file_batch(folder, [(json.loads(text.replace("E", "F")), text.replace("E", "F").encode())])
+        filed, unexpected = earlier.records(cs)
+        ids = {r["proposal_id"] for r in filed}
+        check(new["proposal_id"] in ids and set(imported["proposal_ids"]) <= ids and unexpected == [],
+              "the earlier copy lists every new record as filed: the ledger vouches for them")
+        check(earlier.file(folder, json.loads(text), submitted=text.encode()) == earlier.duplicate_result(),
+              "it still matches a byte-identical resubmission by `submitted_sha256`")
         shutil.rmtree(folder)
 
 
@@ -587,8 +945,10 @@ def case_legacy_records() -> None:
               "decided records are never listed, as proposals or as unexpected material")
         text = json.dumps({"agent": "a", "operation": "create", "target_path": "authority-candidates/o.md",
                            "reason": "Old.", "proposed_body": "x\n"})
-        check(apx.file(folder, json.loads(text), submitted=text)["result"] == "pending",
-              "a proposal filed before Charter kept submission identities never matches")
+        check(apx.file(folder, json.loads(text), submitted=text) == apx.duplicate_result(),
+              "a proposal filed before Charter kept submission identities is matched by its content")
+        check(apx.file(folder, dict(json.loads(text), reason="New."), submitted=text)["result"]
+              == "pending", "  and a different one is filed")
         check(set(apx._ledger(cs)) == {p["proposal_id"] for p in apx.listing(folder)["pending"]},
               "filing drops ledger entries for decided proposals: it vouches only for those waiting")
         check({d: sorted(os.listdir(cs.path(ps.PROPOSALS, d))) for d in apx.LEGACY_DECIDED} == legacy
@@ -609,6 +969,10 @@ def run() -> None:
     case_preview_then_decide()
     case_atomic()
     case_duplicates()
+    case_submission_parity()
+    case_console_import()
+    case_older_copy_reads_new_records()
+    case_readme_import()
     case_legacy_records()
     print(f"\n{OK} All proposal review checks passed.")
 

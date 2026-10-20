@@ -17,6 +17,7 @@ Agent Context as the Project Asset §9 and acceptance criterion 18:
 """
 from __future__ import annotations
 
+import argparse
 import contextlib
 import json
 import os
@@ -75,6 +76,13 @@ def run_read(argv: list, state: str, cwd: str = None, env: dict = None) -> tuple
     (exit code, stdout bytes, stderr bytes)."""
     p = subprocess.run([sys.executable, LAUNCH, state, "read"] + argv, capture_output=True,
                        cwd=cwd or ROOT, env=env, stdin=subprocess.DEVNULL)
+    return p.returncode, p.stdout, p.stderr
+
+
+def run_charter(argv: list, state: str, cwd: str = None) -> tuple:
+    """`charter …` as a separate process: (exit code, stdout bytes, stderr bytes)."""
+    p = subprocess.run([sys.executable, LAUNCH, state] + argv, capture_output=True,
+                       cwd=cwd or ROOT, stdin=subprocess.DEVNULL)
     return p.returncode, p.stdout, p.stderr
 
 
@@ -443,6 +451,88 @@ def case_command_line() -> None:
     shutil.rmtree(state)
 
 
+def hint(word: str) -> bytes:
+    return (f"{word} is not a command or a full path. To read an Agent Context: "
+            "charter <full path>" + os.linesep).encode("utf-8")
+
+
+def case_shorthand() -> None:
+    print("\nthe person's shorthand `charter <absolute folder> …` is exactly `charter read "
+          "--context <absolute folder> …`")
+    with isolated_private_state() as launch_state:
+        state = os.path.dirname(launch_state)
+        base = fixture()
+        spaced_root = tempfile.mkdtemp(prefix="charter shorthand ")
+        spaced = os.path.join(spaced_root, "my context")
+        shutil.copytree(base, spaced)
+        empty = tempfile.mkdtemp(prefix="charter-not-a-context-")
+        missing = os.path.join(empty, "missing")
+        a_file = os.path.join(empty, "notes.txt")
+        write(empty, "notes.txt", b"not a folder")
+        folders = [base, spaced]
+        if os.name == "nt":
+            folders.append(spaced.replace("\\", "/"))  # C:/… names its drive too
+        before = tree(launch_state)
+        for folder in folders:
+            for extra, _tool, _args in FORMS:
+                for more in ([], ["--json"]):
+                    want = run_read(["--context", folder] + extra + more, state)
+                    got = run_charter([folder] + extra + more, state)
+                    check(got == want and got[0] == 0,
+                          f"`charter {'<folder>' if folder == base else repr(folder)} "
+                          f"{' '.join(extra + more)}`: the same exit code, standard output and "
+                          "(empty) standard error as `charter read --context`")
+        for folder, label in ((missing, "a missing folder"), (empty, "a folder that is not an Agent "
+                              "Context"), (a_file, "a file")):
+            want = run_read(["--context", folder], state)
+            got = run_charter([folder], state)
+            check(got == want and got[0] == 1 and got[2] == b""
+                  and got[1].startswith(b"context-invalid: ") and DO_NOT_RELY.encode() in got[1],
+                  f"{label}: the same `context-invalid` refusal, exit 1")
+        for argv, label in (([base, "--context", base], "a second `--context`"),
+                            ([base, "--heading", "Boundaries"], "`--heading` without `--document`"),
+                            ([base, "--help"], "an unknown option"),
+                            ([base, "--list", "extra"], "a stray word")):
+            want = run_read(["--context"] + argv, state)
+            got = run_charter(argv, state)
+            check(got == want and got[0] == 2 and got[1].startswith(b"bad-arguments: "),
+                  f"{label}: the same `bad-arguments`, exit 2")
+        got = run_charter([base, "--json", "--list", "--context", base], state)
+        check(got[0] == 2 and json.loads(got[1])["reason"] == "bad-arguments",
+              "  and in the form asked for: `--json` answers with one JSON object")
+        relatives = ["context", ".", "..", "my context", "~", "serves"]
+        if os.name == "nt":
+            relatives += ["C:context", "\\context", "/context"]
+        for word in relatives:
+            code, out, err = run_charter([word, "--list"], state, cwd=os.path.dirname(base))
+            check(code == 2 and out == b"" and err == hint(word),
+                  f"`charter {word} --list`: no Agent Context is named — only the hint, on "
+                  "standard error, exit 2; never tried as a relative path")
+        code, out, err = run_charter([""], state)
+        check(code == 2 and out == b"" and err == hint('""'), "an empty first word: the same hint")
+        code, out, _ = run_charter([os.path.basename(base)], state, cwd=os.path.dirname(base))
+        check(code == 2 and out == b"",
+              "  even when that word names an Agent Context in the current folder")
+        check(tree(launch_state) == before,
+              "every shorthand run, served or refused: no private state, activity or Recent entry")
+        code, out, _ = run_charter(["--help"], state)
+        check(code == 0 and b"charter <absolute-agent-context-folder> [--list" in out
+              and b"read --context" in out, "`charter --help` shows the shorthand")
+        code, out, _ = run_charter(["--version"], state)
+        check(code == 0 and b"Charter" in out, "`charter --version` is unchanged")
+        code, out, err = run_charter(["check", "--context", base], state)
+        check(code == 0 and b"Agents:        served" in out, "subcommands are unchanged")
+        code, out, err = run_charter(["--bogus"], state)
+        check(code == 2 and b"usage: charter" in err and not err.startswith(b"--bogus is not"),
+              "an unknown option is still argparse's own error")
+        from app import __main__ as cli
+        sub = next(a for a in cli.parser()._actions if isinstance(a, argparse._SubParsersAction))
+        check(sorted(sub.choices) == sorted(cli.SUBCOMMANDS),
+              "the hint's list of subcommands is exactly the parser's")
+        for path in (base, spaced_root, empty):
+            shutil.rmtree(path)
+
+
 def case_format_4_transition() -> None:
     print("\nmap format 4: format 3 is out of date, Rebuild brings it current, older copies refuse it")
     with isolated_private_state():
@@ -532,6 +622,16 @@ def case_readme() -> None:
           "the import route is unaffected")
     check("| through MCP, or any other tool | nothing: it returns the proposal JSON" in readme,
           "MCP agents still return proposal JSON for import")
+    check("**Read an Agent Context from your terminal.**" in readme
+          and "charter C:\\work\\my-project-context" in readme
+          and "It's exactly `charter read --context <full path>`" in readme
+          and "Quote a path that contains spaces" in readme
+          and "keep their full-path form on purpose" in readme
+          and "charter <absolute-folder> [--list | --document" in readme,
+          "the shorthand: once on PATH, exactly `charter read --context`, quoted when needed, "
+          "full path only, and agents' instructions keep their full-path form")
+    check("register one server for each Agent Context an agent host should read" in readme,
+          "install once; one MCP registration per Agent Context")
 
 
 def run() -> None:
@@ -544,6 +644,7 @@ def run() -> None:
     case_nothing_written()
     case_mcp_unchanged()
     case_command_line()
+    case_shorthand()
     case_format_4_transition()
     case_readme()
     print(f"\n{OK} All charter read checks passed.")

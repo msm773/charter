@@ -35,7 +35,6 @@ parseInto(document, document.body, html);
 global.document = document;
 
 const calls = [];
-const DUPLICATE_MARK = " ";  // trailing whitespace: a distinct text, answered as a duplicate by this stand-in
 let currentState = fixture.state_closed;
 let connectAnswer = fixture.connect_ready;
 let commandAnswer = fixture.command_ready;  // the header's Charter command status
@@ -44,6 +43,8 @@ let csListAnswer = null;  // the change-set index, when not fixture.cs_list
 let stageAnswer = fixture.stage;  // what converting the next file answers
 let stageDelay = null;  // { gate, answer }: the next conversion answers only once gate resolves
 let importCheckDelay = null;  // a gate: the next import check answers only once it resolves
+let importCheckAnswer = null;  // the next import check's answer, when a test sets one
+let importFileAnswer = null;  // the next import's answer, when a test sets one
 const GOVERNING_KINDS = ["grant", "replace", "withdraw", "changeset"];
 const planFor = (body) => {
   if (body.kind === "edit-candidate" && body.request && body.request.candidate === fixture.legacy_path) {
@@ -136,24 +137,29 @@ global.fetch = async (url, options) => {
     return answer(body.name === "a-folder" ? fixture.unexpected_folder_view : fixture.unexpected_view);
   }
   if (url === "/api/proposals/import/check") {
-    const checked = answer(/base_commit/.test(body.json) ? fixture.import_check_bad : fixture.import_check_ok);
+    // By default each item is Ready; a test sets the answer it needs.
+    const made = importCheckAnswer
+      || { unavailable: null, items: body.items.map(() => fixture.import_check_ok.items[0]) };
+    importCheckAnswer = null;
+    const checked = answer(made);
     const gate = importCheckDelay;
     importCheckDelay = null;
     return gate ? gate.then(() => checked) : checked;
   }
   if (url === "/api/proposals/import") {
-    // An exact duplicate of a waiting proposal is named, not filed, until the person replaces it.
-    if (body.json.endsWith(DUPLICATE_MARK) && !body.replace) {
-      return answer({ result: "duplicate", problem: { code: "duplicate", message: "Identical." },
-        waiting: { proposal_id: "p-waiting", title: "Waiting rule" } });
-    }
-    return answer({ result: "pending", proposal_id: body.replace || "p-imported" });
+    const made = importFileAnswer
+      || { result: "pending", count: body.items.length, proposal_ids: body.items.map((_, i) => "p-imported-" + i) };
+    importFileAnswer = null;
+    return answer(made);
   }
+  if (url === "/api/proposals/import/replace") return answer({ result: "pending", proposal_id: body.replace });
   return refuse(404, "no route " + url);
 };
 global.FileReader = class {
-  readAsDataURL() {
-    this.result = "data:application/octet-stream;base64," + Buffer.from("# Site notes\n").toString("base64");
+  readAsDataURL(file) {
+    // A test's file carries its own bytes; the intake tests' file reads as one fixed note.
+    const bytes = file && file.bytes ? file.bytes : Buffer.from("# Site notes\n");
+    this.result = "data:application/octet-stream;base64," + bytes.toString("base64");
     Promise.resolve().then(() => this.onload && this.onload());
   }
 };
@@ -2118,103 +2124,212 @@ for (const file of ["markdown.js", "app.js"]) {
     "from the compact card too: rejected with no reason, saying exactly “Proposal rejected.”");
   clearToasts();
 
-  console.log("\nImport Agent Proposal: the fallback for an agent that could not file its own JSON");
-  check($("btnImportProposal").textContent === "Import agent proposal…", "the action is Import agent proposal…");
+  console.log("\nImport Agent Proposals: the fallback for an agent that could not file its own JSON");
+  check($("btnImportProposal").textContent === "Import agent proposals…", "the action is Import agent proposals…");
   await click($("btnImportProposal"));
-  check($("review").querySelector("h3").textContent === "Import Agent Proposal"
+  check($("review").querySelector("h3").textContent === "Import Agent Proposals"
     && labelFor($("review"), "importJson").textContent === "Agent proposal JSON"
-    && $("btnCheckImport").textContent === "Check proposal",
-    "its panel is Import Agent Proposal, with the field Agent proposal JSON and the action Check proposal");
-  check($("importInstruction").textContent === "Paste an agent proposal as JSON below. Use Create candidate for "
-      + "material you want to add yourself. The JSON must follow Charter’s proposal format; Charter checks it "
+    && $("btnCheckImport").textContent === "Check proposals",
+    "its panel is Import Agent Proposals, with the field Agent proposal JSON and the action Check proposals");
+  check($("importInstruction").textContent === "Paste an agent proposal as JSON, or choose or drop proposal "
+      + "JSON files. Use Create candidate for material you want to add yourself. Charter checks every proposal "
       + "before anything is filed."
     && $("importInstruction").querySelector("strong").textContent === "Create candidate"
     && $("review").querySelectorAll(".note").length === 1,
-    "its one instruction says proposals are agents' material, and sends people to Create candidate for their own");
+    "its one instruction is exactly the governed one, and sends people to Create candidate for their own material");
+  const impPicker = $("importFiles");
+  let impPickerOpened = 0;
+  impPicker.addEventListener("click", () => { impPickerOpened++; });
+  check(impPicker.getAttribute("type") === "file" && impPicker.getAttribute("multiple") !== null
+    && /\.json/.test(impPicker.getAttribute("accept")) && impPicker.hidden,
+    "a hidden file input that takes several JSON files");
+  check($("btnChooseImportFiles").tagName === "BUTTON" && $("btnChooseImportFiles").textContent === "Choose files…"
+    && $("importDrop").tagName === "BUTTON" && $("importDrop").getAttribute("type") === "button"
+    && $("importDrop").getAttribute("aria-describedby") === "importDropHint"
+    && /Drop proposal JSON files here/.test($("importDrop").textContent),
+    "Choose files… and the drop area are both buttons: the keyboard reaches and presses each");
+  await click($("btnChooseImportFiles"));
+  await click($("importDrop"));
+  check(impPickerOpened === 2, "each opens the same file choice");
   check($("btnFileImport").textContent === "Import" && $("btnFileImport").disabled
-    && $("btnCheckImport").parentNode === $("btnFileImport").parentNode
-    && $("btnFileImport").parentNode.children.indexOf($("btnFileImport"))
-      === $("btnCheckImport").parentNode.children.indexOf($("btnCheckImport")) + 1,
-    "Check proposal and a disabled Import sit side by side");
-  check(!buttonSaying($("review").querySelector("header"), "Close")
-    && $("btnCheckImport").parentNode.querySelectorAll("button").map((b) => b.textContent).join("|") === "Check proposal|Import|Cancel",
-    "no header Close: Check proposal, Import and Cancel sit together");
-  type($("importJson"), JSON.stringify(Object.assign(JSON.parse(fixture.import_returned), { base_commit: "abc123" })));
-  await click($("btnCheckImport"));
-  check($("importError") && $("importError").classList.contains("error") && $("importError").getAttribute("role") === "alert"
-    && /base_commit/.test($("importError").textContent) && $("importResult").children.length === 1
-    && $("btnFileImport").disabled && /color:\s*var\(--brick\)/.test(rule(css, ".note.error")),
-    "a failed check shows only one concise red error saying why, and Import stays disabled");
+    && $("btnCheckImport").parentNode.querySelectorAll("button").map((b) => b.textContent).join("|")
+      === "Check proposals|Import|Cancel"
+    && !buttonSaying($("review").querySelector("header"), "Close"),
+    "Check proposals, a disabled Import and Cancel sit together; there is no header Close");
+  check($("importRows").hidden, "with nothing pasted or chosen, there are no rows");
+
+  console.log("\n  rows: the pasted text and each file, checked before anything is filed");
+  const impFileOf = (name, text) => ({ name, bytes: Buffer.from(text, "binary") });
+  const impRowsNow = () => $("importRows").querySelectorAll("li.import-row");
+  const impRowNamed = (name) => impRowsNow().find((r) => r.querySelector(".import-name").textContent === name);
+  const impStatusOf = (row) => (row.querySelector(".chip") || { textContent: "" }).textContent;
   type($("importJson"), fixture.import_returned);
-  check(!$("importError") && $("btnFileImport").disabled, "editing the JSON clears the error");
+  check(impRowsNow().length === 1 && impRowNamed("Pasted JSON") && !impRowNamed("Pasted JSON").querySelector(".chip"),
+    "pasted JSON is one row, Pasted JSON, not yet checked");
+  const impReordered = "\xef\xbb\xbf" + JSON.stringify(JSON.parse(fixture.import_returned), null, 2);
+  impPicker.files = [impFileOf("reordered.json", impReordered), impFileOf("waiting.json", "{}")];
+  impPicker.dispatch("change");
+  await settle();
+  $("importDrop").dispatch("dragover", { dataTransfer: { files: [] } });
+  check($("importDrop").classList.contains("over"), "dragging over the drop area marks it");
+  $("importDrop").dispatch("drop", { dataTransfer: { files: [impFileOf("stale.json", "{}"),
+    impFileOf("refused.json", "{}"), impFileOf("broken.json", "not json")] } });
+  await settle();
+  check(!$("importDrop").classList.contains("over")
+    && impRowsNow().map((r) => r.querySelector(".import-name").textContent).join("|")
+      === "Pasted JSON|reordered.json|waiting.json|stale.json|refused.json|broken.json",
+    "chosen and dropped files each become a row after the pasted one, named by the file");
+  check(buttonSaying(impRowNamed("broken.json"), "Remove") && !buttonSaying(impRowNamed("Pasted JSON"), "Remove"),
+    "a file's row can be removed");
+  importCheckAnswer = fixture.import_check_rows;
   await click($("btnCheckImport"));
-  check(!$("btnFileImport").disabled && !$("importResult").firstChild && !$("importSummary")
-    && !/chat-agent|Another clarification|passed|valid/i.test($("importResult").textContent),
-    "a passing check shows nothing at all: it only enables Import");
+  const impCheckBody = lastCall("/api/proposals/import/check").body;
+  check(impCheckBody.items.length === 6 && impCheckBody.items[0].text === fixture.import_returned
+    && impCheckBody.items[1].bytes === Buffer.from(impReordered, "binary").toString("base64")
+    && Object.keys(impCheckBody.items[1]).join() === "bytes"
+    && !/\.json|reordered|waiting|stale|refused|broken/.test(JSON.stringify(impCheckBody)),
+    "the check sends the pasted text and each file's bytes, base64 and undecoded — and no file name");
   check(!calls.some((c) => c.url === "/api/proposals/import"), "checking files nothing");
+  check(impStatusOf(impRowNamed("Pasted JSON")) === "Ready" && impStatusOf(impRowNamed("reordered.json")) === "Same as another selected item"
+    && impStatusOf(impRowNamed("waiting.json")) === "Already awaiting review" && impStatusOf(impRowNamed("stale.json")) === "Stale"
+    && impStatusOf(impRowNamed("refused.json")) === "Refused" && impStatusOf(impRowNamed("broken.json")) === "Malformed",
+    "each row has exactly one status: Ready, Same as another selected item, Already awaiting review, Stale, Refused, Malformed");
+  check(/base_commit/.test(impRowNamed("refused.json").textContent) && /This is not JSON\./.test(impRowNamed("broken.json").textContent)
+    && /changed after you read it/.test(impRowNamed("stale.json").textContent),
+    "a row that is not ready says why, concisely");
+  const impTicks = $("importRows").querySelectorAll("input.import-select");
+  check(impTicks.length === 1 && impTicks[0].checked && insideOf(impTicks[0], impRowNamed("Pasted JSON"))
+    && labelFor(impRowNamed("Pasted JSON"), impTicks[0].getAttribute("id")),
+    "only the Ready row can be selected, and it starts selected, with its name as its label");
+  check(!$("btnFileImport").disabled && $("btnFileImport").textContent === "Import 1 proposal",
+    "the import names its count; the rows that are not ready do not block it");
+  impTicks[0].checked = false;
+  impTicks[0].dispatch("change");
+  check($("btnFileImport").disabled && $("btnFileImport").textContent === "Import 0 proposals",
+    "with nothing selected, nothing can be imported");
+  impTicks[0].checked = true;
+  impTicks[0].dispatch("change");
+
+  console.log("\n  any change to the list needs a fresh check");
+  await click(buttonSaying(impRowNamed("broken.json"), "Remove"));
+  check(!impRowNamed("broken.json") && $("btnFileImport").disabled && $("btnFileImport").textContent === "Import"
+    && !impRowsNow().some((r) => r.querySelector(".chip")),
+    "removing a file clears every status and disables the import");
+  importCheckAnswer = Object.assign({}, fixture.import_check_rows,
+    { items: fixture.import_check_rows.items.slice(0, 5) });
+  await click($("btnCheckImport"));
+  check(!$("btnFileImport").disabled, "checked again, it can be imported");
   type($("importJson"), fixture.import_returned + " ");
-  check($("btnFileImport").disabled, "any edit to the JSON disables Import again");
+  check($("btnFileImport").disabled && !impRowsNow().some((r) => r.querySelector(".chip")),
+    "editing the pasted JSON does the same");
   $("btnFileImport").click();
   await settle();
-  check(!calls.some((c) => c.url === "/api/proposals/import"), "and a disabled Import files nothing");
+  check(!calls.some((c) => c.url === "/api/proposals/import"), "and a disabled import files nothing");
   type($("importJson"), fixture.import_returned);
-  check($("btnFileImport").disabled, "even restoring the same text needs a fresh check");
+
+  console.log("\n  the selected rows are filed all together, or none is");
+  importCheckAnswer = Object.assign({}, fixture.import_check_rows,
+    { items: fixture.import_check_rows.items.slice(0, 5) });
+  await click($("btnCheckImport"));
+  importFileAnswer = fixture.import_refused_after;
+  await click($("btnFileImport"));
+  const impFirstImport = lastCall("/api/proposals/import").body;
+  check(impFirstImport.confirm === true && impFirstImport.items.length === 1
+    && impFirstImport.items[0].text === fixture.import_returned,
+    "the import sends exactly the selected rows as checked, as the person's own action");
+  check($("importNotFiled") && /Nothing was imported/.test($("importNotFiled").textContent)
+    && impStatusOf(impRowNamed("Pasted JSON")) === "Ready" && !/Imported/.test((toastNow() || { textContent: "" }).textContent),
+    "when one is no longer ready, nothing is filed, and the rows say what they are now");
+  clearToasts();
+  importCheckAnswer = Object.assign({}, fixture.import_check_rows,
+    { items: fixture.import_check_rows.items.slice(0, 5) });
   await click($("btnCheckImport"));
   await click($("btnFileImport"));
-  check(lastCall("/api/proposals/import").body.json === fixture.import_returned
-    && lastCall("/api/proposals/import").body.confirm === true
-    && /Imported the agent proposal, for review\. It is not context\./.test(toastNow().textContent)
+  check(!$("importJson") && /^Imported the agent proposal for review\. It is not context\.$/.test(toastNow().textContent)
     && !/\bp-[\w-]+/.test(toastNow().textContent),
-    "Import files exactly the checked JSON, as the person's own action, and says so without an internal id");
+    "filed: the panel closes and says so, with no internal id");
+  clearToasts();
+  await click($("btnImportProposal"));
+  $("importFiles").files = [impFileOf("one.json", "{}"), impFileOf("two.json", "{}")];
+  $("importFiles").dispatch("change");
+  await settle();
+  await click($("btnCheckImport"));
+  check($("btnFileImport").textContent === "Import 2 proposals", "two Ready files: Import 2 proposals");
+  await click($("btnFileImport"));
+  check(lastCall("/api/proposals/import").body.items.length === 2
+    && toastNow().textContent === "Imported 2 agent proposals for review. They are not context.",
+    "both filed, and counted");
   clearToasts();
 
-  console.log("\nImporting an exact duplicate of a waiting proposal: Replace or Cancel");
-  const duplicateText = fixture.import_returned + "\n" + DUPLICATE_MARK;
+  console.log("\n  Replace…, one row at a time");
   await click($("btnImportProposal"));
-  type($("importJson"), duplicateText);
+  type($("importJson"), fixture.import_returned);
+  importCheckAnswer = { unavailable: null, items: [fixture.import_check_rows.items[2]] };
   await click($("btnCheckImport"));
-  const importsBefore = calls.filter((c) => c.url === "/api/proposals/import").length;
-  await click($("btnFileImport"));
-  check($("importDuplicateText") && $("importDuplicateText").textContent
-      === "An identical proposal, “Waiting rule,” is already awaiting review. Replace it?"
-    && $("btnReplaceImport").textContent === "Replace" && $("btnCancelReplace").textContent === "Cancel",
-    "an identical waiting proposal is named by its title, with Replace and Cancel");
-  check($("btnFileImport").parentNode.hidden
-    && $("importDuplicate").querySelectorAll("button").map((b) => b.textContent).join("|") === "Replace|Cancel"
-    && !/Imported/.test((toastNow() || { textContent: "" }).textContent),
-    "it stands in for the panel's own actions, and nothing was filed");
-  await click($("btnCancelReplace"));
-  check(!$("importDuplicate") && !$("btnFileImport").parentNode.hidden && $("importJson").value === duplicateText
-    && calls.filter((c) => c.url === "/api/proposals/import").length === importsBefore + 1
-    && !calls.some((c) => c.url === "/api/proposals/import" && c.body.replace),
-    "Cancel changes nothing: the panel and its JSON are as they were, and nothing was replaced");
-  await click($("btnFileImport"));
-  await click($("btnReplaceImport"));
-  check(lastCall("/api/proposals/import").body.replace === "p-waiting"
-    && lastCall("/api/proposals/import").body.json === duplicateText && !$("importJson")
-    && /Replaced the waiting proposal/.test(toastNow().textContent),
-    "Replace replaces that waiting proposal with this submission, and the panel closes");
+  const impWaitingRow = impRowNamed("Pasted JSON");
+  check(impStatusOf(impWaitingRow) === "Already awaiting review" && buttonSaying(impWaitingRow, "Replace…")
+    && !impWaitingRow.querySelector("input"),
+    "a row already awaiting review offers Replace…, and cannot be selected");
+  await click(buttonSaying(impWaitingRow, "Replace…"));
+  const impAsk = impWaitingRow.querySelector(".import-replace");
+  check(!impAsk.hidden && impAsk.querySelector("p").textContent === "An identical proposal, “"
+      + fixture.import_check_rows.items[2].waiting.title + ",” is already awaiting review. Replace it?"
+    && impAsk.querySelectorAll("button").map((b) => b.textContent).join("|") === "Replace|Cancel",
+    "it asks exactly the governed question, with Replace and Cancel");
+  await click(buttonSaying(impAsk, "Cancel"));
+  check(impAsk.hidden && !calls.some((c) => c.url === "/api/proposals/import/replace"), "Cancel changes nothing");
+  await click(buttonSaying(impWaitingRow, "Replace…"));
+  await click(buttonSaying(impAsk, "Replace"));
+  const impReplaceBody = lastCall("/api/proposals/import/replace").body;
+  check(impReplaceBody.replace === fixture.import_check_rows.items[2].waiting.proposal_id
+    && impReplaceBody.item.text === fixture.import_returned && impReplaceBody.confirm === true
+    && /Replaced the waiting proposal/.test(toastNow().textContent) && !impRowsNow().length,
+    "Replace replaces that one waiting proposal with this row, separately from any import, and the row goes");
   clearToasts();
-
-  console.log("\nCancel clears and closes Import Agent Proposal");
-  await click($("btnImportProposal"));
-  type($("importJson"), JSON.stringify(Object.assign(JSON.parse(fixture.import_returned), { base_commit: "abc123" })));
-  await click($("btnCheckImport"));
-  await click($("btnCancelImport"));
-  check(!$("importJson") && !$("importError") && !$("review").firstChild && !$("view-proposals").hidden,
-    "Cancel closes the panel and drops what was pasted and checked, staying in Agent Proposals");
-  await click($("btnImportProposal"));
-  check($("importJson").value === "" && !$("importError") && $("btnFileImport").disabled, "reopened, it starts empty");
   await click($("btnCancelImport"));
 
-  console.log("\nLeaving Agent Proposals closes Import Agent Proposal, and clears it");
+  console.log("\n  an Agent Context that cannot accept proposals now");
   await click($("btnImportProposal"));
-  type($("importJson"), JSON.stringify(Object.assign(JSON.parse(fixture.import_returned), { base_commit: "abc123" })));
+  type($("importJson"), fixture.import_returned);
+  importCheckAnswer = fixture.import_check_unavailable;
   await click($("btnCheckImport"));
-  check(!!$("importError"), "with JSON pasted and checked");
+  check($("importUnavailable") && /^Unavailable\./.test($("importUnavailable").textContent)
+    && $("importUnavailable").getAttribute("role") === "alert" && $("btnFileImport").disabled
+    && !impRowsNow().some((r) => r.querySelector(".chip")),
+    "it says so once, as Unavailable, and no row can be imported");
+  await click($("btnCancelImport"));
+
+  console.log("\n  at most 20 at a time");
+  await click($("btnImportProposal"));
+  $("importFiles").files = Array.from({ length: 21 }, (_, i) => impFileOf(`p${i}.json`, "{}"));
+  $("importFiles").dispatch("change");
+  await settle();
+  check(!impRowsNow().length && /at most 20/.test(toastNow().textContent), "21 files are refused with the limit");
+  clearToasts();
+  await click($("btnCancelImport"));
+
+  console.log("\nCancel clears and closes Import Agent Proposals");
+  await click($("btnImportProposal"));
+  type($("importJson"), fixture.import_returned);
+  $("importFiles").files = [impFileOf("kept.json", "{}")];
+  $("importFiles").dispatch("change");
+  await settle();
+  await click($("btnCheckImport"));
+  await click($("btnCancelImport"));
+  check(!$("importJson") && !$("importRows") && !$("review").firstChild && !$("view-proposals").hidden,
+    "Cancel closes the panel and drops its rows, checks and selection, staying in Agent Proposals");
+  await click($("btnImportProposal"));
+  check($("importJson").value === "" && !impRowsNow().length && $("btnFileImport").disabled, "reopened, it starts empty");
+  await click($("btnCancelImport"));
+
+  console.log("\nLeaving Agent Proposals closes Import Agent Proposals, and clears it");
+  await click($("btnImportProposal"));
+  type($("importJson"), fixture.import_returned);
+  await click($("btnCheckImport"));
+  check(impRowsNow().length === 1, "with JSON pasted and checked");
   await navTo("candidates");
-  check(!$("importJson") && !$("importResult") && !$("review").firstChild && !$("view-candidates").hidden,
-    "on another area, the panel, its pasted JSON and its check result are gone");
+  check(!$("importJson") && !$("importRows") && !$("review").firstChild && !$("view-candidates").hidden,
+    "on another area, the panel, its rows and their checks are gone");
   for (const view of ["governing", "changesets", "connect", "settings"]) {
     await navTo(view);
     check(!$("importJson") && !$("review").firstChild, `and it never appears in ${view}`);
@@ -2222,7 +2337,7 @@ for (const file of ["markdown.js", "app.js"]) {
   await navTo("proposals");
   check(!$("importJson") && !$("review").firstChild, "back in Agent Proposals, it is not open");
   await click($("btnImportProposal"));
-  check($("importJson").value === "" && !$("importError") && $("btnFileImport").disabled, "opened again, it starts empty");
+  check($("importJson").value === "" && !impRowsNow().length && $("btnFileImport").disabled, "opened again, it starts empty");
   type($("importJson"), fixture.import_returned);
   let releaseCheck;
   importCheckDelay = new Promise((r) => { releaseCheck = r; });
@@ -2230,7 +2345,7 @@ for (const file of ["markdown.js", "app.js"]) {
   await navTo("governing");
   releaseCheck();
   await settle();
-  check(!$("btnFileImport") && !$("importError") && !$("review").firstChild,
+  check(!$("btnFileImport") && !$("importRows") && !$("review").firstChild,
     "a check still on its way when the person leaves is dropped, never shown anywhere");
   await navTo("proposals");
 

@@ -11,6 +11,7 @@ MCP activity — are kept, not run, in `tests/deferred/`.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -123,15 +124,15 @@ def build_fixture() -> dict:
                 "reason": "Clarify Beta.", "base_sha256": ac.sha256_text(
                     open(os.path.join(folder, "authoritative", "b.md"), encoding="utf-8").read()),
                 "proposed_body": "Clearer Beta.\n"}
-    out["proposal_imported"] = console.import_file(session, {"json": json.dumps(returned),
-                                                             "confirm": True})["proposal_id"]
+    out["proposal_imported"] = console.import_file(session, {"items": [{"text": json.dumps(returned)}],
+                                                             "confirm": True})["proposal_ids"][0]
     # Creates with no supplied title: one imported whose body opens with a
     # first-level heading, which titles it, and one filed directly with no
     # heading at all, which falls back to its logical path.
-    out["proposal_imported_create"] = console.import_file(session, {"json": json.dumps({
+    out["proposal_imported_create"] = console.import_file(session, {"items": [{"text": json.dumps({
         "agent": "chat-agent", "operation": "create", "target_path": "authority-candidates/imported-rule.md",
-        "reason": "Write the imported rule down.", "proposed_body": "Intro line.\n\n# Imported rule\n\nText.\n"}),
-        "confirm": True})["proposal_id"]
+        "reason": "Write the imported rule down.", "proposed_body": "Intro line.\n\n# Imported rule\n\nText.\n"})}],
+        "confirm": True})["proposal_ids"][0]
     out["proposal_untitled"] = apx.file(folder, {
         "agent": "codex", "operation": "create", "target_path": "authority-candidates/untitled-rule.md",
         "reason": "A rule with no heading.", "proposed_body": "Just the rule, with no heading.\n"})["proposal_id"]
@@ -147,11 +148,28 @@ def build_fixture() -> dict:
                                         if u["name"] == "a-folder")
     out["unexpected_folder_view"] = console.unexpected(session, {"name": "a-folder"})
     os.rmdir(cs.path(ps.PROPOSALS, apx.PENDING, "a-folder"))
-    out["import_check_ok"] = console.import_check(session, {"json": json.dumps(dict(
-        returned, reason="Another clarification."))})
-    out["import_check_bad"] = console.import_check(session, {"json": json.dumps(dict(
-        returned, base_commit="abc123"))})
-    out["import_returned"] = json.dumps(dict(returned, reason="Another clarification."))
+    # Import Agent Proposals, as the console answers each kind of item. `returned`
+    # is already waiting (imported above); nothing here files anything.
+    another = dict(returned, reason="Another clarification.")
+    out["import_returned"] = json.dumps(another)
+    out["import_check_ok"] = console.import_check(session, {"items": [{"text": out["import_returned"]}]})
+    reordered = json.dumps(dict(reversed(list(another.items()))), indent=2).encode("utf-8")
+    out["import_check_rows"] = console.import_check(session, {"items": [
+        {"text": out["import_returned"]},
+        {"bytes": base64.b64encode(b"\xef\xbb\xbf" + reordered).decode("ascii")},
+        {"text": json.dumps(returned)},
+        {"text": json.dumps(dict(returned, base_sha256="0" * 64))},
+        {"text": json.dumps(dict(returned, base_commit="abc123"))},
+        {"bytes": base64.b64encode(b"not json").decode("ascii")}]})
+    assert [r["status"] for r in out["import_check_rows"]["items"]] == [
+        "ready", "same", "awaiting", "stale", "refused", "malformed"], out["import_check_rows"]
+    out["import_refused_after"] = console.import_file(session, {"items": [
+        {"text": out["import_returned"]}, {"text": json.dumps(returned)}], "confirm": True})
+    assert out["import_refused_after"]["result"] == "refused", out["import_refused_after"]
+    with open(os.path.join(folder, "stray.txt"), "w", encoding="utf-8") as fh:
+        fh.write("not part of the context")
+    out["import_check_unavailable"] = console.import_check(session, {"items": [{"text": out["import_returned"]}]})
+    os.remove(os.path.join(folder, "stray.txt"))
     out["state_valid"] = console.state(session)
     # Connect agents, as the console answers it here, and as it answers on each
     # platform: the page shows whichever it is given.

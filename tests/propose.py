@@ -346,19 +346,31 @@ def case_process() -> None:
         dup = json.loads(out.stdout)
         check(out.returncode == 5 and out.stderr == b"" and out.stdout.count(b"\n") == 1
               and dup == {"result": "duplicate", "problem": {"code": "duplicate", "message": dup["problem"]["message"]}}
-              and "change the proposal's text" in dup["problem"]["message"]
+              and "change the proposal," in dup["problem"]["message"]
               and "replace the waiting proposal" in dup["problem"]["message"],
-              "the same bytes again: `duplicate`, exit 5, telling the agent to change the text or ask a person")
+              "the same bytes again: `duplicate`, exit 5, telling the agent to change the proposal "
+              "or ask a person")
         check("proposal_id" not in out.stdout.decode() and "From the CLI" not in out.stdout.decode()
               and "p-" not in dup["problem"]["message"],
               "it reveals nothing about the waiting proposal beyond its existence")
         check(private_bytes() == before, "and changes nothing: every private file is byte for byte as it was")
+        reordered = dict(reversed(list(good.items())))
         for label, data in (("a trailing newline", json.dumps(good).encode() + b"\n"),
                             ("a byte-order mark", b"\xef\xbb\xbf" + json.dumps(good).encode()),
-                            ("other spacing", json.dumps(good, indent=2).encode())):
+                            ("two byte-order marks", b"\xef\xbb\xbf" * 2 + json.dumps(good).encode()),
+                            ("other spacing", json.dumps(good, indent=2).encode()),
+                            ("its keys in another order", json.dumps(reordered).encode()),
+                            ("a key written with a JSON escape",
+                             json.dumps(good).replace('"agent"', '"\\u0061gent"').encode())):
             out = run(data, folder, "--context", ".")
+            check(out.returncode == 5 and json.loads(out.stdout)["result"] == "duplicate",
+                  f"{label}: the same content, so a `duplicate`, exit 5 (Product Specification §3.2)")
+        check(private_bytes() == before, "none of them changed anything")
+        for field, value in (("agent", "another-agent"), ("reason", "Another reason."),
+                             ("expected_context_impact", "Related: none.")):
+            out = run(json.dumps(dict(good, **{field: value})).encode(), folder, "--context", ".")
             check(out.returncode == 0 and json.loads(out.stdout)["result"] == "pending",
-                  f"{label} makes the same proposal distinct: filed, exit 0")
+                  f"a different `{field}` makes a distinct proposal: filed, exit 0")
         with isolated_private_state(tmp):
             check(len(pending_files(folder)) == 4, "four distinct records wait, and no duplicate was filed")
 

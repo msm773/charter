@@ -349,6 +349,23 @@ input[aria-invalid="true"] { border-color: var(--brick); }
 .drop.over { border-color: var(--slate); background: var(--slate-wash); }
 .drop p { margin: .3rem 0 .8rem; color: var(--ink-soft); }
 
+/* Import Agent Proposals: the files row, the drop area (a button, so the
+   keyboard reaches it), and one row per pasted text or file. */
+.import-files { display: flex; flex-wrap: wrap; align-items: stretch; gap: .6rem; margin: .2rem 0 .8rem; }
+.import-drop { flex: 1 1 16rem; display: flex; flex-direction: column; align-items: center; gap: .2rem;
+  padding: .9rem 1rem; font: inherit; color: var(--ink-soft); cursor: pointer; }
+.import-drop:focus-visible { outline: 2px solid var(--slate); outline-offset: 2px; }
+.import-rows { list-style: none; margin: 0 0 .8rem; padding: 0; display: grid; gap: .4rem; }
+.import-rows[hidden] { display: none; }
+.import-row { border: 1px solid var(--rule); border-radius: 3px; padding: .5rem .7rem; background: var(--surface); }
+.import-row-head { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .6rem; }
+.import-name { font-weight: 600; overflow-wrap: anywhere; }
+.import-row-head .btn { margin-left: auto; }
+.import-detail { display: grid; gap: .3rem; margin-top: .3rem; font-size: .9rem; overflow-wrap: anywhere; }
+.import-detail > .btn { justify-self: start; }
+.import-replace[hidden] { display: none; }
+.import-replace p { margin: 0 0 .3rem; }
+
 .empty .hint.small { font-size: 12px; margin-top: .5rem; }
 
 /* ---------- connect agents: text to copy ---------- */
