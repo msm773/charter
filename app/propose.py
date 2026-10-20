@@ -1,10 +1,13 @@
-"""`charter propose --context .`: submit one Agent Proposal for a person's review.
+"""`charter propose --context <folder>`: submit one Agent Proposal for a person's review.
 
     charter propose --context <agent-context-folder>     one JSON proposal on stdin
     charter propose --help
 
-Run at the Agent Context's root, with `.`: the folder named is the Agent
-Context itself, never one found above it. The command prints exactly one JSON
+Product Specification §3.3. `<folder>` names the Agent Context root: `.`, run
+at that root, for an agent working in the folder, or, for Command-Line Access,
+its absolute path, in the full-path command the agent's project instructions
+give. The folder named is the Agent Context itself, never one above or below
+it, and nothing searches for one or tells an agent to. The command prints exactly one JSON
 result object on standard output, and nothing on standard error, for every
 outcome — a bad command line included:
 
@@ -33,8 +36,10 @@ EXIT = {"pending": 0, "refused": 3, "unavailable": 4, "duplicate": 5}
 USAGE = """usage: charter propose --context <agent-context-folder>
 
 Submit one Agent Proposal, as one JSON object on standard input, for a person's
-review. Run it in the folder that holds AGENT-CONTEXT.md, as `charter propose
---context .`. AGENT-CONTEXT.md describes the fields.
+review. `--context` names the Agent Context: `.` when run in the folder that
+holds AGENT-CONTEXT.md, or its full path. AGENT-CONTEXT.md describes the
+fields. Send the JSON as ASCII JSON, with every non-ASCII character encoded as
+a JSON Unicode escape sequence such as \\uXXXX.
 
 It prints one JSON object whose `result` is `pending` (filed; exit 0),
 `refused` (not filed: correct each problem; exit 3), `unavailable` (not
@@ -57,8 +62,9 @@ def submit(argv: List[str], data: bytes) -> Dict[str, Any]:
     folder = _context_argument(argv)
     if folder is None:
         return apx.refused_result([apx._problem(
-            "bad_command", "Run `charter propose --context .` in the folder that holds "
-                           "AGENT-CONTEXT.md, with one JSON proposal on standard input.")])
+            "bad_command", "Name the Agent Context with `--context`, exactly as your project "
+                           "instructions or the context map give, with one JSON proposal on "
+                           "standard input. Do not search for an Agent Context.")])
     if len(data) > apx.MAX_INPUT:
         return apx.refused_result([apx._problem("too_large", "The proposal is too large.")])
     try:

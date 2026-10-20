@@ -469,11 +469,32 @@ Git.
   context tells the agent not to rely on earlier Charter context and to tell
   the person, and `changed-during-read` allows one retry. Nothing on standard
   error; exit 0 served, 1 refused. It writes no private state, activity or
-  Recent entry, and has no proposal route. **Connect Agents with Command-Line
+  Recent entry. **Connect Agents with Command-Line
   Access** gives the instruction for a project's instruction file, one per
   shell (PowerShell, Command Prompt and Bash on Windows; the terminal
   elsewhere), running this copy by its full paths with the folder's full path.
   MCP's own behaviour is unchanged.
+- **Map-format version 4: proposals through Command-Line Access, as ASCII
+  JSON.** The map now gives each route its own proposal instructions: an agent
+  that read it through `charter read` submits to the `charter propose` command
+  its project instructions give, exactly as given, or returns the proposal JSON
+  for import when they give none; an agent in the folder keeps
+  `charter propose --context .`; an agent that got the map through MCP or any
+  other tool still returns its proposal JSON for a person to import. Every agent
+  sending proposal JSON to `charter propose` is told: "Write each proposal as
+  ASCII JSON: encode every non-ASCII character with valid JSON Unicode escape
+  sequences such as `\uXXXX`." Windows PowerShell 5.1 pipes text in US-ASCII by
+  default and turns other characters into `?` before Charter sees them; Charter
+  cannot repair that, and ASCII JSON avoids it. Each Command-Line Access
+  instruction in Connect Agents now ends with the matching full-path
+  `propose --context <full path>` command. `charter propose` still accepts `.`;
+  its messages no longer tell an agent to run it in, or find, the Agent Context
+  folder, and one naming no Agent Context now says to return the JSON for import.
+  Format-3 contexts are out of date (`map-outdated`) until Rebuild Agent
+  Context, which changes only the map and metadata; an agent host still running
+  a format-3 Charter refuses a rebuilt context as `server-outdated` until it
+  restarts, and an older copy run by `charter read` as `charter-outdated`. MCP
+  has no proposal route, as before.
 - **Removed:** governance workspaces, published surfaces, bindings,
   publication and repair, registration and identity, configuration migration,
   capability records, every Git write (commits, recovery commits, branch

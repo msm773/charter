@@ -2855,8 +2855,12 @@ for (const file of ["markdown.js", "app.js"]) {
         && (payload.command_access.length > 1
           ? $("connectCommand-" + s.shell + "Block").querySelector("h4").textContent === s.label
           : !$("connectCommand-" + s.shell + "Block").querySelector("h4"))
-        && !/(^|[\s'"])(charter|py|cmd)(\s|$)/.test(s.command) && / read --context /.test(s.command)),
-      `${name}: one instruction per shell, shown exactly with its own Copy instruction button, each running this copy by full path with the folder's full path`);
+        && !/(^|[\s'"])(charter|py|cmd)(\s|$)/.test(s.command) && / read --context /.test(s.command)
+        && s.instruction.indexOf(s.propose_command) > s.instruction.indexOf(s.command)
+        && s.instruction.indexOf(payload.folder, s.instruction.indexOf(s.propose_command)) !== -1
+        && !/(^|[\s'"])(charter|py|cmd)(\s|$)/.test(s.propose_command) && / propose --context /.test(s.propose_command)
+        && !/ --context \.?$/.test(s.propose_command.trim())),
+      `${name}: one instruction per shell, shown exactly with its own Copy instruction button, each running this copy by full path with the folder's full path, for reading and for proposing`);
     check(!/PATH|add-to-path|Charter command|telemetry|wizard|Next step/.test($("connectCommandDetails").textContent),
       `${name}: no PATH guidance, telemetry or wizard`);
     await click($("connectCommandToggle"));

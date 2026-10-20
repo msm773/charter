@@ -101,11 +101,14 @@ FORMAT_VERSION = 1
 # result, gives each guidance setting its Settings name as its heading, and
 # sends an agent that read the map through MCP to return its proposal JSON.
 # Version 3 tells a direct reader whose map still does not match after one
-# reread to stop and report it, rather than reread and continue.
-MAP_FORMAT_VERSION = 3
+# reread to stop and report it, rather than reread and continue. Version 4
+# gives an agent that read the map through `charter read` the proposal command
+# its project instructions give, and tells every agent sending proposal JSON
+# to `charter propose` to send it as ASCII JSON.
+MAP_FORMAT_VERSION = 4
 # Earlier map formats this Charter still recognizes: such a context is out of
 # date, to be rebuilt, never damaged.
-OLDER_MAP_FORMATS = (1, 2)
+OLDER_MAP_FORMATS = (1, 2, 3)
 # How a context's map format relates to this Charter.
 FORMAT_CURRENT, FORMAT_OLDER, FORMAT_NEWER = "current", "older", "newer"
 METADATA_KEYS = ("format_version", "map_format_version", "project_name", "agent_guidance",
@@ -310,15 +313,23 @@ authority candidate, which is not context either; only a person granting
 authority makes a document govern. Do not grant or withdraw authority, move
 documents, or edit governing documents yourself.
 
-If you read this file in a folder on this computer, submit each proposal as
-one JSON object on the standard input of this command, run in the folder
-that holds this file:
+If you received this file through `charter read`, submit each proposal to
+the `charter propose` command your project instructions give, exactly as
+given. If they give none, do not run `charter propose`: return the complete
+proposal JSON object in your response, so that a person can import it.
+
+If you read this file in a folder on this computer, submit each proposal
+with this command, run in the folder that holds this file:
 
 ```text
 charter propose --context .
 ```
 
-It prints one JSON object whose `result` is:
+Send each proposal as one JSON object on the command's standard input.
+Write each proposal as ASCII JSON: encode every non-ASCII character with
+valid JSON Unicode escape sequences such as `\\uXXXX`.
+
+Either command prints one JSON object whose `result` is:
 
 - `pending`: filed for review. Note its `proposal_id`, and stop.
 - `refused`: not filed. Correct each listed problem and submit again.
@@ -332,10 +343,10 @@ If the command is missing, denied or cannot start, or still reports
 `unavailable`, do not file the proposal any other way: return the complete
 proposal JSON object in your response, so that a person can import it.
 
-If you received this file through MCP or another tool, do not run
-`charter propose`, even if you know the folder that holds it, and do not
-search for the folder or guess: return the complete proposal JSON object in
-your response, so that a person can import it.
+If you received this file through MCP or any tool other than `charter read`,
+do not run `charter propose`, even if you know the folder that holds it, and
+do not search for the folder or guess: return the complete proposal JSON
+object in your response, so that a person can import it.
 
 If the command started but printed no result, return the JSON in the same
 way, and tell the person that submission may have succeeded, so that they
@@ -413,6 +424,46 @@ def render_map(settings: Settings, documents: List[Document]) -> str:
     return "\n".join(parts)
 
 
+# What map-format version 3 said where version 4 differs: before an agent that
+# read the map through `charter read` had a proposal route of its own, and
+# before proposal JSON sent to `charter propose` had to be ASCII JSON.
+_V3_ROUTE = (
+    ("""If you received this file through `charter read`, submit each proposal to
+the `charter propose` command your project instructions give, exactly as
+given. If they give none, do not run `charter propose`: return the complete
+proposal JSON object in your response, so that a person can import it.
+
+If you read this file in a folder on this computer, submit each proposal
+with this command, run in the folder that holds this file:
+
+```text
+charter propose --context .
+```
+
+Send each proposal as one JSON object on the command's standard input.
+Write each proposal as ASCII JSON: encode every non-ASCII character with
+valid JSON Unicode escape sequences such as `\\uXXXX`.
+
+Either command prints one JSON object whose `result` is:""",
+     """If you read this file in a folder on this computer, submit each proposal as
+one JSON object on the standard input of this command, run in the folder
+that holds this file:
+
+```text
+charter propose --context .
+```
+
+It prints one JSON object whose `result` is:"""),
+    ("""If you received this file through MCP or any tool other than `charter read`,
+do not run `charter propose`, even if you know the folder that holds it, and
+do not search for the folder or guess: return the complete proposal JSON
+object in your response, so that a person can import it.""",
+     """If you received this file through MCP or another tool, do not run
+`charter propose`, even if you know the folder that holds it, and do not
+search for the folder or guess: return the complete proposal JSON object in
+your response, so that a person can import it."""),
+)
+
 # What map-format version 1 said where version 2 differs: before each
 # agent-guidance setting took its Settings name as its heading, before
 # `charter propose` could answer `duplicate`, and before an agent that read the
@@ -457,7 +508,14 @@ def render_map_version(settings: Settings, documents: List[Document], version: i
         return render_map(settings, documents)
     if version not in OLDER_MAP_FORMATS:
         raise ValueError(f"map format {version} is not one this Charter recognizes")
+    # Each earlier format is the next one with what that one changed undone:
+    # version 3 from version 4, version 2 from 3, version 1 from 2.
     text = render_map(settings, documents)
+    for now, before in _V3_ROUTE:
+        assert text.count(now) == 1, now
+        text = text.replace(now, before)
+    if version == 3:
+        return text
     now, before = _V2_TAIL
     assert text.count(now) == 1
     text = text.replace(now, before)

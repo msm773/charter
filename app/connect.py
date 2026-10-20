@@ -193,10 +193,11 @@ def mcp_pointer(name: str) -> str:
     ]) + "\n"
 
 
-def command_instruction(command: str) -> str:
-    """For a project's instruction file: the one `charter read` command, by full
-    paths, that a shell-capable agent without MCP runs for the governing context
-    (Agent Context as the Project Asset §9)."""
+def command_instruction(command: str, propose: str) -> str:
+    """For a project's instruction file: the `charter read` command, by full
+    paths, that a shell-capable agent without MCP runs for the governing
+    context, and the matching `charter propose` command it submits proposals
+    with (Agent Context as the Project Asset §9)."""
     from .read import END_MARKER
     return "\n".join([
         "This project's governing context is an Agent Context, served by Charter. Before beginning "
@@ -211,26 +212,38 @@ def command_instruction(command: str) -> str:
         f"Rely on its output only when its last line is `{END_MARKER}`. If it refuses, do what it "
         "says. If the command cannot run, or reports that Charter context is unavailable, stop and "
         "tell the person: do not read the Agent Context's files instead.",
+        "",
+        "To propose a change, follow \"Making an Agent Proposal\" in the context map, sending the "
+        "proposal JSON to this command:",
+        "",
+        f"  {propose}",
     ]) + "\n"
 
 
-def command_access(parts: List[str], windows: bool) -> List[Dict[str, str]]:
-    """The Command-Line Access instruction for each shell an agent may run it in,
-    each running `parts` — this copy by its full paths, then `read --context
-    <folder>` — exactly as listed. Never a bare `charter`, `py` or `cmd /c`.
-    A shell that cannot carry the paths exactly is not offered."""
-    if any(not p or any(ord(c) < 32 for c in p) for p in parts):
+def command_access(program: List[str], folder: str, windows: bool) -> List[Dict[str, str]]:
+    """The Command-Line Access instruction for each shell an agent may run it in:
+    `program` — this copy by its full paths — with `read --context <folder>`,
+    and the same program with `propose --context <folder>`, each exactly as
+    listed. Never a bare `charter`, `py` or `cmd /c`. A shell that cannot carry
+    the paths exactly is not offered."""
+    read_parts = program + ["read", "--context", folder]
+    propose_parts = program + ["propose", "--context", folder]
+    if any(not p or any(ord(c) < 32 for c in p) for p in read_parts):
         return []
     forms = []
     if windows:
-        forms.append(("powershell", "PowerShell", "& " + command_line(parts, powershell_arg)))
-        if not any(CMD_UNSAFE & set(p) for p in parts):
-            forms.append(("cmd", "Command Prompt", command_line(parts, cmd_arg)))
-        forms.append(("bash", "Bash", command_line(parts, posix_arg)))
+        forms.append(("powershell", "PowerShell", lambda parts: "& " + command_line(parts, powershell_arg)))
+        if not any(CMD_UNSAFE & set(p) for p in read_parts):
+            forms.append(("cmd", "Command Prompt", lambda parts: command_line(parts, cmd_arg)))
+        forms.append(("bash", "Bash", lambda parts: command_line(parts, posix_arg)))
     else:
-        forms.append(("posix", "Terminal", command_line(parts, posix_arg)))
-    return [{"shell": shell, "label": label, "command": command,
-             "instruction": command_instruction(command)} for shell, label, command in forms]
+        forms.append(("posix", "Terminal", lambda parts: command_line(parts, posix_arg)))
+    out = []
+    for shell, label, typed in forms:
+        command, propose = typed(read_parts), typed(propose_parts)
+        out.append({"shell": shell, "label": label, "command": command, "propose_command": propose,
+                    "instruction": command_instruction(command, propose)})
+    return out
 
 
 VERIFY_PROMPT = (
@@ -330,7 +343,6 @@ def connection(folder: str, windows: Optional[bool] = None, registry: Any = None
         config=config, config_text=json.dumps(config, indent=2, ensure_ascii=False) + "\n",
         config_note=CONFIG_NOTE, install_note=INSTALL_NOTE,
         shells=shells,
-        # Command-Line Access (§9): the same program, `read` and the folder's full path.
-        command_access=command_access([command] + launch[:len(launch) - len(args)]
-                                      + ["read", "--context", folder], windows),
+        # Command-Line Access (§9): the same program, `read` or `propose`, and the folder's full path.
+        command_access=command_access([command] + launch[:len(launch) - len(args)], folder, windows),
         command_note=COMMAND_NOTE)

@@ -155,13 +155,16 @@ class Target:
 
 
 def open_target(folder: str, state: Optional[ps.PrivateState] = None) -> Target:
-    """The Agent Context at `folder` exactly — never a folder above it — ready
-    for intake, or Unavailable."""
+    """The Agent Context at `folder` exactly — never a folder above or below
+    it — ready for intake, or Unavailable. `folder` may be `.` or an absolute
+    path (Product Specification §3.3); nothing here searches for one, and no
+    message tells an agent to move into, search for or find one."""
     folder = os.path.abspath(folder)
     if not os.path.isdir(folder) or not ac.is_context_root(folder):
         raise Unavailable("context_not_found",
-                          "This folder is not an Agent Context: run the command in the folder "
-                          "that holds AGENT-CONTEXT.md.", retryable=False)
+                          "The folder `--context` names is not an Agent Context, so nothing was "
+                          "filed. Do not search for one: return the complete proposal JSON for a "
+                          "person to import.", retryable=False)
     exam = ac.examine(folder)
     # A map-format mismatch is named, never filed against (Product Specification
     # §6): decided before private state is touched, so nothing is written.

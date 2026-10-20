@@ -419,8 +419,28 @@ def case_map_format_updates() -> None:
               "a map in format 2, generated before format 3, is out of date too: Rebuild is offered")
         p = mg.rebuild_plan(folder)
         status = mg.rebuild_apply(folder, p.plan_id, True)
-        check(status["agents_served"] and status["map_format"]["recorded"] == ac.MAP_FORMAT_VERSION == 3,
-              "rebuilt, it records format 3 and is served")
+        check(status["agents_served"] and status["map_format"]["recorded"] == ac.MAP_FORMAT_VERSION == 4,
+              "rebuilt, it records format 4 and is served")
+
+        # Format 3 — every context before this release — is out of date too, and
+        # Rebuild changes only the generated map and metadata.
+        generate(folder)
+        with_map_format(folder, 3)
+        status = mg.open_context(folder)
+        check(not status["agents_served"] and status["headline_title"] == mg.MAP_OUTDATED[0]
+              and status["rebuild"]["available"] and not status["needs_review"],
+              "a map in format 3 is out of date: Rebuild is offered, and nothing needs review")
+        before = snapshot(folder)
+        p = mg.rebuild_plan(folder)
+        status = mg.rebuild_apply(folder, p.plan_id, True)
+        after = snapshot(folder)
+        changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+        check(status["agents_served"] and status["map_format"]["recorded"] == 4
+              and changed == sorted([ac.CONTEXT_MAP, ac.METADATA]),
+              "rebuilt from format 3, it records format 4 and is served, and only AGENT-CONTEXT.md "
+              "and .agent-context.json changed: " + ", ".join(changed))
+        check("If you received this file through `charter read`" in after[ac.CONTEXT_MAP].decode("utf-8"),
+              "  and the rebuilt map gives a `charter read` agent its proposal route")
 
         # An older map whose document also changed needs review, not just a rebuild.
         with_map_format(folder, 2)

@@ -605,16 +605,38 @@ def case_map() -> None:
           "the map tells an agent what a `duplicate` result means")
 
     print("\nmap-format versions: older is out of date, newer means this Charter is")
-    check(ac.MAP_FORMAT_VERSION == 3 and ac.OLDER_MAP_FORMATS == (1, 2),
-          "this Charter generates map-format version 3 and recognizes versions 1 and 2 as older")
+    check(ac.MAP_FORMAT_VERSION == 4 and ac.OLDER_MAP_FORMATS == (1, 2, 3),
+          "this Charter generates map-format version 4 and recognizes versions 1, 2 and 3 as older")
     root = context(guidance={g: True for g in ac.GUIDANCE_IDS})
     exam = ac.examine(root)
-    check(exam.valid and exam.map_format == ac.FORMAT_CURRENT and exam.recorded_map_format == 3,
-          "a context it generates records map-format version 3")
+    check(exam.valid and exam.map_format == ac.FORMAT_CURRENT and exam.recorded_map_format == 4,
+          "a context it generates records map-format version 4")
+    current = ac.render_map(exam.settings, exam.documents)
+    rule = ("Write each proposal as ASCII JSON: encode every non-ASCII character with\n"
+            "valid JSON Unicode escape sequences such as `" + chr(92) + "uXXXX`.")
+    check(current.count("If you received this file through `charter read`, submit each proposal to\n"
+                        "the `charter propose` command your project instructions give, exactly as\n"
+                        "given. If they give none, do not run `charter propose`: return the complete\n"
+                        "proposal JSON object in your response") == 1
+          and current.count(rule) == 1
+          and current.count("If you received this file through MCP or any tool other than "
+                            "`charter read`,\ndo not run `charter propose`, even if you know the folder") == 1
+          and current.count("\ncharter propose --context .\n") == 1
+          and "Either command prints one JSON object" in current,
+          "version 4: a `charter read` agent uses the command its project instructions give, or "
+          "returns JSON when they give none; the folder route stays `--context .`; MCP and any other "
+          "tool return JSON; and JSON sent to `charter propose` is ASCII JSON, the rule verbatim")
+    check(not any(c in current.split("## Making an Agent Proposal")[1] for c in (":\\", "/home/", "/Users/")),
+          "  the proposal instructions name no machine-specific path")
+    v3 = ac.render_map_version(exam.settings, exam.documents, 3)
+    check("`charter read`" not in v3 and "ASCII JSON" not in v3
+          and "If you received this file through MCP or another tool, do not run\n`charter propose`" in v3
+          and "It prints one JSON object whose `result` is:" in v3 and "stop:" in v3,
+          "version 3 had no `charter read` route and no ASCII rule, and sent every other agent to import")
     previous = ac.render_previous_map(exam.settings, exam.documents)
     check("Context-impact check before a proposal" in previous and "`duplicate`" not in previous
           and "and do not know the\nfolder that holds it" in previous
-          and "do not run\n`charter propose`" in ac.render_map(exam.settings, exam.documents),
+          and "do not run `charter propose`, even if you know the folder" in current,
           "version 1 had the earlier headings, no duplicate result, and let an MCP agent run "
           "`charter propose`; later versions tell it not to")
     v2 = ac.render_map_version(exam.settings, exam.documents, 2)
@@ -633,8 +655,8 @@ def case_map() -> None:
               "offered, with its settings kept")
         for rel, text in ac.render_generated(exam.settings, exam.documents, exam.texts).items():
             write(root, rel, text)
-        check(ac.examine(root).valid and ac.examine(root).recorded_map_format == 3,
-              "  regenerated, it is current, in version 3, and valid again")
+        check(ac.examine(root).valid and ac.examine(root).recorded_map_format == 4,
+              "  regenerated, it is current, in version 4, and valid again")
     check(not any(ch.isdigit() for ch in ac.MAP_OUTDATED), "the message names no version number")
 
     with_map_format(root, ac.MAP_FORMAT_VERSION + 1)

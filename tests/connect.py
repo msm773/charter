@@ -326,22 +326,36 @@ def case_payload() -> None:
               and posix["command_access"][0]["command"]
               == connect.command_line([posix_launcher, "read", "--context", folder], connect.posix_arg),
               "elsewhere: one terminal command, this copy's launcher by its full path")
+        propose_parts = [PY, script, "propose", "--context", folder]
+        check(access["powershell"]["propose_command"] == "& " + connect.command_line(propose_parts, connect.powershell_arg)
+              and access["cmd"]["propose_command"] == connect.command_line(propose_parts, connect.cmd_arg)
+              and access["bash"]["propose_command"] == connect.command_line(propose_parts, connect.posix_arg)
+              and posix["command_access"][0]["propose_command"]
+              == connect.command_line([posix_launcher, "propose", "--context", folder], connect.posix_arg),
+              "each shell's matching `propose --context <folder>` command: the same program and the "
+              "same absolute folder, quoted the same way")
         for s in win["command_access"] + posix["command_access"]:
-            words_in = s["command"].replace("'", " ").replace('"', " ").split()
-            check(s["instruction"].count(s["command"]) == 1 and os.path.isabs(folder)
-                  and not {"charter", "py", "python", "python3", "cmd", "/c"} & set(words_in)
-                  and "--context" in words_in and " . " not in s["command"],
-                  f"{s['label']}: the instruction carries the one command, with no bare `charter`, "
-                  "`py` or `cmd /c` and the folder's absolute path")
+            for key in ("command", "propose_command"):
+                words_in = s[key].replace("'", " ").replace('"', " ").split()
+                check(s["instruction"].count(s[key]) == 1 and os.path.isabs(folder)
+                      and not {"charter", "py", "python", "python3", "cmd", "/c"} & set(words_in)
+                      and "--context" in words_in and " . " not in s[key] and not s[key].endswith(" .")
+                      and words_in[-1].strip() != ".",
+                      f"{s['label']} {key}: in the instruction once, with no bare `charter`, `py` or "
+                      "`cmd /c`, and the folder's absolute path, never `.`")
             check(all(p in s["instruction"] for p in (
                     "Before beginning work, run this command", "`--list`", "`--document <path-or-id>`",
                     "`--heading <heading>`", "Treat only the governing documents it lists as authoritative",
                     "`<<<END CHARTER READ>>>`", "If the command cannot run, or reports that Charter "
                     "context is unavailable, stop and tell the person",
-                    "do not read the Agent Context's files instead"))
-                  and not re.search(r"propose|PATH|add-to-path|telemetry|activity", s["instruction"]),
+                    "do not read the Agent Context's files instead",
+                    "To propose a change, follow \"Making an Agent Proposal\" in the context map, "
+                    "sending the proposal JSON to this command:"))
+                  and s["instruction"].index(s["command"]) < s["instruction"].index(s["propose_command"])
+                  and not re.search(r"\bPATH\b|add-to-path|telemetry|activity|wizard", s["instruction"]),
                   f"{s['label']}: run it before work, retrieve the relevant documents, trust only the "
-                  "marked-complete output, and stop and tell the person — never fall back to the files")
+                  "marked-complete output, stop and tell the person — never fall back to the files — "
+                  "and propose through the map's route with the matching command")
         check(win["command_note"] == posix["command_note"] == connect.COMMAND_NOTE
               == "Add this to your project’s instruction file, such as `CLAUDE.md` or `AGENTS.md`. "
                  "Do not put it in `AGENT-CONTEXT.md` or anywhere inside the Agent Context folder.",
@@ -648,6 +662,85 @@ def _git_bash() -> str:
     return ""
 
 
+PROPOSAL_BODY = "# Probe — dash\n\nCafé, naïve, “curly quotes”.\n"
+
+
+def _command_access_end_to_end(base: str, folder: str, env: dict, bash: str) -> None:
+    """The generated Command-Line Access instruction's own commands, run in each
+    real shell against this Charter with throwaway private state: `read` serves
+    the map with its marker, and `propose`, given ASCII JSON as the map says,
+    files the proposal with its em dash, accents and curly quotes exact."""
+    from app import agent_proposals as apx
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    state = os.path.join(base, "state")
+    copy = os.path.join(base, "Stub Copy")
+    os.makedirs(copy)
+    with open(os.path.join(copy, "charter.py"), "w", encoding="utf-8") as fh:
+        fh.write("import sys\nsys.path.insert(0, %r)\nfrom app import private_store\n"
+                 "private_store._default_root = lambda: %r\nfrom app.__main__ import main\n"
+                 "raise SystemExit(main(sys.argv[1:]))\n" % (root, state))
+    c = connect.connection(folder, windows=True, registry=FakeRegistry(), launchers=copy,
+                           python=sys.executable)
+    access = {s["shell"]: s for s in c["command_access"]}
+    check(all(" read --context " in s["command"] and " propose --context " in s["propose_command"]
+              for s in access.values()), "the stand-in copy's instruction holds both commands")
+    pending = lambda: os.path.join(state, "contexts")
+
+    def filed(out: bytes) -> str:
+        result = json.loads(out.decode("ascii").strip().splitlines()[-1])
+        if result.get("result") != "pending":
+            return "not filed: " + json.dumps(result)
+        for dirpath, _dirs, files in os.walk(pending()):
+            if result["proposal_id"] + ".json" in files:
+                with open(os.path.join(dirpath, result["proposal_id"] + ".json"), encoding="utf-8") as fh:
+                    return json.load(fh)["proposal"]["proposed_body"]
+        return "no record"
+
+    def proposal(name: str) -> str:
+        return json.dumps({"agent": "shell-test", "operation": "create",
+                           "target_path": f"authority-candidates/{name}.md", "reason": "Shell test.",
+                           "proposed_body": PROPOSAL_BODY}, ensure_ascii=True)
+
+    payload = os.path.join(base, "proposal.json")
+    runs = {"powershell": lambda cmd, data: subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "[Console]::OutputEncoding=[Text.Encoding]::UTF8; '" + data.replace("'", "''") + "' | " + cmd],
+                capture_output=True, env=env, stdin=subprocess.DEVNULL),
+            "cmd": lambda cmd, data: subprocess.run(
+                f'cmd /d /s /c "chcp 65001>nul & {cmd} < "{payload}""', capture_output=True, env=env),
+            "bash": lambda cmd, data: subprocess.run(
+                [bash, "-c", f"{cmd} < '{payload}'"], capture_output=True, env=env)}
+    for shell, label in (("powershell", "PowerShell"), ("cmd", "Command Prompt"), ("bash", "Git Bash")):
+        if shell == "bash" and not bash:
+            continue
+        s = access[shell]
+        read_out = (runs[shell](s["command"], "") if shell == "powershell"
+                    else subprocess.run(f'cmd /d /s /c "chcp 65001>nul & {s["command"]}"', capture_output=True,
+                                        env=env, stdin=subprocess.DEVNULL) if shell == "cmd"
+                    else subprocess.run([bash, "-c", s["command"]], capture_output=True, env=env,
+                                        stdin=subprocess.DEVNULL))
+        text = read_out.stdout.decode("utf-8")
+        check(read_out.returncode == 0 and text.rstrip("\r\n").endswith("<<<END CHARTER READ>>>")
+              and "If you received this file through `charter read`" in text,
+              f"{label}: the instruction's `charter read` serves the format-4 map, marker last")
+        data = proposal(f"shell-{shell}")
+        with open(payload, "w", encoding="ascii") as fh:
+            fh.write(data)
+        out = runs[shell](s["propose_command"], data)
+        body = filed(out.stdout)
+        check(out.returncode == 0 and data.isascii() and body == PROPOSAL_BODY,
+              f"{label}: the instruction's `charter propose`, given ASCII JSON, files the em dash, "
+              f"accents and curly quotes exactly (exit {out.returncode})")
+    # The defect the rule exists for, recorded, not asserted: Windows PowerShell 5.1
+    # pipes text to a program in its `$OutputEncoding`, US-ASCII by default.
+    raw = json.dumps(json.loads(proposal("shell-raw-utf8")), ensure_ascii=False)
+    out = runs["powershell"](access["powershell"]["propose_command"], raw)
+    body = filed(out.stdout)
+    print(f"  (evidence: raw UTF-8 JSON through PowerShell was filed "
+          f"{'exactly' if body == PROPOSAL_BODY else 'altered, as ' + repr(body)})")
+    del apx
+
+
 def case_command_access_shells() -> None:
     print("\nCommand-Line Access commands, typed into the real shells")
     if os.name != "nt":
@@ -665,24 +758,28 @@ def case_command_access_shells() -> None:
         shutil.copy(_argv_printer(base), os.path.join(copy, "charter.py"))
         c = connect.connection(folder, windows=True, registry=FakeRegistry(), launchers=copy,
                                python=sys.executable)
-        access = {s["shell"]: s["command"] for s in c["command_access"]}
-        expected = ["read", "--context", folder]
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
-        ps = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + access["powershell"]],
-                            capture_output=True, env=env)
-        check(json.loads(ps.stdout.decode("utf-8") or "null") == expected,
-              "PowerShell: `read --context <folder>` arrives exactly, spaces, quotes and $ included")
-        cp = subprocess.run(f'cmd /d /s /c "chcp 65001>nul & {access["cmd"]}"', capture_output=True, env=env)
-        check(json.loads(cp.stdout.decode("utf-8") or "null") == expected,
-              "Command Prompt: it arrives exactly")
         bash = _git_bash()
-        if bash:
-            gb = subprocess.run([bash, "-c", access["bash"]], capture_output=True, env=env)
-            check(json.loads(gb.stdout.decode("utf-8") or "null") == expected,
-                  "Git Bash: it arrives exactly, Windows paths and all")
-        else:
+        for key, verb in (("command", "read"), ("propose_command", "propose")):
+            access = {s["shell"]: s[key] for s in c["command_access"]}
+            expected = [verb, "--context", folder]
+            ps = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                                 "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + access["powershell"]],
+                                capture_output=True, env=env, stdin=subprocess.DEVNULL)
+            check(json.loads(ps.stdout.decode("utf-8") or "null") == expected,
+                  f"PowerShell: `{verb} --context <folder>` arrives exactly, spaces, quotes and $ included")
+            cp = subprocess.run(f'cmd /d /s /c "chcp 65001>nul & {access["cmd"]}"', capture_output=True,
+                                env=env, stdin=subprocess.DEVNULL)
+            check(json.loads(cp.stdout.decode("utf-8") or "null") == expected,
+                  f"Command Prompt: `{verb}` arrives exactly")
+            if bash:
+                gb = subprocess.run([bash, "-c", access["bash"]], capture_output=True, env=env,
+                                    stdin=subprocess.DEVNULL)
+                check(json.loads(gb.stdout.decode("utf-8") or "null") == expected,
+                      f"Git Bash: `{verb}` arrives exactly, Windows paths and all")
+        if not bash:
             print("  (Git Bash not found: its command is quoted by shlex, checked in the payload case)")
+        _command_access_end_to_end(base, folder, env, bash)
         odd = os.path.join(base, "R&D 100%")
         mg.create(odd, "Odd")
         c = connect.connection(mg.check(odd)["path"], windows=True, registry=FakeRegistry(),

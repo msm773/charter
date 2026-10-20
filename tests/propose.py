@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -532,6 +533,69 @@ def case_map_format_mismatch() -> None:
         shutil.rmtree(folder)
 
 
+def case_command_line_access_route() -> None:
+    """Product Specification §3.3: `--context` names the Agent Context root as
+    `.` from the folder, or as the absolute path a Command-Line Access agent's
+    project instructions give; no result sends an agent to find the folder."""
+    print("\nCommand-Line Access: `propose --context <absolute path>` from anywhere; `.` still works")
+    launch = os.path.join(HERE, "_launch.py")
+    with isolated_private_state() as state_root:
+        folder = context()
+        outside = tempfile.mkdtemp(prefix="charter-elsewhere-")
+        state = os.path.dirname(state_root)  # `_launch` puts private state at <state>/state
+
+        def run_propose(argv, data: bytes, cwd: str) -> tuple:
+            p = subprocess.run([sys.executable, launch, state, "propose"] + argv, input=data,
+                               capture_output=True, cwd=cwd)
+            return p.returncode, json.loads(p.stdout), p.stderr
+
+        body = "# Probe — dash\n\nCafé, naïve, “curly quotes”.\n"
+        good = {"agent": "cla", "operation": "create", "target_path": "authority-candidates/cla.md",
+                "reason": "Command-Line Access route.", "proposed_body": body}
+        data = json.dumps(good, ensure_ascii=True).encode("ascii")
+        before = snapshot(folder)
+        code, out, err = run_propose(["--context", folder], data, outside)
+        check(code == 0 and out["result"] == "pending" and err == b"" and data.isascii(),
+              "from an unrelated folder, with the absolute path: `pending`, exit 0, nothing on stderr")
+        cs = ps.PrivateState.default().find_context(folder)
+        record = json.load(open(cs.path(ps.PROPOSALS, apx.PENDING, out["proposal_id"] + ".json"),
+                                encoding="utf-8"))
+        check(record["proposal"]["proposed_body"] == body,
+              "ASCII JSON with Unicode escapes files the em dash, accents and curly quotes exactly")
+        check(snapshot(folder) == before, "the Agent Context folder is unchanged: no authority change")
+        for argv, cwd, label in ((["--context", "."], folder, "`--context .` in the folder"),
+                                 (["--context", folder + os.sep], outside, "the absolute path with a trailing separator")):
+            code, out, _ = run_propose(argv, data, cwd)
+            check(code == 5 and out["result"] == "duplicate",
+                  f"{label}: the same proposal is a `duplicate`, exit 5 — one Agent Context, one queue")
+        amend = {"agent": "cla", "operation": "amend", "target_path": "authoritative/a.md",
+                 "reason": "Stale.", "base_sha256": "0" * 64,
+                 "replacements": [{"find": "Body.", "replace": "Body, amended."}]}
+        code, out, _ = run_propose(["--context", folder], json.dumps(amend).encode(), outside)
+        check(code == 3 and any(p["code"] == "stale" for p in out["problems"]),
+              "a stale amend through the absolute path: `refused`, exit 3")
+        for target, label in ((folder + "-missing", "a missing folder"),
+                              (os.path.join(folder, "authoritative"), "a folder inside the Agent Context"),
+                              (os.path.dirname(folder), "the folder above it")):
+            code, out, err = run_propose(["--context", target], data, outside)
+            message = out["problem"]["message"]
+            check(code == 4 and out["result"] == "unavailable" and out["retryable"] is False
+                  and out["problem"]["code"] == "context_not_found" and err == b""
+                  and "Do not search for one" in message and "return the complete proposal JSON" in message
+                  and not re.search(r"run the command in|in the folder that holds|move into|find|locate",
+                                    message, re.I),
+                  f"{label}: `unavailable`, exit 4, never searched, and the message sends the agent to "
+                  "import, never to look for the folder")
+        code, out, _ = run_propose([], data, outside)
+        message = out["problems"][0]["message"]
+        check(code == 3 and out["problems"][0]["code"] == "bad_command"
+              and "Do not search for an Agent Context" in message
+              and not re.search(r"run .* in the folder|in the folder that holds|move into|locate", message, re.I),
+              "no `--context`: `refused` `bad_command`, naming no place to run it and no search")
+        shutil.rmtree(outside)
+        shutil.rmtree(folder)
+
+
 def run() -> None:
     case_create()
     case_amend_and_retire()
@@ -542,6 +606,7 @@ def run() -> None:
     case_piped_non_ascii()
     case_process()
     case_map_format_mismatch()
+    case_command_line_access_route()
     print(f"\n{OK} All propose checks passed.")
 
 
