@@ -316,12 +316,14 @@ Charter never changes an agent host's configuration for you: it shows the comman
 
 **To connect an agent:**
 
-1. Open **Connect Agents**. It has four sections, each opened or closed from its heading: **Connect Agents with MCP (Recommended)** starts open; **Add Project Instructions (Optional)**, **Test the Connection (Optional)**, and **Connect Agents with File Access** start closed. Sections you open stay open while you move around the console.
+1. Open **Connect Agents**. It has four sections, each opened or closed from its heading: **Connect Agents with MCP (Recommended)** starts open; **Add Project Instructions (Recommended)**, **Test the Connection (Optional)**, and **Connect Agents with File Access** start closed. Sections you open stay open while you move around the console.
 2. Under **Choose an agent host**, select **Claude Code**, **Codex**, or **Other MCP host**.
 3. Copy the command or configuration it shows for this context, and apply it as described for your host below.
 4. Restart the host as described, and start a new session.
-5. Optionally, [add the startup pointer](#give-agents-a-startup-pointer) to your project's instructions.
-6. [Verify retrieval](#verify-your-agent-retrieved-the-context).
+5. [Add the startup pointer](#give-agents-a-startup-pointer) to your project's instruction file (recommended).
+6. [Check the connection and retrieval](#verify-your-agent-retrieved-the-context).
+
+Registering the server is necessary but not enough on its own: it makes Charter available to the agent, but doesn't make the agent call it. The startup pointer asks the agent to.
 
 #### The MCP server name
 
@@ -426,11 +428,15 @@ Adapt the shape to your host's documented configuration; not every host uses thi
 
 #### Give agents a startup pointer
 
-Some MCP hosts expose Charter's server instructions, which ask the agent to call `get_context` before work. Claude Code does, but not all hosts do. To state the expectation explicitly, open **Add Project Instructions (Optional)**, choose **Copy startup pointer**, and paste it into your **project's** instruction file:
+Charter's server sends brief instructions asking the agent to call `get_context` before work. Claude Code and Codex both read them, but not every host does, and they don't say which project the server is for. The startup pointer says so in your project's own instructions, which the host normally loads at the start of a new project session. It's recommended setup: open **Add Project Instructions (Recommended)**, choose **Copy startup pointer**, and paste it into your **project's** instruction file:
 
-- `CLAUDE.md` for Claude Code.
-- `AGENTS.md` for Codex.
-- The equivalent project instruction file for other hosts.
+- **Claude Code:** `CLAUDE.md` at the project root.
+- **Codex:** `AGENTS.md` at the project root.
+- **Other hosts:** their equivalent project instruction file.
+
+**A project with both files:** Claude Code reads `AGENTS.md` only when the project has no `CLAUDE.md` (or `CLAUDE.local.md`), so don't rely on a pointer in `AGENTS.md` alone. Either put the pointer in `CLAUDE.md` too, or keep it in `AGENTS.md` and add a line reading `@AGENTS.md` to `CLAUDE.md`, which imports it. A sentence in `CLAUDE.md` asking Claude to read `AGENTS.md` isn't enough.
+
+Use the project's file, not your personal one for every project (such as `~/.claude/CLAUDE.md` or `~/.codex/AGENTS.md`): the pointer names this project's server.
 
 The pointer reads, with your server name:
 
@@ -439,7 +445,11 @@ This project's governing context is served by the `charter-my-project` MCP serve
 Before beginning work, call its `get_context` tool, then retrieve the governing documents relevant to your task. Treat only the governing documents it lists as authoritative.
 ```
 
-⚠️ Keep instruction files in the **project**, never inside the Agent Context folder: extra files in the Agent Context cause MCP refusal. Charter cannot compel an agent to obey instructions.
+To check that the host loaded it, start a new session: in Claude Code, run `/memory` or `/context`; in Codex, ask the agent to summarize its instructions.
+
+⚠️ Keep instruction files in the **project**, never inside the Agent Context folder: extra files in the Agent Context cause MCP refusal.
+
+The pointer is guidance, not enforcement: hosts give it to the agent as instructions to follow, and the agent may still not call Charter. Some Claude Code subagents, such as its built-in Explore and Plan agents, start without your project instructions, so they may not see the pointer.
 
 #### File-based agents (without MCP)
 
@@ -479,18 +489,22 @@ Optional terminal-based proposals are separate from context retrieval; see [Agen
 
 ### Verify your agent retrieved the context
 
-Start a **new agent session** in your project and send the prompt that **Test the Connection (Optional)** copies with **Copy prompt**:
+Three checks answer three different questions. Each one shows something the one before can't.
+
+**1. Is the server connected?** After restarting the host, `claude mcp list` (or `/mcp` in a session) shows whether Claude Code can start the server; for Codex, `codex mcp list`, or `/mcp` in a session. This shows the host can reach Charter, not that an agent will use it. To check Charter's side without a host, run `charter mcp --context <folder> --check` (see [Troubleshooting](#troubleshooting)).
+
+**2. Does retrieval work when asked?** Start a **new agent session** in your project and send the prompt that **Test the Connection (Optional)** copies with **Copy prompt**:
 
 > Before doing anything else, retrieve this project's Agent Context. Tell me
 > the project name it gives, and which of its governing documents apply to
 > this task: [describe a small task]. If you cannot retrieve it, say so; do
 > not guess.
 
-✅ **Success:** The agent names your project and the relevant documents from its map. With the default [Settings](#settings), the map also asks agents to use `Context check: AGENT-CONTEXT read.` as the first line of a short update after reading the map and relevant documents.
+✅ **Success:** The agent names your project and the relevant documents from its map. Your host might ask you to allow the tool first. If the agent can't name the project, it **hasn't demonstrated retrieval yet**. Run this again after you restart or reconnect a host, or change the startup pointer.
 
-Your host might ask you to allow the tool first. If the agent can't name the project, it **hasn't demonstrated retrieval yet**. Connection by itself isn't proof.
+**3. Does the agent retrieve it unprompted? (optional)** In another new session, give the agent an ordinary small task without mentioning Charter. With [**Context check-in**](#settings) on, as it is by default, the map asks the agent to begin a short update with `Context check: AGENT-CONTEXT read.` and name the documents it says it read. Seeing that line is a sign the agent followed the startup pointer in that session. It isn't proof of which documents it retrieved, or that it understood or will follow them. If **Context check-in** is off, the map doesn't ask for this line, so this signal isn't available.
 
-**What counts as success?** Configuration means you've registered the server; connection means the host can start it (`claude mcp list` can confirm that for Claude Code). **Retrieval** is the real check: the agent names your project and documents from the map. That still doesn't guarantee it follows them. To check Charter's side without a host, run `charter mcp --context <folder> --check` (see [Troubleshooting](#troubleshooting)).
+These checks are guidance and validation, not enforcement. Each shows what happened in one session; Charter can't prove that an agent keeps following its context.
 
 ---
 

@@ -49,9 +49,9 @@ INSTALL_NOTE = ("These start this copy of Charter by its full path. Keep Charter
 
 CODEX_NOTE = "Add this to your Codex configuration, then restart Codex."
 
-POINTER_NOTE = ("Copy this into the project instructions or system context your agent receives—for "
-                "example, `CLAUDE.md`, `AGENTS.md`, or your agent host’s equivalent. Do not put it in "
-                "`AGENT-CONTEXT.md` or anywhere inside the Agent Context folder.")
+POINTER_NOTE = ("Add this to your project’s instruction file: `CLAUDE.md` for Claude Code, `AGENTS.md` "
+                "for Codex, or your agent host’s equivalent. Do not put it in `AGENT-CONTEXT.md` or "
+                "anywhere inside the Agent Context folder.")
 
 FILES_NOTE = "Requires direct read access to the Agent Context folder. See the README for guidance."
 

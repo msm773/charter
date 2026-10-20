@@ -2740,7 +2740,7 @@ for (const file of ["markdown.js", "app.js"]) {
       && !$("connectPrerequisite"),
       `${name}: the page is titled Connect Agents; the MCP section opens with its one purpose sentence`);
     const sections = [["connectMcp", "connectMcpTitle", "connectMcpToggle", "connectMcpDetails", "Connect Agents with MCP (Recommended)"],
-      ["connectPointerSection", "connectPointerTitle", "connectPointerToggle", "connectPointerDetails", "Add Project Instructions (Optional)"],
+      ["connectPointerSection", "connectPointerTitle", "connectPointerToggle", "connectPointerDetails", "Add Project Instructions (Recommended)"],
       ["connectVerify", "connectTestTitle", "connectTestToggle", "connectTestDetails", "Test the Connection (Optional)"],
       ["connectOther", "connectFilesTitle", "connectFilesToggle", "connectFilesDetails", "Connect Agents with File Access"]];
     check(sections.every(([s], i) => $("connectBody").children.indexOf($(s)) === i) && $("connectBody").children.length === 4,
@@ -2769,7 +2769,7 @@ for (const file of ["markdown.js", "app.js"]) {
       && $("connectVerifyPrompt").textContent === payload.verify_prompt,
       `${name}: Codex's TOML, the startup pointer and the verification prompt are shown exactly`);
     check(v.querySelectorAll("h3").map((h) => h.textContent).join(" | ")
-        === "Connect Agents with MCP (Recommended) | Add Project Instructions (Optional) | Test the Connection (Optional) | Connect Agents with File Access"
+        === "Connect Agents with MCP (Recommended) | Add Project Instructions (Recommended) | Test the Connection (Optional) | Connect Agents with File Access"
       && !/1\. Connect an agent|2\. Confirm it works|Optional file access|Send this in a new agent session/.test(v.textContent)
       && !$("connectProposals") && !$("connectVisible") && !$("connectTrustDetails") && !$("connectReadme")
       && !$("connectCheckToggle") && !$("connectCheckDetails") && !$("connectVscodeDetails") && !$("connectVscodeItem")
@@ -2811,7 +2811,7 @@ for (const file of ["markdown.js", "app.js"]) {
     const pointerParts = $("connectPointerDetails").children;
     check(pointerParts[0] === $("connectPointerNote")
       && pointerParts[1] === $("connectPointerBlock")
-      && $("connectPointerNote").textContent === "Copy this into the project instructions or system context your agent receives—for example, CLAUDE.md, AGENTS.md, or your agent host’s equivalent. Do not put it in AGENT-CONTEXT.md or anywhere inside the Agent Context folder."
+      && $("connectPointerNote").textContent === "Add this to your project’s instruction file: CLAUDE.md for Claude Code, AGENTS.md for Codex, or your agent host’s equivalent. Do not put it in AGENT-CONTEXT.md or anywhere inside the Agent Context folder."
       && $("connectPointerNote").querySelectorAll("code").map((c) => c.textContent).join()
         === "CLAUDE.md,AGENTS.md,AGENT-CONTEXT.md"
       && !$("connectPointerBlock").querySelector(".hint") && !/AGENT-CONTEXT-MAP|instruction file\u2014not/.test(v.textContent)

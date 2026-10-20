@@ -1943,7 +1943,7 @@ function drawConnect() {
     body: "connectMcpDetails" }, "Connect Agents with MCP (Recommended)", connectMcp(c), true, "connect-mcp"));
   if (c.connect !== "files-only") {
     box.appendChild(connectSection({ section: "connectPointerSection", title: "connectPointerTitle",
-      toggle: "connectPointerToggle", body: "connectPointerDetails" }, "Add Project Instructions (Optional)", [
+      toggle: "connectPointerToggle", body: "connectPointerDetails" }, "Add Project Instructions (Recommended)", [
       el("p", { class: "hint", id: "connectPointerNote" }, withCode(c.pointer_note)),
       copyBlock("connectPointer", "", c.pointer, "Copy startup pointer", ""),
     ], false, "connect-instruct"));

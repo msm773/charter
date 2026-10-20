@@ -212,8 +212,12 @@ Git.
   recorded. The change-set index's empty state reads “No open change sets.”
   Connect Agents is four sections, each a heading that opens and closes it:
   **Connect Agents with MCP (Recommended)**, open, then **Add Project
-  Instructions (Optional)**, **Test the Connection (Optional)** and **Connect
-  Agents with File Access**, closed. The Agent Proposals subtitle reads
+  Instructions (Recommended)**, **Test the Connection (Optional)** and **Connect
+  Agents with File Access**, closed. Registering a server makes Charter
+  available but does not make an agent call it, so adding the startup pointer
+  to the project's `CLAUDE.md` or `AGENTS.md` is recommended setup; the README
+  separates checking the connection, retrieval when asked, and an optional
+  unprompted check-in, none of which is enforcement. The Agent Proposals subtitle reads
   “Accepted proposals become authority candidates.” and the Change Sets
   subtitle “Apply one or more authority changes as a set.”
   Settings has a subtitle under its heading and two-line guidance options. The
