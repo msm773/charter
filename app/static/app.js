@@ -973,6 +973,9 @@ const sourceTag = (c) => (c.source_kind === "proposal" && c.source_agent
 
 /* A candidate whose file cannot be read: marked, never used. */
 const CANNOT_READ = "Cannot read file";
+/* A candidate's file differs from the version Charter last wrote for it. */
+const CHANGED_OUTSIDE = "Changed outside Charter";
+const baselineState = (doc) => (doc.provenance && doc.provenance.state) || "";
 /* Why a change set's candidate is no longer one it can use. */
 const candidateGoneChip = (c) => chip(c.unreadable ? CANNOT_READ : "No longer an authority candidate", "stale");
 
@@ -1005,7 +1008,12 @@ function docRow(doc) {
        source tag; its filename and scope follow, labelled. */
     isCandidate
       ? el("div", { class: "title-row" }, [el("span", { class: "title", text: doc.title }),
-        tag ? el("span", { class: "source-tag", text: tag }) : null])
+        tag ? el("span", { class: "source-tag", text: tag }) : null,
+        /* Advisory, in the non-blocking attention treatment that Charter
+           command needs attention uses: the file differs from the version
+           Charter last wrote. It blocks nothing and says nothing about who
+           changed it. */
+        baselineState(doc) === "changed" ? chip(CHANGED_OUTSIDE, "warn") : null])
       : attentionOf(doc.path)
         ? el("div", { class: "title-row" }, [el("span", { class: "title", text: doc.title }),
           chip(attentionOf(doc.path).label, "stale")])
@@ -1067,7 +1075,8 @@ function docRow(doc) {
    It lies over the page rather than replacing any of it, so closing it leaves
    the view it was opened from exactly as it was — a half-filled form, an open
    diff, a scroll position — and puts focus back on the button that opened it.
-   It is read-only: nothing here writes, plans or records. */
+   It plans and records nothing; its one write is a candidate's Mark as seen,
+   which changes only that candidate's private baseline. */
 const BANNER_TONE = { governing: "note authority", mismatch: "note warn" };
 
 async function openPreview(source, opener) {
@@ -1166,6 +1175,7 @@ function renderReader() {
       el("span", { text: data.banner.text }),
       data.after ? el("span", { class: "after", text: data.after }) : null,
     ]),
+    data.provenance ? provenanceLine(data) : null,
   ]);
 
   const inner = el("div", { class: "reader-body" });
@@ -1182,6 +1192,48 @@ function renderReader() {
   viewer.hidden = false;
   setBackgroundInert(true);  // trap focus in the dialog: the rail and main are inert
   close.focus();
+}
+
+/* A candidate's one factual provenance line in Read (UI Standards): how its
+   text stands against the version Charter last wrote, by that write's event
+   and date — never a file's modification time, or who changed it. A changed
+   candidate also offers its comparison and Mark as seen. */
+function provenanceLine(data) {
+  const p = data.provenance;
+  const text = p.state === "changed"
+    ? `This file differs from the version Charter last wrote when it was ${p.event} on ${p.date}.`
+    : p.state === "matching" ? `Charter last wrote this candidate when it was ${p.event} on ${p.date}.`
+      : "Charter has no earlier version of this candidate recorded.";
+  return el("div", { class: "reader-provenance", id: "readerProvenance" }, [
+    el("span", { text }),
+    p.state === "changed" ? el("span", { class: "actions" }, [
+      el("button", { class: "btn ghost small", id: "readerCompareCharter", type: "button",
+        text: "Compare with Charter's version", onclick: () => compareWithCharterVersion(data) }),
+      el("button", { class: "btn ghost small", id: "readerMarkSeen", type: "button",
+        text: "Mark as seen", onclick: (event) => markCandidateSeen(data, event.currentTarget) }),
+    ]) : null,
+  ]);
+}
+
+/* The comparison takes the reader's place; closing it returns focus to what
+   opened the reader. */
+function compareWithCharterVersion(data) {
+  const opener = reading ? reading.opener : null;
+  reading = null;
+  openComparison(data.path, ["charter-version"], `Compare “${data.title}” with Charter's Version`, opener);
+}
+
+/* Mark as seen: the text just read becomes the candidate's baseline. Like the
+   governing context's Mark as seen it asks for no further confirmation; it
+   changes no candidate text, governing context, change set or authority. */
+async function markCandidateSeen(data, button) {
+  button.disabled = true;
+  try {
+    await call("/api/candidate/seen", { candidate: data.path, sha: data.provenance.sha });
+    await refreshQuiet();
+    await reloadReader();
+    toast("Marked as seen.");
+  } catch (err) { button.disabled = false; toast(err.message, true); }
 }
 
 /* While a modal surface (the reader) is open, the rail and main content are

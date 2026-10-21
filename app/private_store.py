@@ -33,6 +33,9 @@ Layout, under the state root:
         candidates/<name>.md  authority candidates, by logical path
                               `authority-candidates/<name>.md`
         archive/<name>.md     replaced, withdrawn-then-retired, retired documents
+        candidate-baselines/<name>.json
+                              each candidate's one baseline: the text Charter
+                              last wrote for it, the kind of action, the date
         proposals/            Agent Proposal records and decisions
         changesets/           change-set drafts and applied receipts
         observed.json         the context as Charter last saw it
@@ -71,6 +74,10 @@ CHANGESETS = "changesets"
 STAGING = "staging"
 LOCKS = "locks"
 SUBFOLDERS = (CANDIDATES, ARCHIVE, PROPOSALS, CHANGESETS, STAGING, LOCKS)
+# Each authority candidate's one baseline — the text Charter last wrote for it,
+# with the kind of action and the date (Product Specification §4) — as
+# `candidate-baselines/<candidate name>.json`. Created when first written.
+BASELINES = "candidate-baselines"
 # Files an operating system may leave in any folder it shows, as the Agent
 # Context tolerates them (`agent_context.SYSTEM_FILES`): never reported as
 # candidates Charter cannot use.

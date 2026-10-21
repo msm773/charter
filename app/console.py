@@ -31,6 +31,7 @@ from . import convert
 from . import host_state as hs
 from . import manager as mg
 from . import private_store as ps
+from . import provenance as prov
 from .docs import leading_front_matter, parse_front_matter
 
 MAX_UPLOAD = 48 * 1024 * 1024
@@ -140,6 +141,8 @@ def _documents(folder: str, cs: ps.ContextState, exam: ac.Examination) -> List[D
         entry["source_kind"], entry["source_agent"] = candidate_source(meta)
         entry["created"] = str(meta.get("created") or "")
         entry["change_summary"] = au.change_summary(body, body_by_path.get(entry["revises_path"]))
+        # Compared now, as the person views the list; nothing is written.
+        entry["provenance"] = prov.state(cs, logical, texts[logical])
         if entry["revises_path"]:
             revises_count[entry["revises_path"]] = revises_count.get(entry["revises_path"], 0) + 1
         candidates.append(entry)
@@ -152,7 +155,8 @@ def _documents(folder: str, cs: ps.ContextState, exam: ac.Examination) -> List[D
         # Shown by its logical path, marked, with nothing read from it.
         docs.append(dict(_document({}, logical, "candidate"), unreadable=True, source_kind="",
                          source_agent="", created="", change_summary="", revises_path="",
-                         revises_title="", revises_current=True, co_revisions=0))
+                         revises_title="", revises_current=True, co_revisions=0,
+                         provenance={"state": prov.UNREADABLE, "event": "", "date": ""}))
     archived_texts, archived_unreadable = cs.readable_archived()
     for name in sorted(archived_texts):
         meta, _body = parse_front_matter(archived_texts[name])
@@ -396,8 +400,13 @@ def preview(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
         else:
             raise ApiError("Only documents this page lists can be read here, named exactly as it "
                            "lists them.")
-        return {"title": _title_of(text, path), "path": path, "text": text, "state": kind,
-                "banner": _banner(kind)}
+        out = {"title": _title_of(text, path), "path": path, "text": text, "state": kind,
+               "banner": _banner(kind)}
+        if kind == "candidate":
+            # The Read view's provenance line (UI Standards), and the exact
+            # text it describes, so Mark as seen marks what the person read.
+            out["provenance"] = dict(prov.state(cs, path, text), sha=ac.sha256_text(text))
+        return out
     if source == "plan":
         plan = _plan(session, body.get("kind", ""), body.get("request") or {})
         if plan.plan_id != body.get("plan_id"):
@@ -417,7 +426,8 @@ def _body_only(text: str) -> str:
 
 def compare(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     """A human-only text comparison of an authority candidate with the governing
-    document it revises, or with a competing candidate. Reads only; console-only,
+    document it revises, with a competing candidate, or with the version Charter
+    last wrote for it (`against` is `charter-version`). Reads only; console-only,
     so this lineage view is never exposed through MCP or to agents."""
     folder = session.require()
     cand = body.get("candidate")
@@ -429,19 +439,29 @@ def compare(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
         raise ApiError("Only an authority candidate this page lists can be compared.")
     left = _candidate_text(cs, cand)
     left_title = _title_of(left, cand)
-    if isinstance(against, str) and against in governing:
+    if against == prov.CHARTER_VERSION:
+        base = prov.read(cs, cand)
+        if base is None:
+            raise ApiError("Charter has no earlier version of this candidate recorded.")
+        right, right_title = base["text"], prov.CHARTER_VERSION_TITLE
+    elif isinstance(against, str) and against in governing:
         right, right_title = exam.texts[against], governing[against].title
     elif isinstance(against, str) and against != cand and against in cs.candidates():
         right = _candidate_text(cs, against)
         right_title = _title_of(right, against)
     else:
         raise ApiError("Compare against a governing document this map lists, or another candidate.")
+    whole = against == prov.CHARTER_VERSION
+    # Against Charter's version, the whole text: a changed title or scope is a
+    # difference too. Otherwise the bodies, as lineage compares them.
+    side = (lambda t: t) if whole else _body_only
     diff = "\n".join(difflib.unified_diff(
-        _body_only(right).splitlines(), _body_only(left).splitlines(),
+        side(right).splitlines(), side(left).splitlines(),
         fromfile=right_title, tofile=left_title, lineterm=""))
     return {"left": {"path": cand, "title": left_title},
             "right": {"path": against, "title": right_title},
-            "diff": diff or "(no textual difference in the document body)"}
+            "diff": diff or ("(no textual difference)" if whole
+                             else "(no textual difference in the document body)")}
 
 
 def draft(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -746,6 +766,14 @@ def unexpected(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
                        "It is left unchanged.")
 
 
+def mark_candidate_seen(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Mark as seen: the candidate's current text, as the person read it,
+    becomes its baseline. No authority, candidate text or change set changes."""
+    folder = session.require()
+    result = _guard(lambda: prov.mark_seen(folder, body.get("candidate"), body.get("sha")))
+    return {"seen": True, "changed": result["changed"]}
+
+
 def acknowledge(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     folder = session.require()
     status = _guard(lambda: mg.acknowledge(folder))
@@ -877,6 +905,7 @@ POST_ROUTES = {
     "/api/preview": preview, "/api/draft": draft, "/api/candidate/compare": compare,
     "/api/intake/stage": stage,
     "/api/plan": plan, "/api/apply": apply, "/api/acknowledge": acknowledge,
+    "/api/candidate/seen": mark_candidate_seen,
     "/api/proposals": proposals, "/api/proposals/import/check": import_check,
     "/api/proposals/import": import_file, "/api/proposals/import/replace": import_replace,
     "/api/proposals/unexpected": unexpected,

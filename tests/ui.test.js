@@ -119,6 +119,7 @@ global.fetch = async (url, options) => {
     return delayed ? delayed.gate.then(() => answer(delayed.answer)) : answer(stageAnswer);
   }
   if (url === "/api/acknowledge") return answer({ acknowledged: true });
+  if (url === "/api/candidate/seen") return answer({ seen: true, changed: true });
   if (url === "/api/proposals") return answer(fixture.proposals);
   if (url === "/api/changesets/list") return answer(csListAnswer || fixture.cs_list);
   if (url === "/api/changeset/apply") return answer({ applied: true, kind: "changeset" });
@@ -638,6 +639,68 @@ for (const file of ["markdown.js", "app.js"]) {
   vm.runInThisContext("state.unusable_candidate_files = []; renderKnowledge();");
   check(!$("candidatesUnusableGroup") && $("candidatesUnusable").textContent === "",
     "with none, the group is not shown");
+
+  console.log("\nCandidate provenance: the card chip, Read's provenance line, Compare and Mark as seen");
+  const provCard = (state) => vm.runInThisContext("docRow")({ kind: "candidate", path: "authority-candidates/p.md",
+    title: "P", scope: "s", source_kind: "create", provenance: { state, event: "created", date: "2026-10-21" } });
+  const changedCard = provCard("changed");
+  const changedRow = changedCard.querySelector(".title-row");
+  check(changedRow.children.length === 3 && changedRow.children[1].className === "source-tag"
+    && changedRow.children[2].textContent === "Changed outside Charter"
+    /* "warn" is the treatment Charter command needs attention is checked to use, below. */
+    && changedRow.children[2].className === "chip warn" && !changedRow.children[2].classList.contains("stale"),
+    "a changed candidate's card shows Changed outside Charter right after its source tag, in the yellow attention treatment Charter command needs attention uses, never the error treatment");
+  check(!/\.chip\.info\b/.test(css), "no separate visual category exists for it");
+  check(buttonSaying(changedCard, "Edit…") && buttonSaying(changedCard, "Retire…") && buttonSaying(changedCard, "Plan a change set…")
+    && !buttonSaying(changedCard, "Mark as seen") && !buttonSaying(changedCard, "Compare with Charter's version"),
+    "it keeps every candidate action, and the card gains none: provenance lives in Read");
+  check(["matching", "none", ""].every((s) => !provCard(s).querySelector(".chip")),
+    "a candidate that matches its baseline, or has none, shows no chip");
+  const realPreview = fixture.previews[fixture.candidate];
+  check(realPreview && realPreview.provenance && realPreview.provenance.state === "matching"
+    && /^[0-9a-f]{64}$/.test(realPreview.provenance.sha)
+    && (state.documents || vm.runInThisContext("state.documents")).filter((d) => d.kind === "candidate" && !d.unreadable)
+      .every((d) => d.provenance && d.provenance.state),
+    "the real server reports provenance for every candidate, and Read's text hash with it");
+  const readWith = (provenance) => {
+    global.__reading = { source: { source: "document", path: "authority-candidates/p.md" },
+      data: { title: "P", path: "authority-candidates/p.md", text: "# P\n", state: "candidate",
+        banner: { title: "Authority candidate", text: "Not context." }, provenance }, opener: null };
+    vm.runInThisContext("reading = __reading; readerMode = 'rendered'; renderReader();");
+    return $("readerProvenance");
+  };
+  const sha = "a".repeat(64);
+  const changedLine = readWith({ state: "changed", event: "accepted from an Agent Proposal", date: "2026-10-21", sha });
+  check(changedLine.querySelector("span").textContent
+      === "This file differs from the version Charter last wrote when it was accepted from an Agent Proposal on 2026-10-21."
+    && changedLine.querySelectorAll("button").map((b) => b.textContent).join("|") === "Compare with Charter's version|Mark as seen",
+    "Read on a changed candidate: the provenance line, then Compare with Charter's version and Mark as seen");
+  check(readWith({ state: "matching", event: "edited", date: "2026-10-20", sha }).textContent
+      === "Charter last wrote this candidate when it was edited on 2026-10-20."
+    && !$("readerProvenance").querySelectorAll("button").length,
+    "a matching candidate: when Charter last wrote it, and no action");
+  check(readWith({ state: "none", event: "", date: "", sha }).textContent
+      === "Charter has no earlier version of this candidate recorded." && !$("readerProvenance").querySelectorAll("button").length,
+    "no baseline: Charter has no earlier version recorded, and no action");
+  check(!/modif|by |Claude|agent/i.test($("readerProvenance").textContent.replace("Agent Proposal", "")),
+    "the line names no modification time, person, agent or editor");
+  readWith({ state: "changed", event: "created", date: "2026-10-21", sha });
+  calls.length = 0;
+  await click($("readerCompareCharter"));
+  check(calls.some((c) => c.url === "/api/candidate/compare" && c.body.candidate === "authority-candidates/p.md"
+      && c.body.against === "charter-version")
+    && /Charter's Version/.test($("cmpTitle").textContent) && !vm.runInThisContext("reading"),
+    "Compare with Charter's version opens the existing comparison view in the reader's place");
+  vm.runInThisContext("closeComparison()");
+  readWith({ state: "changed", event: "created", date: "2026-10-21", sha });
+  calls.length = 0;
+  await click($("readerMarkSeen"));
+  const seenCall = calls.find((c) => c.url === "/api/candidate/seen");
+  check(seenCall && seenCall.body.candidate === "authority-candidates/p.md" && seenCall.body.sha === sha
+    && !calls.some((c) => /\/api\/(plan|apply|changeset)/.test(c.url))
+    && toastNow() && toastNow().querySelector(".toast-text").textContent === "Marked as seen.",
+    "Mark as seen sends the text it read, asks no further confirmation, plans nothing, and says exactly “Marked as seen.”");
+  vm.runInThisContext("closeDocument()");
   const pickLabel = vm.runInThisContext("candidateLabel")(
     { title: "X", source_kind: "proposal", revises_title: "Alpha", scope: "short scope",
       change_summary: "changes 1 line" }, true);

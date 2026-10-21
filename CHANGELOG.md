@@ -577,6 +577,31 @@ Git.
   `submit_proposal`, and refuses a rebuilt context as `server-outdated`, until
   it restarts. The `mcp` module's own documentation no longer says the
   configured folder's path may be disclosed.
+- **Candidate provenance: Changed outside Charter, Compare, Mark as seen.**
+  For each authority candidate Charter keeps one private baseline in
+  `candidate-baselines/<name>.json`: the exact text it last wrote, the kind of
+  action, and the date. Create candidate, Revise, Edit, accepting a proposal
+  into a candidate, a revision candidate or an update, and a change set's
+  withdrawal write it in the same transaction as the candidate, so a rolled-back
+  action leaves it as it was; retiring a candidate, retiring it through a
+  proposal, and a change set using it up discard it, and the next Charter
+  action discards one whose candidate is gone. Nothing watches files: a
+  candidate is compared with its baseline, as line-ending-normalized text, only
+  when a person views it, and viewing writes nothing. A candidate that differs
+  shows the advisory **Changed outside Charter** chip after its source tag, in the
+  yellow attention treatment **Charter command needs attention** uses,
+  and stays usable for everything; one with no baseline — filed before this
+  release, or placed by hand — shows none and is never adopted. **Read** on a
+  candidate gives one provenance line ("Charter last wrote this candidate when
+  it was edited on …", "This file differs from the version Charter last wrote
+  when it was …", or "Charter has no earlier version of this candidate
+  recorded."), and for a changed one **Compare with Charter's version** — the
+  whole text, front matter included — and **Mark as seen**, which makes the text
+  just read the baseline, refuses if it changed since, asks no further
+  confirmation, says "Marked as seen.", and changes nothing else. Preview and
+  Apply warns, without blocking, of each candidate it uses that changed outside
+  Charter. Baselines never reach the Agent Context, MCP, `charter read`,
+  activity or Recent, and never affect validity.
 - **A candidate file Charter cannot use no longer stops other work.** A
   candidate file that is not UTF-8 text, or that the system refuses to open,
   used to fail the console's whole page and every authority action, related

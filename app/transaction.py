@@ -301,8 +301,9 @@ _RECORD_FOLDER = re.compile(r"^[a-z][a-z-]{0,31}$")
 
 def _allowed_private_path(rel: str) -> bool:
     """The private records an action writes, and nothing else: a candidate or
-    archived document by its document name, a change set's record, or an Agent
-    Proposal record in one of its decision folders. Never `context.json`,
+    archived document by its document name, a candidate's baseline, a change
+    set's record, or an Agent Proposal record in one of its decision folders.
+    Never `context.json`,
     staging, locks, observations or anything another folder's state holds."""
     if not _plain_relative(rel):
         return False
@@ -311,6 +312,9 @@ def _allowed_private_path(rel: str) -> bool:
         return not ps.name_problem(parts[1])
     if len(parts) == 2 and parts[0] == ps.CHANGESETS:
         return bool(_RECORD.match(parts[1]))
+    if len(parts) == 2 and parts[0] == ps.BASELINES:
+        # A candidate's baseline, by the candidate's own document name.
+        return parts[1].endswith(".json") and not ps.name_problem(parts[1][:-len(".json")])
     if len(parts) == 3 and parts[0] == ps.PROPOSALS:
         return bool(_RECORD_FOLDER.match(parts[1]) and _RECORD.match(parts[2]))
     return False

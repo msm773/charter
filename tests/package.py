@@ -53,7 +53,8 @@ BUILD_FILE = "app/build.json"
 # that is not a helper is one of these; `inspect` checks that it is.
 SUITES = ("agent_context", "private_store", "host_state", "authority", "manager", "console",
           "launchers", "mcp", "submit", "read", "activity", "propose", "intake", "changeset",
-          "impact", "connect", "git_compare", "ui", "brand", "candidate_files")
+          "impact", "connect", "git_compare", "ui", "brand", "candidate_files",
+          "provenance")
 HELPERS = ("harness", "_launch", "package")
 OK = "ok"
 

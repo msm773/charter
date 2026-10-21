@@ -492,6 +492,10 @@ pre.code { font: 12px/1.5 var(--mono); background: #fff; border: 1px solid var(-
 .reader-banner { margin: 0; display: grid; gap: .1rem; }
 .reader-banner strong { color: inherit; }
 .reader-banner .after { font-size: .82rem; }
+/* A candidate's provenance line in Read: one factual sentence, its actions after it. */
+.reader-provenance { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .75rem;
+  padding: .45rem 1.2rem; border-bottom: 1px solid var(--rule); font-size: .88rem; }
+.reader-provenance .actions { display: inline-flex; gap: .4rem; }
 .reader-body { padding: 1rem 1.2rem 1.4rem; overflow-y: auto; flex: 1; }
 .file-row { display: flex; align-items: stretch; }
 .file-row .file-toggle { flex: 1; }

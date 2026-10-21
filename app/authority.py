@@ -46,6 +46,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import agent_context as ac
 from . import private_store as ps
+from . import provenance as prov
 from . import transaction as tx
 from .docs import Document, leading_front_matter, not_text, parse_front_matter, slugify, today, unique_id
 
@@ -355,8 +356,11 @@ class _Builder:
             plan.after = _listing(docs)
         else:
             plan.after = plan.before
+        # The candidate baselines this action would write count too, so a path
+        # too long for one is a problem the preview names, never a failed apply.
         plan.problems += tx.path_problems(
-            sit.cs, [tx.Write(c.root, c.path, c.new) for c in plan.changes])
+            sit.cs, [tx.Write(c.root, c.path, c.new) for c in plan.changes]
+            + prov.writes(sit.cs, plan.kind, plan.changes, NEUTRAL_DAY))
         digest = hashlib.sha256()
         digest.update(json.dumps({"kind": plan.kind, "request": plan.request},
                                  sort_keys=True).encode("utf-8"))
@@ -669,6 +673,18 @@ def _free_candidate(b: _Builder, name: str, exclude: str, taken: List[str]) -> s
         raise ActionRefused(str(exc))
 
 
+def changed_outside_note(title: str) -> str:
+    return f"“{title}” changed outside Charter since Charter last wrote it."
+
+
+def _note_changed_outside(b: _Builder, logical: str, doc: Document, text: str) -> None:
+    """A decision-relevant warning, never a block (UI Standards): this
+    candidate's text differs from the version Charter last wrote. What applies
+    is still its current text, which the preview shows."""
+    if prov.changed(b.sit.cs, logical, text):
+        b.plan.notes.append(changed_outside_note(doc.title))
+
+
 def _compose_changeset(b: _Builder, draft: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Every declared outcome of a change set, composed into one plan, with
     what each does: each candidate's replacement or governing alongside, each
@@ -692,6 +708,7 @@ def _compose_changeset(b: _Builder, draft: Dict[str, Any]) -> List[Dict[str, Any
         if o["outcome"] in (chs.REVISE, chs.REPLACE):
             doc, text = b.require_candidate(o.get("candidate"))
             _governable(doc, text)
+            _note_changed_outside(b, o["candidate"], doc, text)
             if doc.meta.get(REVISES):
                 lineage = revision_lineage(doc.meta, b.sit.exam.documents, b.sit.exam.hashes,
                                            archived_metas(b.sit.cs))
@@ -736,6 +753,7 @@ def _compose_changeset(b: _Builder, draft: Dict[str, Any]) -> List[Dict[str, Any
     for logical in alongside:
         doc, text = b.require_candidate(logical)
         _governable(doc, text)
+        _note_changed_outside(b, logical, doc, text)
         path = f"{ac.AUTHORITATIVE}/{ps.candidate_name(logical)}"
         if path in b.result or any(p.casefold() == path.casefold() for p in b.sit.governing_names):
             raise ActionRefused(f"`{path}` is already in use, so “{doc.title}” cannot govern "
@@ -917,6 +935,9 @@ def apply(folder: str, kind: str, request: Dict[str, Any], plan_id: str, confirm
             from . import changeset as chs
             writes = [tx.Write(w.root, w.path, chs.stamp(w.text), w.expected)
                       if w.text and chs.APPLIED_AT in w.text else w for w in writes]
+        # Each candidate this action writes or removes takes its baseline with
+        # it, in the same transaction (Product Specification §4).
+        writes += prov.writes(cs, kind, current.changes)
         labels = {c.path: c.label for c in current.changes}
         before = ac.examine(cs.folder)
 
