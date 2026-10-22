@@ -65,7 +65,7 @@ Charter runs locally with Python 3.9+ and works alongside Git without managing y
 
 Connecting an agent through MCP is separate from using `charter` yourself in a terminal: the host starts Charter by its full path, so it needs no PATH setup, and you never type a command for the agent.
 
-> ⚠️ **Pre-release — `2.0.0.dev0`.** Charter isn't public yet; this guide assumes you received its release ZIP directly.
+> ⚠️ **Pre-release — `2.0.0.dev0`.** Charter's source code is publicly available in this repository. A packaged release has not yet been published.
 
 ### The Charter workflow
 

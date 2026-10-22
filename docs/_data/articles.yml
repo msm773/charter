@@ -1,0 +1,10 @@
+# Published articles, in series order. The landing page and every article's
+# series list are built from this file.
+#
+# To publish an article: add its Markdown file to docs/ with front matter like
+# introduction.md's (layout: article, title, description, permalink), then add
+# its entry here. List only articles that are published.
+
+- title: "AI Can Build Fast. Keeping Agents Aligned Is the Hard Part."
+  url: /introduction/
+  summary: "Introduction to a series on context management for multi-agent development"

@@ -1,0 +1,17 @@
+# Charter's website, built by GitHub Pages from the /docs folder of main.
+# Published at https://msm773.github.io/charter/
+
+title: Charter — Agent Context Manager
+description: One trusted context for every AI agent on your project.
+
+# The site is served from a project path, so every internal link goes through
+# Liquid's `relative_url` filter, which adds `baseurl`.
+url: https://msm773.github.io
+baseurl: /charter
+repository: msm773/charter
+
+theme: minima
+markdown: kramdown
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag

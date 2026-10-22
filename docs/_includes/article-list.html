@@ -1,0 +1,12 @@
+<ul class="article-list">
+  {%- for article in site.data.articles %}
+  <li>
+    {%- if article.url == page.url %}
+    <strong>{{ article.title | escape }}</strong>
+    {%- else %}
+    <a href="{{ article.url | relative_url }}">{{ article.title | escape }}</a>
+    {%- endif %}
+    {%- if article.summary %}<br><span class="article-summary">{{ article.summary | escape }}</span>{% endif %}
+  </li>
+  {%- endfor %}
+</ul>

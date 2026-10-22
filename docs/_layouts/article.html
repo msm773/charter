@@ -1,0 +1,22 @@
+---
+layout: default
+---
+{%- comment -%}
+An article's Markdown supplies its own title as its first heading, so this
+layout adds no title of its own.
+{%- endcomment -%}
+<article class="post">
+  <div class="post-content">
+    {{ content }}
+  </div>
+
+  <footer class="series">
+    <hr>
+    <h2>The Charter series</h2>
+    {% include article-list.html %}
+    <p>
+      <a href="{{ "/" | relative_url }}">Charter home</a> ·
+      <a href="https://github.com/{{ site.repository }}">Charter on GitHub</a>
+    </p>
+  </footer>
+</article>
