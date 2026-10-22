@@ -819,7 +819,12 @@ Charter saves a private record of each write before it changes anything, and und
 - **Applying fails part-way:** Charter puts back each file it wrote. A file that someone else changed in the meantime is left as it is and named in the message; check it yourself.
 - **Charter itself is interrupted** (the console is closed or the computer stops mid-apply): agents are refused until Charter rolls the write back, which it does first when you next open the Agent Context in the console. It then says what it did, including any file it left because it had changed meanwhile.
 - **Charter can't safely finish undoing its write:** it stops, keeps its record, and agents stay refused. Opening the Agent Context in the console tries the rollback again.
-- **Charter can't trust its record of the write:** it changes nothing and never acts on any path read from that record, and agents stay refused. Open the Agent Context in the console: its status lists, by path, each leftover temporary file Charter finds in the folder. Check each one, and delete only the files listed. Then delete the one record file at the full path Charter's message gives, which is Charter's own private-state location, not a path taken from the record. Delete nothing else, and never delete by name pattern.
+- **Charter can't trust its record of the write:** it changes nothing, never uses a path or name from that record, and agents stay refused. Its message, shown when you open the Agent Context in the console or an action is refused, lists by full path only what Charter finds for itself:
+  - **Temporary files to delete:** each leftover of an interrupted write, in the Agent Context folder or its private state, recognized by the exact names only Charter's writes use. Delete only these.
+  - **The record to delete:** the one record file, where Charter's own private-state layout keeps it. If a private folder on the way to it is a link or not a plain folder, Charter names no record and asks you to check that folder instead.
+  - **Strays to move out:** anything else in the Agent Context folder that isn't part of it, including a file only named like a Charter temporary file. Each keeps agents refused on its own. Move it out of the folder; Charter never moves or deletes it.
+
+  Delete nothing else, and never delete by wildcard or name pattern. Then open the Agent Context again. If agents still aren't served, for example because the folder holds a link, its status lists what else stops them, with what to do.
 
 Charter doesn't operate Git. If the Agent Context is in Git, `git status` and `git restore` are your own recovery for anything left unexpected.
 

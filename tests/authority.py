@@ -1444,6 +1444,209 @@ def case_hostile_journal() -> None:
         shutil.rmtree(outside)
 
 
+def case_untrusted_record_wording() -> None:
+    print("\nan untrusted record: every step it gives is specific, and following them all restores service")
+    from app import mcp
+
+    def refusal(cs) -> str:
+        try:
+            tx.recover(cs)
+        except tx.TransactionError as exc:
+            return exc.message
+        return ""
+
+    def agents(folder) -> str:
+        try:
+            mcp.examine(folder)
+        except mcp.Refusal as refused:
+            return refused.reason
+        return "served"
+
+    def quoted(message: str) -> list:
+        return re.findall(r"`([^`]*)`", message)
+
+    head = "Charter's record of an interrupted write cannot be trusted ("
+    lead = ("), so it will not guess how to undo it, and changed nothing. Charter can’t serve this "
+            "Agent Context until this is resolved. Nothing below comes from that record. First "
+            "check the Agent Context's documents, and restore any that are not as you approved "
+            "them. ")
+    tail = (" Then open this Agent Context in Charter again: if agents are still not served, its "
+            "status lists what else stops them, with what to do.")
+    never = ("*", "any `.", "`.charter-txn-`", "`.acm-txn-`", "file in it", "delete any")
+    escaped_backtick = chr(92) + "u0060"
+
+    with isolated_private_state() as state_root:
+        folder, cs, _before, genuine = _interrupted_grant()
+        journal = json.loads(genuine.decode("utf-8"))
+        txid = journal["id"]
+        jpath = os.path.join(_jdir(cs), tx.JOURNAL_FILE)
+        # Leftovers in both prefix forms, a restore name, in the Agent Context
+        # and in this context's private state.
+        write(folder, f".charter-txn-{txid}-0", b"temp")
+        write(folder, "authoritative/.acm-txn-1a2b3c-1r", b"earlier-name restore temp")
+        write(cs.path(ps.CANDIDATES), f".charter-txn-{txid}-2", b"private temp")
+        # Look-alikes in the Agent Context: strays, never named for deletion.
+        look_alikes = ["authoritative/.charter-txn-ABCDEF-0", "authoritative/.charter-txn-notes.md",
+                       ".acm-txn-zz"]
+        for rel in look_alikes:
+            write(folder, rel, b"not a name Charter gives")
+        os.makedirs(os.path.join(folder, f".charter-txn-{txid}-3"))  # a folder, not a file
+        odd = "notes `x` here.txt"  # a backtick cannot end its quotation
+        write(folder, odd, b"an ordinary stray")
+        # Look-alikes that block nothing: in private state, and inside .git.
+        write(cs.path(ps.CANDIDATES), ".charter-txn-notes", b"private look-alike")
+        write(folder, f".git/.charter-txn-{txid}-4", b"inside .git")
+        # A record whose paths and names point elsewhere.
+        outside = tempfile.mkdtemp(prefix="charter-outside-")
+        write(outside, "victim.md", b"outside")
+        write(outside, f".charter-txn-{txid}-9", b"outside temp")
+        hostile = copy.deepcopy(journal)
+        hostile["entries"][0].update(path="../" + os.path.basename(outside) + "/victim.md",
+                                     temp=f"../.charter-txn-{txid}-9", backup="../../elsewhere")
+        hostile["created_dirs"] = [["context", "../decoy-folder"]]
+        with open(jpath, "w", encoding="utf-8") as fh:
+            json.dump(hostile, fh)
+
+        exam = ac.examine(folder)
+        by_path = {i["path"]: i for i in exam.issues}
+        check(all(by_path[r]["message"] == ac.LOOK_ALIKE and by_path[r]["fix"] == ac.LOOK_ALIKE_FIX
+                  for r in look_alikes + [f".charter-txn-{txid}-3/"])
+              and "delete" not in ac.LOOK_ALIKE_FIX.lower()
+              and by_path[f".charter-txn-{txid}-0"]["message"].startswith("An interrupted Charter write")
+              and by_path["authoritative/.acm-txn-1a2b3c-1r"]["message"].startswith("An interrupted Charter write"),
+              "the status calls only exact temporary names Charter's; a look-alike is a stray to move out")
+
+        ctx_before, out_before, state_before = _tree(folder), _tree(outside), _tree(state_root)
+        message = refusal(cs)
+        leftovers = sorted([os.path.join(folder, f".charter-txn-{txid}-0"),
+                            os.path.join(folder, "authoritative", ".acm-txn-1a2b3c-1r")]) + \
+            [os.path.join(cs.path(ps.CANDIDATES), f".charter-txn-{txid}-2")]
+        moved = sorted([os.path.join(folder, *r.split("/")) for r in look_alikes]
+                       + [os.path.join(folder, f".charter-txn-{txid}-3") + os.sep,
+                          os.path.join(folder, odd)])
+
+        def shown(p):
+            return p.replace("`", escaped_backtick)
+        why = message[len(head):].split("), so", 1)[0]
+        expected = (
+            head + why + lead
+            + "Then delete these temporary files, which only an interrupted Charter write leaves: "
+            + ", ".join(f"`{p}`" for p in leftovers) + ". "
+            + f"Then delete the record itself, where Charter keeps it: `{jpath}`. Delete nothing else. "
+            + "These are in the Agent Context folder but aren't part of it, and keep agents refused "
+              "on their own: " + ", ".join(f"`{shown(p)}`" for p in moved)
+            + ". Charter never moves or deletes them: move each out of the folder." + tail)
+        check(message == expected and why,
+              "the exact wording: delete each listed leftover and the record; move each listed "
+              "stray out; then open again")
+        check(sorted(quoted(message)) == sorted(leftovers + [jpath] + [shown(p) for p in moved])
+              and escaped_backtick in message,
+              "every quoted name is a leftover, the record, or a stray Charter's own check found; "
+              "a backtick in a name is escaped, so no quotation is broken")
+        deletions = message.split("Delete nothing else.")[0]
+        check(not any(os.path.basename(p.rstrip(os.sep)) in deletions for p in moved)
+              and not any(s in message for s in never)
+              and not any(s in message for s in (f"{txid}-4", f"{txid}-9", "victim", "elsewhere",
+                                                 "decoy", ".charter-txn-notes`",
+                                                 os.path.basename(outside))),
+              "no wildcard or pattern; no look-alike is named for deletion; nothing from the "
+              "record, in .git or in private-state look-alikes is named")
+        check(_tree(folder) == ctx_before and _tree(outside) == out_before
+              and _tree(state_root) == state_before and tx.interrupted(cs)
+              and agents(folder) == "context-unclean",
+              "refusing deletes and changes nothing, and agents stay refused")
+
+        # Following every displayed step, and nothing else, restores service.
+        aside = tempfile.mkdtemp(prefix="charter-moved-")
+        for p in leftovers + [jpath]:
+            os.remove(p)
+        for p in moved:
+            shutil.move(p.rstrip(os.sep), os.path.join(aside, os.path.basename(p.rstrip(os.sep))))
+        check(not tx.interrupted(cs) and tx.recover(cs) is None and agents(folder) == "served"
+              and os.path.exists(os.path.join(folder, ".git", f".charter-txn-{txid}-4"))
+              and os.path.exists(os.path.join(cs.path(ps.CANDIDATES), ".charter-txn-notes"))
+              and _tree(outside) == out_before,
+              "after exactly the displayed steps, agents are served: .git, private-state "
+              "look-alikes and files outside never blocked, and were never touched")
+        shutil.rmtree(folder)
+        shutil.rmtree(outside)
+        shutil.rmtree(aside)
+
+        # Nothing left to name.
+        folder, cs, _before, _genuine = _interrupted_grant()
+        jpath = os.path.join(_jdir(cs), tx.JOURNAL_FILE)
+        with open(jpath, "wb") as fh:
+            fh.write(b"\xff not json")
+        message = refusal(cs)
+        check("Charter found no temporary file left by an interrupted write." in message
+              and quoted(message) == [jpath] and "These are in the Agent Context" not in message
+              and not any(s in message for s in never),
+              "with nothing left over, it says so and names only the record")
+        check(tx.interrupted(cs) and agents(folder) == "context-invalid", "  and agents stay refused")
+        os.remove(jpath)
+        check(agents(folder) == "served", "  after deleting the record as told, agents are served")
+        shutil.rmtree(folder)
+
+        probe = tempfile.mkdtemp(prefix="charter-link-probe-")
+        can_link = make_link(os.path.join(probe, "l"), probe)
+        if can_link:
+            remove_link(os.path.join(probe, "l"))
+        shutil.rmtree(probe)
+        if not can_link:
+            print("  - links not checked: this system refused to create a junction or symbolic link")
+            return
+
+        # A link in the Agent Context: never followed, never listed to move or
+        # delete, and agents stay refused until the person deals with it.
+        folder, cs, _before, _genuine = _interrupted_grant()
+        jpath = os.path.join(_jdir(cs), tx.JOURNAL_FILE)
+        with open(jpath, "wb") as fh:
+            fh.write(b"\xff not json")
+        target = tempfile.mkdtemp(prefix="charter-link-target-")
+        write(target, f".charter-txn-{txid}-0", b"beyond the link")
+        link = os.path.join(folder, "authoritative", "linked")
+        make_link(link, target)
+        message = refusal(cs)
+        check(quoted(message) == [jpath] and "linked" not in message and target not in message
+              and os.path.exists(os.path.join(target, f".charter-txn-{txid}-0")),
+              "a link: never followed, nothing beyond it named, and nothing there touched")
+        os.remove(jpath)
+        check(agents(folder) == "context-invalid"
+              and any(i["path"] == "authoritative/linked" and "link" in i["message"]
+                      for i in ac.examine(folder).issues),
+              "  after the record is gone, the link still fails closed, and the status names it")
+        remove_link(link)
+        check(agents(folder) == "served", "  once the person removes the link, agents are served")
+        shutil.rmtree(target)
+        shutil.rmtree(folder)
+
+        # A staging folder that is a link: no record is named for deletion.
+        folder, cs, _before, _genuine = _interrupted_grant()
+        staging = cs.path(ps.STAGING)
+        elsewhere = tempfile.mkdtemp(prefix="charter-elsewhere-")
+        shutil.copytree(staging, os.path.join(elsewhere, "staging"))
+        shutil.rmtree(staging)
+        make_link(staging, os.path.join(elsewhere, "staging"))
+        message = refusal(cs)
+        check(f"`{staging}` is not a plain folder, so Charter names no record to delete" in message
+              and tx.JOURNAL_FILE not in message and "delete the record" not in message
+              and os.path.exists(os.path.join(elsewhere, "staging", tx.JOURNAL_KIND, tx.JOURNAL_FILE)),
+              "a staging folder that is a link: no record is named, and the file it leads to is untouched")
+        check(tx.interrupted(cs) and agents(folder) == "context-invalid", "  and agents stay refused")
+        remove_link(staging)
+        shutil.rmtree(elsewhere)
+        shutil.rmtree(folder)
+
+        # A genuine record still recovers by itself, naming nothing to delete.
+        folder, cs, before, _genuine = _interrupted_grant()
+        check(agents(folder) == "context-invalid", "a genuine interrupted write fails closed until recovered")
+        done = tx.recover(cs)
+        check(done and not done["unrestored"] and not tx.interrupted(cs) and snapshot(folder) == before
+              and agents(folder) == "served",
+              "  a genuine record still rolls back exactly, with no person-facing deletion")
+        shutil.rmtree(folder)
+
+
 def case_journal_links() -> None:
     print("\nrecovery never acts through a link, junction or a folder swapped after checking")
     probe = tempfile.mkdtemp(prefix="charter-link-probe-")
@@ -1959,6 +2162,7 @@ def run() -> None:
     case_earlier_name_temporary_files()
     case_concurrent_edits()
     case_hostile_journal()
+    case_untrusted_record_wording()
     case_journal_links()
     case_backup_cleanup()
     case_bounded_names()

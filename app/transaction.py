@@ -971,14 +971,130 @@ def unfinished(cs: ContextState) -> bool:
     return interrupted(cs)  # no live writer: it finished just now, or died
 
 
+# Bounds on the search for them: no real Agent Context or private state comes near.
+_LEFTOVER_DEPTH = 16
+MAX_LEFTOVERS = 200
+
+
+def leftovers(root: str, skip: Iterable[str] = ()) -> Tuple[List[str], bool]:
+    """The temporary files an interrupted write left under `root`, found by
+    their reserved names alone, never from a journal: plain files only, through
+    plain folders only, never following a link or junction. Returns their full
+    paths, sorted, and whether every folder could be examined."""
+    found: List[str] = []
+    complete = True
+    try:
+        if not _plain_dir(os.lstat(root)):
+            return [], False
+    except OSError:
+        return [], False
+    stack = [(root, 0)]
+    while stack:
+        folder, depth = stack.pop()
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            complete = False
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            try:
+                st = os.lstat(path)
+            except OSError:
+                complete = False
+                continue
+            if _plain_dir(st):
+                if depth == 0 and name in skip:
+                    continue
+                if depth < _LEFTOVER_DEPTH:
+                    stack.append((path, depth + 1))
+                else:
+                    complete = False
+            elif _plain_file(st) and ac.is_transaction_temp(name):
+                if len(found) == MAX_LEFTOVERS:
+                    return sorted(found), False
+                found.append(path)
+    return sorted(found), complete
+
+
+def _shown(path: str) -> str:
+    """A path as a message quotes it: a character that could end the quotation
+    or start a new line is written as an escape, never as itself."""
+    return "".join(c if c.isprintable() and c != "`" else f"\\u{ord(c):04x}" for c in path)
+
+
+def strays(folder: str, skip: Iterable[str] = ()) -> List[str]:
+    """The full paths of what Charter's own check of `folder` finds is not part
+    of an Agent Context — each keeps agents refused on its own, and Charter
+    never moves or deletes one — leaving out `skip`. Never follows a link."""
+    try:
+        exam = ac.examine(folder)
+    except Exception:  # noqa: BLE001 - the status lists them on the next open
+        return []
+    left = set(skip)
+    out = []
+    for issue in exam.issues:
+        rel = str(issue.get("path") or "")
+        if issue.get("kind") != ac.STRAY or not rel:
+            continue
+        path = os.path.join(folder, *rel.rstrip("/").split("/")) + (os.sep if rel.endswith("/") else "")
+        if path not in left:
+            out.append(path)
+    return sorted(out)[:MAX_LEFTOVERS]
+
+
 def _refused(cs: ContextState, why: str) -> TransactionError:
-    record = os.path.join(cs.path(ps_STAGING, JOURNAL_KIND), JOURNAL_FILE)
+    """Worded for the person. Nothing in it comes from the untrusted record:
+    the temporary files are those Charter finds by their exact reserved names
+    in the Agent Context and this context's private state; the strays are what
+    Charter's own check of the Agent Context finds is not part of it, which
+    block agents whatever becomes of the record; and the record is where
+    Charter's own layout keeps it — named only while every folder on the way
+    is a plain folder, so a deletion never reaches through a link. Following
+    every step leaves nothing Charter knows of that still blocks agents; what
+    the next open finds is listed there, with what to do."""
+    staging = cs.path(ps_STAGING)
+    jdir = os.path.join(staging, JOURNAL_KIND)
+    context_files, context_complete = leftovers(cs.folder, skip=(".git",))
+    private_files, private_complete = leftovers(cs.base)
+    files = context_files + private_files
+    if files:
+        temps = ("Then delete these temporary files, which only an interrupted Charter write "
+                 "leaves: " + ", ".join(f"`{_shown(f)}`" for f in files) + ".")
+    else:
+        temps = "Charter found no temporary file left by an interrupted write."
+    if not (context_complete and private_complete):
+        temps += (" Charter could not examine every folder, so there may be others: opening "
+                  "this Agent Context in Charter again lists any left in its folder.")
+    unsafe = ""
+    for folder in (cs.base, staging, jdir):
+        try:
+            plain = _plain_dir(os.lstat(folder))
+        except OSError:
+            plain = False
+        if not plain:
+            unsafe = folder
+            break
+    if unsafe:
+        record = (f"Charter's private folder `{unsafe}` is not a plain folder, so Charter names "
+                  "no record to delete: check that folder yourself.")
+    else:
+        record = ("Then delete the record itself, where Charter keeps it: "
+                  f"`{os.path.join(jdir, JOURNAL_FILE)}`.")
+    others = strays(cs.folder, skip=context_files)
+    outside = ""
+    if others:
+        outside = (" These are in the Agent Context folder but aren't part of it, and keep agents "
+                   "refused on their own: " + ", ".join(f"`{_shown(p)}`" for p in others)
+                   + ". Charter never moves or deletes them: move each out of the folder.")
     return TransactionError(
         f"Charter's record of an interrupted write cannot be trusted ({why}), so it will not "
         "guess how to undo it, and changed nothing. Charter can’t serve this Agent Context until "
-        "this is resolved. "
-        "Check the Agent Context's files, delete any `.charter-txn-` or `.acm-txn-` file in it "
-        f"yourself, and then remove the record, {record}.", restored=False)
+        "this is resolved. Nothing below comes from that record. First check the Agent "
+        "Context's documents, and restore any that are not as you approved them. "
+        f"{temps} {record} Delete nothing else.{outside} Then open this Agent Context in "
+        "Charter again: if agents are still not served, its status lists what else stops them, "
+        "with what to do.", restored=False)
 
 
 def recover(cs: ContextState) -> Optional[Dict[str, Any]]:

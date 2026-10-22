@@ -656,6 +656,26 @@ Git.
   private state — Replace, a decision, Mark as seen — no longer refuses agents,
   `charter propose` or an import check for its duration; an interrupted write,
   and a write to the Agent Context itself, still do.
+- **An untrusted record of an interrupted write names exactly what to
+  delete.** Charter used to tell the person to delete any `.charter-txn-` or
+  `.acm-txn-` file in the Agent Context. It now lists, by full path, each
+  temporary file it finds itself, in the Agent Context folder and this
+  context's private state, by the exact names only its writes give, through
+  plain folders only. It then names the one record file where its own private
+  layout keeps it, and says to delete nothing else. It also lists, by full
+  path, each stray its own check finds in the Agent Context folder, which keeps
+  agents refused on its own, and says to move each out, since Charter never
+  moves or deletes one. A name in the list that holds a backtick or a line
+  break is shown escaped. Nothing it names comes from the untrusted record.
+  When a private folder on the way to the record is a link or not a folder, it
+  names no record to delete. Following every step it gives restores service.
+  Charter still changes nothing itself, and agents stay refused until then;
+  anything else, such as a link in the folder, is listed by the next open.
+- **A file named like a temporary file is no longer called Charter's.** Only
+  a plain file with exactly the name a Charter write gives its temporary file
+  is reported as one an interrupted write left. Any other name that starts
+  the same way, and a folder, is an ordinary stray, which Charter says to move
+  out of the Agent Context and never says to delete.
 - **Word line breaks, tabs and turned-off formatting survive DOCX
   conversion.** A line break inside a run is kept as a Markdown line break
   (a space in a heading or table cell; a list item or quote continues across

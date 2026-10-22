@@ -164,6 +164,15 @@ TRANSACTION_PREFIX = ".charter-txn-"
 # write that name began still removes it.
 LEGACY_TRANSACTION_PREFIX = ".acm-txn-"
 TRANSACTION_PREFIXES = (TRANSACTION_PREFIX, LEGACY_TRANSACTION_PREFIX)
+# Exactly the names a write gives its temporary files, in either form: a
+# prefix, the write's id, `-`, an index, and `r` for a restore. A name that
+# only starts with a prefix is not one: it is an ordinary stray.
+TRANSACTION_TEMP = re.compile("(" + "|".join(re.escape(p) for p in TRANSACTION_PREFIXES) + ")"
+                              r"[0-9a-f]{6,32}-(0|[1-9][0-9]{0,4})r?")
+
+
+def is_transaction_temp(name: str) -> bool:
+    return bool(TRANSACTION_TEMP.fullmatch(name))
 
 
 # --- agent guidance ------------------------------------------------------------
@@ -883,6 +892,13 @@ def _is_link(entry: os.DirEntry) -> bool:
     return bool(getattr(st, "st_file_attributes", 0) & reparse)
 
 
+# A name like a temporary file's that no Charter write gives: never called
+# Charter's, and never one Charter tells anyone to delete.
+LOOK_ALIKE = ("isn’t part of this Agent Context. Its name is like a Charter temporary "
+              "file's, but no Charter write gives it.")
+LOOK_ALIKE_FIX = "Move it out of the context folder, then try again."
+
+
 def _transaction_leftover(rel: str) -> Dict[str, Any]:
     return _issue(STRAY, "An interrupted Charter write left this temporary file. "
                          "Agents are not served while it is here.", rel,
@@ -964,8 +980,10 @@ def _scan_authoritative(root: str, rel_dir: str, issues: List[Dict[str, Any]],
             # A folder holding only tooling files is incidental, not a stray.
             found = True
             continue
-        if entry.name.startswith(TRANSACTION_PREFIXES):
+        if is_transaction_temp(entry.name):
             issues.append(_transaction_leftover(rel))
+        elif entry.name.startswith(TRANSACTION_PREFIXES):
+            issues.append(_issue(STRAY, LOOK_ALIKE, rel, LOOK_ALIKE_FIX))
         elif entry.name.lower().endswith(DOCUMENT_SUFFIXES):
             sources.append((rel, entry.path))
             found = True
@@ -1075,10 +1093,13 @@ def examine(root: str) -> Examination:
             continue
         if entry.is_file(follow_symlinks=False) and _tolerated_file(name):
             continue
-        if name.startswith(TRANSACTION_PREFIXES):
+        is_dir = entry.is_dir(follow_symlinks=False)
+        if not is_dir and entry.is_file(follow_symlinks=False) and is_transaction_temp(name):
             issues.append(_transaction_leftover(name))
             continue
-        is_dir = entry.is_dir(follow_symlinks=False)
+        if name.startswith(TRANSACTION_PREFIXES):
+            issues.append(_issue(STRAY, LOOK_ALIKE, name + ("/" if is_dir else ""), LOOK_ALIKE_FIX))
+            continue
         issues.append(_issue(STRAY, "isn’t part of this Agent Context.", name + ("/" if is_dir else ""),
                              "Move it out of the context folder or delete it, then try again."))
 
