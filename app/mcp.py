@@ -420,10 +420,12 @@ def interrupted(folder: str) -> bool:
     not yet rolled back — or whether that cannot be established, because the
     folder's private state is there but unreadable, belongs to another
     folder, or its staging cannot be examined. Absent private state is not
-    interrupted. Reads private state; creates and recovers nothing."""
+    interrupted, and nor is another's write still in progress that changes
+    private state alone (`transaction.unfinished`). Reads private state;
+    creates and recovers nothing."""
     try:
         cs = ps.PrivateState.default().find_context(folder, strict=True)
-        return bool(cs is not None and tx.interrupted(cs))
+        return bool(cs is not None and tx.unfinished(cs))
     except Exception:  # noqa: BLE001 — unknown is not served: see `examine`
         return True
 

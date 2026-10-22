@@ -228,7 +228,7 @@ def _headline(exam: ac.Examination, interrupted: bool) -> str:
 
 def _status(folder: str, cs: Optional[ps.ContextState], exam: ac.Examination,
             recovered: Optional[Dict[str, Any]] = None, git: bool = True) -> Dict[str, Any]:
-    interrupted = bool(cs is not None and tx.interrupted(cs))
+    interrupted = bool(cs is not None and tx.unfinished(cs))
     generated = [i for i in exam.errors if i["kind"] == ac.GENERATED_KIND]
     settings = exam.settings
     title, detail = _headline_parts(exam, interrupted)

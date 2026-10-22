@@ -609,6 +609,32 @@ def check_contrast() -> int:
         print(f"  FAILED: {exc}")
     print(f"  {'ok' if ok else 'FAILED'} an error toast's Dismiss label on its button: {r:.2f}:1 (need 4.5:1)")
     failed |= 0 if ok else 1
+    # Rules measured by the colour they actually set, on what lies behind them.
+    import re
+    # The dark band the change-set and receipt headers sit on.
+    band = re.search(r"\.review > header\s*\{[^}]*?background:\s*var\((--[\w-]+)\)", css)
+    band = band.group(1) if band else "--ink"
+    for label, selector, bg in (
+            ("No open change sets., straight on the page", r"#noChangeSets", "--paper"),
+            ("Connect Agents' install note, straight on the page", r"#connectInstallNote", "--paper"),
+            ("the Settings project-name hint, straight on the page", r"#settingsProjectNameHint", "--paper"),
+            ("an advisory preview note (a candidate changed outside Charter)", r"\.note\.attention", "--brass-wash"),
+            ("Change set applied, on the receipt's dark band", r"\.cs-receipt-head \.cs-applied", band),
+            ("the receipt's outcome summary, on its dark band", r"\.cs-receipt-head \.cs-outcome-summary", band)):
+        # The last rule naming the selector, alone or in a list, that sets a colour.
+        found = re.findall(r"(?:^|[},])\s*[^{}]*?" + selector + r"(?![-\w])[^{}]*\{[^}]*?(?<![-\w])color:\s*"
+                           r"(var\((--[\w-]+)\)|#[0-9a-fA-F]{6})", css)
+        try:
+            if not found:
+                raise AssertionError(f"no colour set by {selector}")
+            value, token = found[-1]
+            r = _ratio(_token(css, token) if token else value, _token(css, bg))
+            ok = r >= 4.5
+        except AssertionError as exc:
+            r, ok = 0.0, False
+            print(f"  FAILED: {exc}")
+        print(f"  {'ok' if ok else 'FAILED'} {label}: {r:.2f}:1 (need 4.5:1)")
+        failed |= 0 if ok else 1
     return failed
 
 

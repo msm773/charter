@@ -184,6 +184,9 @@ class Plan:
     before: List[Dict[str, str]] = field(default_factory=list)
     after: List[Dict[str, str]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    # The notes that are advisory, shown in the non-blocking attention
+    # treatment: a candidate changed outside Charter.
+    attention: List[str] = field(default_factory=list)
     problems: List[str] = field(default_factory=list)
     governing_change: bool = False
     expected_hashes: Dict[str, str] = field(default_factory=dict)
@@ -205,7 +208,7 @@ class Plan:
                 "governing_change": self.governing_change,
                 "confirm_phrase": self.confirm_phrase, "blocked": self.blocked,
                 "problems": list(self.problems), "notes": list(self.notes),
-                "before": self.before, "after": self.after,
+                "attention": list(self.attention), "before": self.before, "after": self.after,
                 "changes": [c.to_json() for c in self.changes],
                 "settings_proposal": self.settings_proposal}
 
@@ -246,6 +249,12 @@ def _text_field(request: Dict[str, Any], key: str, required: bool = False) -> Op
 
 UNREADABLE_CANDIDATE = ("This authority candidate's file cannot be read as UTF-8 text, so Charter "
                         "cannot use it. Nothing was changed.")
+
+# An Agent Context that cannot be reviewed against now, before the status
+# above every view that names why and what to do.
+UNAVAILABLE_FOR_PROPOSALS = ("Agent context unavailable: proposals are reviewed against a valid "
+                             "Agent Context, so none can be decided now. Each one stays awaiting "
+                             "review. ")
 
 FRONT_MATTER_IN_BODY = ("The text begins with a front-matter block. Remove it: the title and scope are "
                         "set in their own fields, and Charter assigns everything else.")
@@ -553,8 +562,11 @@ PROPOSAL_NOTE = ("Accepting an Agent Proposal changes only an authority candidat
 def _proposal(b: _Builder, req: Dict[str, Any]):
     from . import agent_proposals as apx
     if not b.sit.exam.valid:
-        raise ActionRefused("Agent Proposals are reviewed against a valid Agent Context. Correct "
-                            "it first.")
+        # The whole context, not this proposal: said as the status above every
+        # view says it, with its remedy (Rebuild Agent Context for an
+        # out-of-date map). The proposal stays awaiting review.
+        from . import manager
+        raise ActionRefused(UNAVAILABLE_FOR_PROPOSALS + manager._headline(b.sit.exam, False))
     try:
         record, text = apx.trusted(b.sit.cs, req.get("proposal_id"))
     except ValueError as exc:
@@ -682,7 +694,9 @@ def _note_changed_outside(b: _Builder, logical: str, doc: Document, text: str) -
     candidate's text differs from the version Charter last wrote. What applies
     is still its current text, which the preview shows."""
     if prov.changed(b.sit.cs, logical, text):
-        b.plan.notes.append(changed_outside_note(doc.title))
+        note = changed_outside_note(doc.title)
+        b.plan.notes.append(note)
+        b.plan.attention.append(note)
 
 
 def _compose_changeset(b: _Builder, draft: Dict[str, Any]) -> List[Dict[str, Any]]:

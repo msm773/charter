@@ -9,20 +9,32 @@ Product Specification §3.2–§3.3, the Proposal Review Standard, UI Standards:
   * accepting creates, amends or retires a candidate only, after a previewed
     ordinary confirmation, and never changes governing context; rejecting
     records why; a stale proposal cannot be accepted as written;
-  * every write is private, through one transaction.
+  * every write is private, through one transaction;
+  * Replace and a decision on the same proposal never interleave, so a
+    decided proposal never comes back; a Replace that fails or whose process
+    dies at any step leaves the waiting proposal trusted, as it was or as
+    replaced; and every path takes the writer lock before the intake lock.
+
+The races run in separate processes, coordinated by events, never by waiting
+for time to pass.
 """
 from __future__ import annotations
 
 import base64
+import contextlib
+import errno
 import hashlib
 import importlib.util
 import json
+import multiprocessing
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import sys
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -421,6 +433,67 @@ def case_reject_and_stale() -> None:
         write(folder, "notes.txt", b"x")
         check(raises(au.ActionRefused, au.plan, folder, "accept-proposal", {"proposal_id": name_taken}),
               "nothing is accepted while the Agent Context is not valid")
+        shutil.rmtree(folder)
+
+
+def case_map_outdated_not_stale() -> None:
+    """UI Standards: Stale is about a proposal's own target. An Agent Context
+    that cannot accept proposals because its map is out of date is unavailable
+    as a whole, with Rebuild Agent Context as its remedy."""
+    print("\nan out-of-date map: the Agent Context is unavailable, and no proposal is Stale")
+    from tests.agent_context import with_map_format
+    with isolated_private_state():
+        folder, cs, cand = setup()
+        session = _session(folder)
+        amend = file(folder, {"agent": "a", "operation": "amend", "target_path": "authoritative/b.md",
+                              "reason": "r", "base_sha256": sha(folder, "authoritative/b.md"),
+                              "proposed_body": "New.\n"})
+        file(folder, {"agent": "a", "operation": "create", "target_path": "authority-candidates/new.md",
+                      "reason": "r", "proposed_body": "x\n"})
+        file(folder, {"agent": "a", "operation": "retire", "target_path": cand, "reason": "r",
+                      "base_sha256": ac.sha256_text(cs.read_candidate(cand))})
+        with_map_format(folder, ac.OLDER_MAP_FORMATS[-1])
+        check(ac.examine(folder).map_outdated, "the map is now in an older map format")
+        listed = apx.listing(folder)["pending"]
+        check(len(listed) == 3 and not any(p["stale"] or p["stale_reasons"] or p["target_unreadable"]
+                                           for p in listed),
+              "no proposal is marked Stale or Cannot read target: none of their targets changed")
+        check(console.state(session)["proposals"]["stale"] == 0,
+              "and the Agent Proposals count says none is stale")
+        try:
+            au.plan(folder, "accept-proposal", {"proposal_id": amend})
+            said = ""
+        except au.ActionRefused as exc:
+            said = str(exc)
+        check(said.startswith("Agent context unavailable") and "Rebuild Agent Context" in said
+              and "map is out of date" in said and "Stale" not in said
+              and "ask the agent to propose again" not in said,
+              "accepting is refused as the whole Agent Context being unavailable, with Rebuild Agent "
+              "Context as the remedy, never as a stale proposal")
+        answer = console.import_check(session, {"items": [{"text": json.dumps(
+            {"agent": "a", "operation": "create", "target_path": "authority-candidates/more.md",
+             "reason": "r", "proposed_body": "y\n"})}]})
+        message = answer["unavailable"]["message"]
+        check(answer["items"] == [] and "map is out of date" in message
+              and "Rebuild Agent Context" in message and "return the proposal JSON" not in message,
+              "Import says Unavailable once, in the person's words, with Rebuild Agent Context")
+        filed = console.import_file(session, {"confirm": True, "items": [{"text": json.dumps(
+            {"agent": "a", "operation": "create", "target_path": "authority-candidates/more.md",
+             "reason": "r", "proposed_body": "y\n"})}]})
+        check(filed["result"] == "unavailable" and "Rebuild Agent Context" in filed["problem"]["message"]
+              and len(apx.listing(folder)["pending"]) == 3,
+              "and importing anyway files nothing, saying the same")
+        # Rebuilt, the same proposals are reviewed as usual, and Stale means a changed target again.
+        with_map_format(folder, ac.MAP_FORMAT_VERSION)
+        check(not any(p["stale"] for p in apx.listing(folder)["pending"]),
+              "once the map is current, every proposal is reviewable again")
+        write(folder, "authoritative/b.md", doc_text("b", "Beta", body="Edited by a person.\n"))
+        from tests.agent_context import generate
+        generate(folder)
+        listed = {p["proposal_id"]: p for p in apx.listing(folder)["pending"]}
+        check(listed[amend]["stale"] and "changed after" in listed[amend]["stale_reasons"][0]
+              and sum(p["stale"] for p in listed.values()) == 1,
+              "and a proposal whose target changed is Stale, alone")
         shutil.rmtree(folder)
 
 
@@ -958,6 +1031,688 @@ def case_legacy_records() -> None:
         shutil.rmtree(folder)
 
 
+# --- Replace, decisions and the lock order ----------------------------------------------
+
+# The longest any step here waits for another process to reach a point. Only a
+# hang ever uses it up: every wait is for an event, never for time to pass.
+LONG = 60
+DIED = 9
+
+
+def _in_child(state_root: str) -> None:
+    """A child process uses the parent's isolated private state."""
+    ps._default_root = lambda: state_root  # type: ignore[assignment]
+
+
+def _pause_at(step: str, paused, resume):
+    def fault(at: str) -> None:
+        if at == step:
+            paused.set()
+            resume.wait(LONG)
+    return fault
+
+
+def _child_replace(state_root, folder, raw, pid, step, paused, resume, out) -> None:
+    """Replace, pausing at `step` with whatever locks it holds there."""
+    _in_child(state_root)
+    out.put(apx.replace(folder, raw, pid, submitted=json.dumps(raw), fault=_pause_at(step, paused, resume)))
+
+
+def _child_decide(state_root, folder, kind, pid, step, paused, resume, out) -> None:
+    """Accept or reject, pausing at `step` of its transaction, holding the
+    writer lock."""
+    _in_child(state_root)
+    plan = au.plan(folder, kind, {"proposal_id": pid})
+    try:
+        out.put(au.apply(folder, kind, plan.request, plan.plan_id, True,
+                         fault=_pause_at(step, paused, resume))["applied"])
+    except au.ActionRefused as exc:
+        out.put(type(exc).__name__)
+
+
+def _child_file(state_root, folder, raw, paused, resume, out) -> None:
+    """File a proposal, pausing while it holds the intake lock."""
+    _in_child(state_root)
+    real = apx._new_record
+
+    def held(*args, **kwargs):
+        paused.set()
+        resume.wait(LONG)
+        return real(*args, **kwargs)
+    apx._new_record = held
+    out.put(apx.file(folder, raw, submitted=json.dumps(raw)))
+
+
+def _child_dies_replacing(state_root, folder, raw, pid, step) -> None:
+    """Replace, the process ending at `step` with no clean-up of any kind."""
+    _in_child(state_root)
+
+    def fault(at: str) -> None:
+        if at == step:
+            os._exit(DIED)
+    apx.replace(folder, raw, pid, submitted=json.dumps(raw), fault=fault)
+    os._exit(0)
+
+
+@contextlib.contextmanager
+def _announcing(kind: str, event: threading.Event, free: Optional[list] = None):
+    """In this process, `event` is set as each `kind` lock is asked for, so a
+    test knows an operation has reached it without waiting for time to pass.
+    `free`, when given, records whether the lock could be had at that moment:
+    one attempt, released at once, before the ordinary wait for it."""
+    real = ps.ContextState.lock
+
+    def lock(self, wanted, timeout=ps.LOCK_TIMEOUT):
+        if wanted == kind:
+            if free is not None:
+                with real(self, wanted, 0) as had:
+                    free.append(had)
+            event.set()
+        return real(self, wanted, timeout)
+    ps.ContextState.lock = lock  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        ps.ContextState.lock = real  # type: ignore[assignment]
+
+
+def _in_thread(fn):
+    """Run `fn` in a thread; returns (thread, its result once joined)."""
+    box: dict = {}
+
+    def body() -> None:
+        try:
+            box["result"] = fn()
+        except Exception as exc:  # noqa: BLE001 — reported to the test as a value
+            box["result"] = type(exc).__name__
+    t = threading.Thread(target=body)
+    t.start()
+    return t, box
+
+
+def _create(name: str) -> dict:
+    return {"agent": "racer", "operation": "create", "target_path": f"authority-candidates/{name}.md",
+            "reason": "Race.", "proposed_body": f"# {name.title()}\n\nText.\n"}
+
+
+def _pending(cs) -> list:
+    return sorted(r["proposal_id"] for r in apx.records(cs)[0])
+
+
+def _unlocked_files(cs) -> dict:
+    """`state_files`, but for the lock files, which another process holds."""
+    out = {}
+    for d, _dirs, names in os.walk(cs.base):
+        for n in names:
+            rel = os.path.relpath(os.path.join(d, n), cs.base)
+            if rel.split(os.sep)[0] != ps.LOCKS:
+                with open(os.path.join(d, n), "rb") as fh:
+                    out[rel] = fh.read()
+    return out
+
+
+def _record_bytes(cs, pid: str) -> bytes:
+    with open(cs.path(ps.PROPOSALS, apx.PENDING, pid + ".json"), "rb") as fh:
+        return fh.read()
+
+
+def case_replace_and_decisions_race() -> None:
+    print("\nReplace racing a decision: one waits for the other, and a decided proposal never comes back")
+    spawn = multiprocessing.get_context("spawn")
+    with isolated_private_state() as state_root:
+        folder, cs, _cand = setup()
+        for kind, word in (("accept-proposal", "accepted"), ("reject-proposal", "rejected")):
+            print(f"\n  {word}: Replace holds the locks first")
+            raw = _create(f"first-{kind[:6]}")
+            pid = file(folder, raw)
+            preview = au.plan(folder, kind, {"proposal_id": pid})
+            paused, resume, out = spawn.Event(), spawn.Event(), spawn.Queue()
+            child = spawn.Process(target=_child_replace, args=(state_root, folder, raw, pid, "before-ledger",
+                                                                paused, resume, out))
+            child.start()
+            check(paused.wait(LONG), "Replace has rechecked under both locks and is about to write")
+            asking, free = threading.Event(), []
+            with _announcing("writer", asking, free):
+                # The decision is let run to its end before Replace goes on:
+                # it cannot take the writer lock Replace holds, so it is
+                # refused after its lock timeout, having decided nothing.
+                t, decided = _in_thread(lambda: au.apply(folder, kind, preview.request, preview.plan_id, True))
+                check(asking.wait(LONG) and free == [False],
+                      "  the decision asks for the writer lock meanwhile, and Replace holds it")
+                t.join(LONG)
+            check(decided["result"] == "ActionRefused" and _pending(cs) == [pid]
+                  and f"authority-candidates/first-{kind[:6]}.md" not in cs.candidates(),
+                  "  the decision is refused as busy, deciding nothing: the proposal still awaits review")
+            resume.set()
+            replaced = out.get(timeout=LONG)
+            child.join(LONG)
+            check(replaced == apx.pending_result(pid) and _pending(cs) == [pid],
+                  "  Replace then finishes: the proposal is awaiting review, once")
+            check(raises(au.StalePlan, au.apply, folder, kind, preview.request, preview.plan_id, True),
+                  "  the preview shown before Replace is out of date: deciding from it is refused")
+            decide(folder, kind, {"proposal_id": pid})
+            check(_pending(cs) == [] and pid not in apx._ledger(cs), f"  {word} once previewed again")
+            again = apx.replace(folder, raw, pid, submitted=json.dumps(raw))
+            check(again["result"] == "refused" and _pending(cs) == [],
+                  f"  a later Replace of the {word} proposal is refused: it never comes back")
+
+            print(f"\n  {word}: the decision holds the writer lock first")
+            raw = _create(f"second-{kind[:6]}")
+            pid = file(folder, raw)
+            paused, resume, out = spawn.Event(), spawn.Event(), spawn.Queue()
+            child = spawn.Process(target=_child_decide, args=(state_root, folder, kind, pid, "before-journal",
+                                                               paused, resume, out))
+            child.start()
+            check(paused.wait(LONG), "  the decision holds the writer lock, about to write")
+            asking, free = threading.Event(), []
+            with _announcing("writer", asking, free):
+                t, replaced = _in_thread(lambda: apx.replace(folder, raw, pid, submitted=json.dumps(raw)))
+                check(asking.wait(LONG) and free == [False],
+                      "  Replace asks for the writer lock meanwhile, and waits for it")
+                resume.set()
+                t.join(LONG)
+            applied = out.get(timeout=LONG)
+            child.join(LONG)
+            check(applied is True and replaced["result"]["result"] == "refused"
+                  and replaced["result"]["problems"][0]["code"] == "not_duplicate",
+                  f"  the proposal is {word}, then Replace runs and is refused: it no longer waits")
+            check(_pending(cs) == [] and pid not in apx._ledger(cs)
+                  and not any(n.startswith(pid) for n in inbox_files(cs)),
+                  f"  the {word} proposal is not pending again, and nothing vouches for it")
+            if kind == "accept-proposal":
+                check(f"authority-candidates/second-{kind[:6]}.md" in cs.candidates(),
+                      "  and its candidate was filed once")
+
+            print(f"\n  {word}: Replace arrives while the decision's transaction is part-way")
+            raw = _create(f"third-{kind[:6]}")
+            pid = file(folder, raw)
+            removed = f"replace:{ps.PROPOSALS}/{apx.PENDING}/{pid}.json"
+            paused, resume, out = spawn.Event(), spawn.Event(), spawn.Queue()
+            child = spawn.Process(target=_child_decide, args=(state_root, folder, kind, pid, removed,
+                                                               paused, resume, out))
+            child.start()
+            check(paused.wait(LONG), "  the proposal's record is removed and the decision is not yet final")
+            before = _unlocked_files(cs)
+            replaced = apx.replace(folder, raw, pid, submitted=json.dumps(raw))
+            check(replaced["result"] == "unavailable" and _unlocked_files(cs) == before,
+                  "  Replace is unavailable and writes nothing")
+            resume.set()
+            applied = out.get(timeout=LONG)
+            child.join(LONG)
+            check(applied is True and _pending(cs) == [] and pid not in apx._ledger(cs),
+                  f"  the proposal is {word}, and is not pending again")
+        shutil.rmtree(folder)
+
+
+def _replace_steps(folder: str, cs) -> list:
+    """Every step a Replace reports, in order, with its proposal's id as
+    `{pid}`: those that name its record are named for each proposal."""
+    raw = _create("steps")
+    pid = file(folder, raw)
+    steps: list = []
+    apx.replace(folder, raw, pid, submitted=json.dumps(raw), fault=steps.append)
+    decide(folder, "reject-proposal", {"proposal_id": pid})
+    return [s.replace(pid, "{pid}") for s in steps]
+
+
+def _settles(folder: str, cs, pid: str) -> bool:
+    """After the next ledger write, `pid`'s entry vouches for one record, its own."""
+    file(folder, _create(f"settle-{pid[-8:]}"))
+    entry = apx._ledger(cs).get(pid)
+    return isinstance(entry, dict) and "replacement" not in entry \
+        and entry.get("sha256") == hashlib.sha256(_record_bytes(cs, pid)).hexdigest()
+
+
+def _leftovers(cs) -> list:
+    """Charter's own transaction and temporary files left anywhere in private state."""
+    out = []
+    for d, _subs, names in os.walk(cs.base):
+        for n in names:
+            if n.startswith(ac.TRANSACTION_PREFIXES) or n.endswith(".tmp"):
+                out.append(os.path.relpath(os.path.join(d, n), cs.base).replace("\\", "/"))
+    return out
+
+
+def case_replace_windows_readers() -> None:
+    """The console reads proposals without a lock. On Windows a reader's open
+    handle refuses a rename or removal; Charter's readers never open a
+    transaction's own files, and a refusal from one that finishes is waited
+    out briefly, so an ordinary refresh never fails Replace, leaves a journal,
+    takes agents offline or shows transaction debris."""
+    print("\nReplace with lock-free readers: no debris shown, no journal left, agents never refused")
+    from tests.harness import HeldOpen
+    windows = os.name == "nt"
+    with isolated_private_state():
+        folder, cs, _cand = setup()
+        pending = cs.path(ps.PROPOSALS, apx.PENDING)
+        ledger = cs.path(ps.PROPOSALS, apx.LEDGER)
+
+        def replace(raw, pid, at=None, act=None):
+            def fault(step):
+                if at and step.split(":")[0] == at:
+                    act()
+            return apx.replace(folder, raw, pid, source=apx.IMPORTED, submitted=json.dumps(raw) + " ",
+                               fault=fault)
+
+        def clean(pid, label):
+            filed, unexpected = apx.records(cs)
+            check(not tx.interrupted(cs) and not _leftovers(cs) and not unexpected
+                  and [r["proposal_id"] for r in filed].count(pid) == 1, label)
+
+        # The console's own refresh while the replacement sits beside the record.
+        raw = _create("refresh")
+        pid = file(folder, raw)
+        session = console.Session(folder)
+        seen = {}
+
+        def refresh():
+            seen["temp"] = [n for n in os.listdir(pending) if n.startswith(ac.TRANSACTION_PREFIXES)]
+            def read():
+                from app import mcp
+                seen.update(state=console.state(session), listing=apx.listing(folder),
+                            journal=tx.interrupted(cs), unfinished=tx.unfinished(cs),
+                            mcp_refuses=mcp.interrupted(folder))
+                try:
+                    apx.open_target(folder)
+                    seen["intake"] = "available"
+                except apx.Unavailable as exc:
+                    seen["intake"] = exc.message
+            reader = threading.Thread(target=read)
+            reader.start()
+            reader.join(LONG)
+        result = replace(raw, pid, "temp", refresh)
+        check(len(seen["temp"]) == 1 and seen["state"]["proposals"]["unexpected"] == 0
+              and not seen["listing"]["unexpected"] and seen["state"]["proposals"]["pending"] == 1,
+              "GET /api/state and the proposal listing, mid-Replace, never show its file as an unexpected record")
+        check(seen["journal"] and not seen["unfinished"] and not seen["mcp_refuses"]
+              and seen["state"]["status"].get("agents_served") and seen["intake"] == "available",
+              "  while its journal is there, agents are still served and proposals still accepted: a "
+              "write in progress to private state alone is not an interrupted one")
+        check(result["result"] == "pending", "  and Replace succeeds")
+        clean(pid, "  leaving no journal, debris or refusal of agents")
+        try:
+            apx.unexpected_text(cs, seen["temp"][0])
+            shown = True
+        except ValueError:
+            shown = False
+        check(not shown, "  a transaction's file is never offered for View contents")
+
+        # A reader that has a file open for a moment, at each boundary: refused
+        # once by Windows, waited out, and Replace completes.
+        boundaries = [
+            ("the record, at the rename", "temp", lambda pid: os.path.join(pending, pid + ".json")),
+            ("the replacement, at the rename", "temp",
+             lambda pid: os.path.join(pending, [n for n in os.listdir(pending)
+                                               if n.startswith(ac.TRANSACTION_PREFIXES)][0])),
+            ("the ledger, before it vouches", "before-ledger", lambda pid: ledger),
+            ("the ledger, at settling", "before-settle", lambda pid: ledger),
+        ]
+        for n, (label, at, path_of) in enumerate(boundaries):
+            raw = _create(f"brief-{n}")
+            pid = file(folder, raw)
+            old = _record_bytes(cs, pid)
+            with HeldOpen("after-refusal") as reader:
+                result = replace(raw, pid, at, lambda: reader.open(path_of(pid)))
+            check(result["result"] == "pending" and _record_bytes(cs, pid) != old
+                  and (not windows or len(reader.refusals) == 1),
+                  f"a reader holding {label} for a moment: "
+                  + (f"refused once (WinError {reader.refusals[0][2]}), " if reader.refusals else "")
+                  + "then replaced")
+            clean(pid, "  no journal, debris or refusal of agents")
+            check(_settles(folder, cs, pid), "  and the ledger settles to the replacement")
+
+        # Rolling back while a reader has the record open for a moment.
+        raw = _create("rollback")
+        pid = file(folder, raw)
+        old = _record_bytes(cs, pid)
+        rel = f"{ps.PROPOSALS}/{apx.PENDING}/{pid}.json"
+        with HeldOpen("after-refusal") as reader:
+            def fail_after_rename(step):
+                if step == f"replace:{rel}":
+                    reader.open(os.path.join(pending, pid + ".json"))
+                    raise OSError(errno.EIO, "injected failure")
+            result = apx.replace(folder, raw, pid, source=apx.IMPORTED, submitted=json.dumps(raw) + " ",
+                                 fault=fail_after_rename)
+        check(result["result"] == "unavailable" and "unchanged" in result["problem"]["message"]
+              and _record_bytes(cs, pid) == old and (not windows or len(reader.refusals) == 1),
+              "rolling back with a reader on the record for a moment: refused once, then restored, "
+              "and Replace says nothing changed")
+        clean(pid, "  no journal, debris or refusal of agents")
+
+        if not windows:
+            print("  (the remaining cases need Windows, where an open handle refuses a rename)")
+            shutil.rmtree(folder)
+            return
+
+        # A reader that does not finish within the bounded retry.
+        raw = _create("stuck-record")
+        pid = file(folder, raw)
+        old = _record_bytes(cs, pid)
+        with HeldOpen("never") as reader:
+            result = replace(raw, pid, "temp", lambda: reader.open(os.path.join(pending, pid + ".json")))
+        check(result["result"] == "unavailable" and result["retryable"] is False
+              and "unchanged" in result["problem"]["message"] and _record_bytes(cs, pid) == old
+              and len(reader.refusals) == 10,
+              "a reader that keeps the record open: ten tries, then unavailable, unchanged — never success, and "
+              "not retryable, since access denied may be a real permission problem")
+        clean(pid, "  rolled back completely: no journal, debris or refusal of agents")
+
+        raw = _create("stuck-ledger")
+        pid = file(folder, raw)
+        old = _record_bytes(cs, pid)
+        with HeldOpen("never") as reader:
+            result = replace(raw, pid, "before-ledger", lambda: reader.open(ledger))
+        check(result["result"] == "unavailable" and _record_bytes(cs, pid) == old,
+              "a reader that keeps the ledger open: unavailable, the record unchanged")
+        clean(pid, "  and the ledger's temporary files are removed, not left behind")
+
+        raw = _create("stuck-temp")
+        pid = file(folder, raw)
+        old = _record_bytes(cs, pid)
+        with HeldOpen("never") as reader:
+            result = replace(raw, pid, "temp", lambda: reader.open(
+                os.path.join(pending, [n for n in os.listdir(pending) if n.startswith(ac.TRANSACTION_PREFIXES)][0])))
+            stuck = tx.interrupted(cs) and tx.unfinished(cs)
+            from app import mcp
+            stuck = stuck and mcp.interrupted(folder)
+        check(result["result"] == "unavailable" and "could not finish" in result["problem"]["message"]
+              and result["retryable"] is False and stuck and _record_bytes(cs, pid) == old,
+              "only a reader that keeps Charter's own replacement file open past the retries — none of "
+              "Charter's do — still stops the write, keeping its journal, the record as it was; with no "
+              "live writer, that journal is an interrupted write, and agents are refused")
+        console.Session(folder)  # opening the Agent Context, as the message says
+        clean(pid, "  opening the Agent Context recovers it completely")
+
+        # A real permission problem, not a reader: never reported as success.
+        raw = _create("read-only")
+        pid = file(folder, raw)
+        old = _record_bytes(cs, pid)
+        record = os.path.join(pending, pid + ".json")
+        os.chmod(record, 0o400)
+        try:
+            result = replace(raw, pid)
+        finally:
+            os.chmod(record, 0o600)
+        check(result["result"] == "unavailable" and result["retryable"] is False
+              and _record_bytes(cs, pid) == old,
+              "a record that cannot be replaced at all: unavailable and not retryable, the record unchanged")
+        clean(pid, "  rolled back completely: no journal, debris or refusal of agents")
+        shutil.rmtree(folder)
+
+
+def case_replace_failures() -> None:
+    print("\nReplace failing at every step: the waiting proposal stays trusted, as it was or as replaced")
+    with isolated_private_state():
+        folder, cs, _cand = setup()
+        steps = _replace_steps(folder, cs)
+        record = f"{ps.PROPOSALS}/{apx.PENDING}/"
+        check(steps[:2] == ["before-ledger", "after-ledger"] and steps[-2:] == ["before-settle", "after-settle"]
+              and any(s.startswith("replace:" + record) for s in steps),
+              f"Replace reports each of its {len(steps)} steps: {', '.join(s.split(':')[0] for s in steps)}")
+        for n, named in enumerate(steps):
+            raw = _create(f"fail-{n}")
+            pid = file(folder, raw)
+            old = _record_bytes(cs, pid)
+            step, fired = named.replace("{pid}", pid), []
+
+            def fail(at: str, step=step, fired=fired) -> None:
+                if at == step:
+                    fired.append(at)
+                    raise OSError(errno.EIO, "injected failure")
+            result = apx.replace(folder, raw, pid, source=apx.IMPORTED, submitted=json.dumps(raw) + " ",
+                                 fault=fail)
+            now = _record_bytes(cs, pid)
+            filed, unexpected = apx.records(cs)
+            mine = [r for r in filed if r["proposal_id"] == pid]
+            replaced = now != old
+            check(fired == [step] and not unexpected and len(mine) == 1 and not tx.interrupted(cs)
+                  and mine[0]["source"] == (apx.IMPORTED if replaced else apx.AGENT)
+                  and result["result"] == ("pending" if replaced else "unavailable"),
+                  f"failing at {step.split(':')[0]}: {'replaced' if replaced else 'as it was'}, trusted, "
+                  f"and Replace says {result['result']}")
+            check(apx.file(folder, raw)["result"] == "duplicate" and _settles(folder, cs, pid),
+                  "  it is still matched as a duplicate, and the ledger settles to it alone")
+        shutil.rmtree(folder)
+
+
+def case_replace_terminated() -> None:
+    print("\nReplace's process ending at every step: after a restart, the proposal is trusted and readable")
+    spawn = multiprocessing.get_context("spawn")
+    with isolated_private_state() as state_root:
+        folder, cs, _cand = setup()
+        steps = _replace_steps(folder, cs)
+        name = lambda pid: f"{pid}.json"  # noqa: E731
+        for n, named in enumerate(steps):
+            raw = _create(f"died-{n}")
+            pid = file(folder, raw)
+            old = _record_bytes(cs, pid)
+            step = named.replace("{pid}", pid)
+            child = spawn.Process(target=_child_dies_replacing, args=(state_root, folder, raw, pid, step))
+            child.start()
+            child.join(LONG)
+            filed, unexpected = apx.records(cs)
+            check(child.exitcode == DIED and [r["proposal_id"] for r in filed if r["proposal_id"] == pid] == [pid]
+                  and name(pid) not in [u["name"] for u in unexpected],
+                  f"ended at {step.split(':')[0]}: before any recovery, the proposal is trusted")
+            au.recover(folder)  # what opening the Agent Context in Charter does first
+            record, text = apx.trusted(cs, pid)
+            filed, unexpected = apx.records(cs)
+            replaced = _record_bytes(cs, pid) != old
+            check(not tx.interrupted(cs) and not unexpected and json.loads(text)["proposal"] == raw
+                  and record["source"] == (apx.IMPORTED if replaced else apx.AGENT),
+                  f"  after recovery: {'as replaced' if replaced else 'as it was'}, readable, nothing "
+                  "unexpected")
+            check(apx.file(folder, raw)["result"] == "duplicate" and _settles(folder, cs, pid),
+                  "  still matched as a duplicate; the ledger settles to it alone")
+        raw = _create("decided-after-restart")
+        pid = file(folder, raw)
+        child = spawn.Process(target=_child_dies_replacing, args=(state_root, folder, raw, pid, "before-settle"))
+        child.start()
+        child.join(LONG)
+        decide(folder, "accept-proposal", {"proposal_id": pid})
+        check(pid not in _pending(cs) and pid not in apx._ledger(cs)
+              and "authority-candidates/decided-after-restart.md" in cs.candidates(),
+              "a proposal left mid-replacement is accepted as any other, and nothing then vouches for it")
+        shutil.rmtree(folder)
+
+
+def case_decision_rolled_back_during_intake() -> None:
+    print("\na decision rolled back while a proposal is filed: the decided proposal is trusted again")
+    spawn = multiprocessing.get_context("spawn")
+    with isolated_private_state() as state_root:
+        folder, cs, _cand = setup()
+        raw = _create("rolled-back")
+        pid = file(folder, raw)
+        removed = f"replace:{ps.PROPOSALS}/{apx.PENDING}/{pid}.json"
+        paused, resume, out = spawn.Event(), spawn.Event(), spawn.Queue()
+        # Filing passes its check of the context first, then waits until the
+        # decision has removed the record and is not yet final.
+        real_check, checking = apx.check, threading.Event()
+
+        def held_check(raw, target):
+            checking.set()
+            paused.wait(LONG)
+            return real_check(raw, target)
+        apx.check = held_check
+        try:
+            other = _create("filed-meanwhile")
+            t, filed = _in_thread(lambda: apx.file(folder, other))
+            check(checking.wait(LONG), "a proposal is being filed")
+            child = spawn.Process(target=_child_decide_fails, args=(state_root, folder, pid, removed,
+                                                                     paused, resume, out))
+            child.start()
+            check(paused.wait(LONG), "  meanwhile a rejection has removed the record, not yet final")
+            t.join(LONG)
+        finally:
+            apx.check = real_check
+        check(filed["result"]["result"] == "pending", "  the other proposal is filed")
+        resume.set()
+        outcome = out.get(timeout=LONG)
+        child.join(LONG)
+        filed_now, unexpected = apx.records(cs)
+        check(outcome == "ApplyFailed" and pid in [r["proposal_id"] for r in filed_now] and not unexpected,
+              "  the rejection fails and is rolled back: the proposal is trusted, nothing unexpected")
+        shutil.rmtree(folder)
+
+
+def _child_decide_fails(state_root, folder, pid, step, paused, resume, out) -> None:
+    """Reject, failing at `step` after pausing there: rolled back in process."""
+    _in_child(state_root)
+
+    def fault(at: str) -> None:
+        if at == step:
+            paused.set()
+            resume.wait(LONG)
+            raise OSError(errno.EIO, "injected failure")
+    plan = au.plan(folder, "reject-proposal", {"proposal_id": pid})
+    try:
+        au.apply(folder, "reject-proposal", plan.request, plan.plan_id, True, fault=fault)
+        out.put("applied")
+    except au.ActionRefused as exc:
+        out.put(type(exc).__name__)
+
+
+def case_lock_order() -> None:
+    print("\none lock order: writer, then intake, on every path; each waits rather than deadlocking")
+    from tests.mcp import Session
+    with isolated_private_state() as state_root:
+        folder, cs, cand = setup()
+        session = _session(folder)
+        local = threading.local()
+        taken: list = []
+        inverted: list = []
+        real = ps.ContextState.lock
+
+        @contextlib.contextmanager
+        def lock(self, kind, timeout=ps.LOCK_TIMEOUT):
+            held = getattr(local, "held", [])
+            if kind == "writer" and "intake" in held:
+                inverted.append(list(held))
+            with real(self, kind, timeout) as got:
+                local.held = held + [kind]
+                taken.append(tuple(local.held))
+                try:
+                    yield got
+                finally:
+                    local.held = held
+        ps.ContextState.lock = lock  # type: ignore[assignment]
+        try:
+            raw = _create("ordered")
+            pid = file(folder, raw)                                             # the command and MCP's intake
+            Session(folder).call("submit_proposal", _create("by-mcp"))          # the MCP tool
+            console.import_file(session, {"items": [{"text": json.dumps(_create("imported"))}],
+                                          "confirm": True})                     # the console's import
+            apx.replace(folder, raw, pid, submitted=json.dumps(raw))            # Replace
+            decide(folder, "reject-proposal", {"proposal_id": pid})             # a decision
+            accepted = file(folder, _create("accepted"))
+            decide(folder, "accept-proposal", {"proposal_id": accepted})
+            au.recover(folder)                                                  # recovery
+            console.open_context(console.Session(), {"path": folder})           # opening
+        finally:
+            ps.ContextState.lock = real  # type: ignore[assignment]
+        check(not inverted, "no path asks for the writer lock while holding the intake lock")
+        check(("writer", "intake") in taken and ("intake",) in taken,
+              "  Replace, the import and decisions hold both, writer first; filing holds intake alone")
+
+        print("\n  across processes, each waits for the other and both finish")
+        spawn = multiprocessing.get_context("spawn")
+        raw = _create("waits")
+        pid = file(folder, raw)
+        paused, resume, out = spawn.Event(), spawn.Event(), spawn.Queue()
+        child = spawn.Process(target=_child_file, args=(state_root, folder, _create("holds-intake"),
+                                                         paused, resume, out))
+        child.start()
+        check(paused.wait(LONG), "a proposal being filed holds the intake lock")
+        asking = threading.Event()
+        with _announcing("intake", asking):
+            t, replaced = _in_thread(lambda: apx.replace(folder, raw, pid, submitted=json.dumps(raw)))
+            check(asking.wait(LONG), "  Replace, holding the writer lock, asks for the intake lock")
+            resume.set()
+            t.join(LONG)
+        child.join(LONG)
+        check(out.get(timeout=LONG)["result"] == "pending" and replaced["result"] == apx.pending_result(pid),
+              "  the filing finishes, then Replace: both succeed")
+
+        paused, resume, out = spawn.Event(), spawn.Event(), spawn.Queue()
+        child = spawn.Process(target=_child_decide, args=(state_root, folder, "reject-proposal", pid,
+                                                           "before-journal", paused, resume, out))
+        child.start()
+        check(paused.wait(LONG), "a decision holds the writer lock")
+        agent = apx.file(folder, _create("not-kept-waiting"))
+        check(agent["result"] == "pending", "  an agent's proposal is filed meanwhile: filing never waits "
+                                            "for the writer lock")
+        resume.set()
+        child.join(LONG)
+        check(out.get(timeout=LONG) is True and pid not in _pending(cs), "  and the decision then finishes")
+        shutil.rmtree(folder)
+
+
+def case_routes_mid_replacement() -> None:
+    print("\nevery route works with a proposal left mid-replacement, and settles it")
+    from tests.mcp import Session
+    with isolated_private_state() as state_root:
+        folder, cs, _cand = setup()
+        session = _session(folder)
+        launch = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_launch.py")
+
+        class Died(BaseException):
+            pass
+
+        def mid(name: str, step: str) -> tuple:
+            raw = _create(name)
+            pid = file(folder, raw)
+
+            def die(at: str) -> None:
+                if at == step:
+                    raise Died()
+            try:
+                apx.replace(folder, raw, pid, submitted=json.dumps(raw), fault=die)
+            except Died:
+                pass
+            assert "replacement" in apx._ledger(cs)[pid] and not tx.interrupted(cs)
+            return raw, pid
+
+        def cli(raw: dict) -> dict:
+            p = subprocess.run([sys.executable, launch, os.path.dirname(state_root), "propose", "--context",
+                                folder], input=json.dumps(raw).encode(), capture_output=True)
+            return json.loads(p.stdout)
+
+        for step, kept in (("after-ledger", "as it was"), ("before-settle", "as replaced")):
+            print(f"\n  left {kept}")
+            raw, pid = mid(f"cli-{step}", step)
+            listed = [p for p in apx.listing(folder)["pending"] + apx.listing(folder)["imported"]
+                      if p["proposal_id"] == pid]
+            check(len(listed) == 1 and not apx.listing(folder)["unexpected"],
+                  "it is listed once, and nothing is unexpected")
+            check(cli(raw)["result"] == "duplicate" and cli(_create(f"cli-new-{step}"))["result"] == "pending"
+                  and "replacement" not in apx._ledger(cs)[pid],
+                  "  `charter propose`: the same proposal is a duplicate, a new one is filed, and the entry "
+                  "settles")
+            raw, pid = mid(f"mcp-{step}", step)
+            server = Session(folder)
+            same = server.call("submit_proposal", raw)["structuredContent"]
+            new = server.call("submit_proposal", _create(f"mcp-new-{step}"))["structuredContent"]
+            check(same["result"] == "duplicate" and new["result"] == "pending"
+                  and "replacement" not in apx._ledger(cs)[pid],
+                  "  `submit_proposal`: the same, with its structured results")
+            raw, pid = mid(f"import-{step}", step)
+            rows = console.import_check(session, {"items": [{"text": json.dumps(raw)},
+                                                            {"text": json.dumps(_create(f"imp-new-{step}"))}]})
+            check([r["status"] for r in rows["items"]] == ["awaiting", "ready"],
+                  "  Import's check: it is awaiting review; another is ready")
+            batch = console.import_file(session, {"items": [{"text": json.dumps(_create(f"imp-new-{step}"))}],
+                                                  "confirm": True})
+            check(batch["result"] == "pending" and "replacement" not in apx._ledger(cs)[pid],
+                  "  Import of the ready one files it, and the entry settles")
+            raw, pid = mid(f"replace-{step}", step)
+            again = console.import_replace(session, {"item": {"text": json.dumps(raw)}, "replace": pid,
+                                                     "confirm": True})
+            check(again == apx.pending_result(pid) and apx._ledger(cs)[pid] ==
+                  {"sha256": hashlib.sha256(_record_bytes(cs, pid)).hexdigest(), "source": apx.IMPORTED},
+                  "  Replace again: it is replaced, and the ledger vouches for that record alone")
+        shutil.rmtree(folder)
+
+
 def run() -> None:
     case_listing()
     case_unexpected_not_files()
@@ -966,6 +1721,7 @@ def run() -> None:
     case_older_front_matter()
     case_accept()
     case_reject_and_stale()
+    case_map_outdated_not_stale()
     case_preview_then_decide()
     case_atomic()
     case_duplicates()
@@ -974,6 +1730,13 @@ def run() -> None:
     case_older_copy_reads_new_records()
     case_readme_import()
     case_legacy_records()
+    case_replace_and_decisions_race()
+    case_replace_failures()
+    case_replace_windows_readers()
+    case_replace_terminated()
+    case_decision_rolled_back_during_intake()
+    case_lock_order()
+    case_routes_mid_replacement()
     print(f"\n{OK} All proposal review checks passed.")
 
 

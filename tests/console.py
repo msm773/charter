@@ -960,6 +960,8 @@ def case_competing_revisions() -> None:
         plan = au.plan(folder, "changeset", request)
         check(any("made from an earlier version" in n and "undone" in n for n in plan.notes),
               "the preview says applying it undoes what changed since: never an ordinary revision")
+        check(not any("made from an earlier version" in n for n in plan.to_json()["attention"]),
+              "  that warning is never in the advisory attention treatment")
         ctx = chs.Ctx(folder)
         from app import api_changeset as api_cs
         detail = api_cs.detail(ctx, chs.load(ctx, request["draft_id"]))
@@ -1079,6 +1081,201 @@ def case_conversion_errors() -> None:
         check(refused, f"{name} is a worded ConversionError, not a raw parser exception")
 
 
+WORD_NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+           'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"')
+
+
+def word_document(body: str) -> bytes:
+    """A .docx as Word saves one: content types, package and document
+    relationships, styles and numbering beside `body`'s paragraphs."""
+    import io
+    import zipfile
+    rels = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    main = "application/vnd.openxmlformats-officedocument.wordprocessingml"
+    lvl = ('<w:lvl w:ilvl="{i}"><w:start w:val="1"/><w:numFmt w:val="{fmt}"/><w:lvlText w:val="{text}"/>'
+           '<w:lvlJc w:val="left"/><w:pPr><w:ind w:left="{left}" w:hanging="360"/></w:pPr></w:lvl>')
+    numbering = "".join(
+        f'<w:abstractNum w:abstractNumId="{aid}"><w:multiLevelType w:val="hybridMultilevel"/>'
+        + "".join(lvl.format(i=i, fmt=fmt, text=text, left=720 * (i + 1)) for i in range(2)) + "</w:abstractNum>"
+        for aid, fmt, text in ((0, "decimal", "%1."), (1, "bullet", "•")))
+    numbering += '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>'
+    styles = "".join(f'<w:style w:type="paragraph" w:styleId="{s}"><w:name w:val="{n}"/></w:style>'
+                     for s, n in (("Normal", "Normal"), ("Title", "Title"), ("Heading2", "heading 2"),
+                                  ("ListParagraph", "List Paragraph"), ("Quote", "Quote")))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml",
+                   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
+                   '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                   '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                   '<Default Extension="xml" ContentType="application/xml"/>'
+                   f'<Override PartName="/word/document.xml" ContentType="{main}.document.main+xml"/>'
+                   f'<Override PartName="/word/styles.xml" ContentType="{main}.styles+xml"/>'
+                   f'<Override PartName="/word/numbering.xml" ContentType="{main}.numbering+xml"/></Types>')
+        z.writestr("_rels/.rels",
+                   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   f'<Relationship Id="rId1" Type="{rels}/officeDocument" Target="word/document.xml"/></Relationships>')
+        z.writestr("word/_rels/document.xml.rels",
+                   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   f'<Relationship Id="rId1" Type="{rels}/styles" Target="styles.xml"/>'
+                   f'<Relationship Id="rId2" Type="{rels}/numbering" Target="numbering.xml"/>'
+                   f'<Relationship Id="rId3" Type="{rels}/hyperlink" Target="https://example.com/" '
+                   'TargetMode="External"/></Relationships>')
+        z.writestr("word/styles.xml", f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
+                                      f'<w:styles {WORD_NS}>{styles}</w:styles>')
+        z.writestr("word/numbering.xml", f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
+                                         f'<w:numbering {WORD_NS}>{numbering}</w:numbering>')
+        z.writestr("word/document.xml",
+                   f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<w:document {WORD_NS}><w:body>{body}'
+                   '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>')
+    return buf.getvalue()
+
+
+def word_run(text: str = "", props: str = "", inner: str = "") -> str:
+    """One run as Word writes it: properties, then `inner` children, or one
+    space-preserving text element."""
+    rpr = f'<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>{props}</w:rPr>'
+    return f'<w:r w:rsidR="00A1B2C3">{rpr}{inner or f"<w:t xml:space={chr(34)}preserve{chr(34)}>{text}</w:t>"}</w:r>'
+
+
+def word_para(*runs: str, style: str = "", num: tuple = ()) -> str:
+    ppr = (f'<w:pStyle w:val="{style}"/>' if style else "") + (
+        f'<w:numPr><w:ilvl w:val="{num[1]}"/><w:numId w:val="{num[0]}"/></w:numPr>' if num else "")
+    return f'<w:p w:rsidR="00A1B2C3" w:rsidRDefault="00A1B2C3">{f"<w:pPr>{ppr}</w:pPr>" if ppr else ""}{"".join(runs)}</w:p>'
+
+
+def case_docx_conversion() -> None:
+    """A Word document converts as written: each run's text and explicit line
+    breaks in document order, a break kept as a Markdown hard break, and run
+    formatting only where Word's on/off value turns it on."""
+    print("\nconverting a Word document: line breaks kept in order, formatting only where it is on")
+    from app import convert
+    t = lambda s: f'<w:t xml:space="preserve">{s}</w:t>'  # noqa: E731
+    br = "<w:br/>"
+
+    def converted(*paras: str) -> str:
+        markdown, _notes = convert.to_markdown("document.docx", word_document("".join(paras)))
+        return markdown
+
+    check(converted(word_para(word_run(inner=t("Line one") + br + t("Line two"))))
+          == "Line one\\\nLine two\n",
+          "text, an explicit break, then text in one run: two lines with a Markdown hard break, never `Line oneLine two`")
+    check(converted(word_para(word_run(inner=t("First") + br + t("Second") + br + t("Third"))))
+          == "First\\\nSecond\\\nThird\n",
+          "  several breaks keep every line in order")
+    check(converted(word_para(word_run(inner=t("Before") + "<w:cr/>" + t("After"))))
+          == "Before\\\nAfter\n",
+          "  a carriage return is the same line break")
+    check(converted(word_para(word_run(inner=t("Wrap") + '<w:br w:type="textWrapping"/>' + t("ped"))))
+          == "Wrap\\\nped\n",
+          "  a text-wrapping break is an ordinary line break")
+    check(converted(word_para(word_run("Across "), word_run(inner=br), word_run(" runs")))
+          == "Across\\\nruns\n",
+          "  a break in a run of its own falls between its neighbours")
+    check(converted(word_para(word_run(inner=t("Gap") + br + br + t("between"))))
+          == "Gap\\\n\\\nbetween\n",
+          "  two breaks in a row keep the empty line between")
+    check(converted(word_para(word_run(inner=br + t("Edges") + br)))
+          == "Edges\n",
+          "  a break at either end of a paragraph separates nothing, and leaves no stray backslash")
+
+    check(converted(word_para(word_run("Plain", '<w:b w:val="0"/><w:i w:val="false"/>'))) == "Plain\n",
+          'bold w:val="0" and italic w:val="false" are off: plain text, never `_**Plain**_`')
+    for value in ("0", "false", "off", "FALSE", " off "):
+        check(converted(word_para(word_run("Off", f'<w:b w:val="{value}"/><w:i w:val="{value}"/>'))) == "Off\n",
+              f'  w:val="{value}" turns bold and italic off')
+    check(converted(word_para(word_run("Bold", "<w:b/>"))) == "**Bold**\n"
+          and converted(word_para(word_run("Italic", "<w:i/>"))) == "_Italic_\n"
+          and converted(word_para(word_run("Both", "<w:b/><w:i/>"))) == "_**Both**_\n",
+          "a property present with no value is on, as before")
+    for value in ("1", "true", "on"):
+        check(converted(word_para(word_run("On", f'<w:b w:val="{value}"/><w:i w:val="{value}"/>'))) == "_**On**_\n",
+              f'  w:val="{value}" turns them on')
+    check(converted(word_para(word_run("Bold ", '<w:b w:val="1"/><w:i w:val="0"/>'), word_run("only"))) == "**Bold** only\n",
+          "  bold on with italic off is bold alone")
+
+    check(converted(word_para(word_run(inner=t("Bold one") + br + t("Bold two"), props="<w:b/>")))
+          == "**Bold one**\\\n**Bold two**\n",
+          "formatting and a break: each line is formatted on its own, so emphasis never spans the break")
+    check(converted(word_para(word_run("Lead ", '<w:b w:val="false"/>'),
+                              word_run(inner=t("strong") + br + t("still strong "), props="<w:b/><w:i/>"),
+                              word_run("tail")))
+          == "Lead _**strong**_\\\n_**still strong**_ tail\n",
+          "  mixed runs: off, then on across a break, then plain")
+
+    check(converted(word_para(word_run("Hello "), word_run("world", "<w:b/>"), word_run(" again"))) == "Hello **world** again\n",
+          "spaces around text in neighbouring runs are kept")
+    check(converted(word_para(word_run("Hello"), word_run(" world ", "<w:b/>"), word_run("again"))) == "Hello **world** again\n",
+          "  spaces inside a formatted run stay outside its markers")
+    check(converted(word_para(word_run("Two  spaces  inside"))) == "Two  spaces  inside\n",
+          "  spaces within the text are kept as written")
+    check(converted(word_para(word_run(inner=t("One ") + br + t(" Two")))) == "One\\\nTwo\n",
+          "  spaces beside a break do not stay at the line's ends")
+    check(converted(word_para(word_run(inner=t("Tab") + "<w:tab/>" + t("bed")))) == "Tab bed\n",
+          "  a tab is a space, where it stands")
+
+    check(converted(word_para(word_run(inner=t("Part one") + br + t("Part two")), style="Heading2"))
+          == "## Part one Part two\n",
+          "a break in a heading is a space: a Markdown heading stays one line")
+    check(converted(word_para(word_run(inner=t("Item") + br + t("continued")), num=("1", "0")),
+                    word_para(word_run(inner=t("Sub") + br + t("more")), num=("2", "1")))
+          == "1. Item\\\n   continued\n  - Sub\\\n    more\n",
+          "a break in a list item continues the item, indented to its text")
+    check(converted(word_para(word_run(inner=t("Quoted") + br + t("more")), style="Quote"))
+          == "> Quoted\\\n> more\n",
+          "a break in a quote continues the quote")
+    cell = lambda inner: f'<w:tc><w:tcPr><w:tcW w:w="4680" w:type="dxa"/></w:tcPr>{word_para(inner)}</w:tc>'  # noqa: E731
+    check(converted(f'<w:tbl><w:tblPr/><w:tr>{cell(word_run("Head"))}{cell(word_run("Other"))}</w:tr>'
+                    f'<w:tr>{cell(word_run(inner=t("Cell one") + br + t("Cell two")))}{cell(word_run("x"))}</w:tr></w:tbl>')
+          == "| Head | Other |\n| --- | --- |\n| Cell one Cell two | x |\n",
+          "a break in a table cell is a space: a table row stays one line")
+
+    whole = converted(
+        word_para(word_run("Supplier Policy"), style="Title"),
+        word_para(word_run("Choose suppliers with "), word_run("care", "<w:b/>"), word_run(". See ")),
+        word_para(word_run("Read "), f'<w:hyperlink r:id="rId3" w:history="1">{word_run("the guide")}</w:hyperlink>',
+                  word_run(".")),
+        word_para(word_run("Overview"), style="Heading2"),
+        word_para(word_run("First step"), num=("1", "0")),
+        word_para(word_run("Second step"), num=("1", "0")),
+        word_para(word_run("A bullet"), num=("2", "0")),
+        word_para(word_run("Before")), word_para(word_run(inner='<w:br w:type="page"/>')),
+        word_para(word_run("After the page")),
+        word_para(word_run("   ")))
+    check(whole == ("# Supplier Policy\n\nChoose suppliers with **care**. See\n\nRead the guide.\n\n## Overview\n\n"
+                    "1. First step\n1. Second step\n- A bullet\n\nBefore\n\nAfter the page\n"),
+          "ordinary paragraphs, a link's text, headings, lists, a page break on its own and a blank paragraph "
+          "convert as they did before")
+    check(converted(word_para(word_run("Before"), word_run(inner='<w:br w:type="page"/>'), word_run("after")))
+          == "Before\nafter\n",
+          "a page break keeps its earlier, plain newline: not a hard line break")
+    check(converted(word_para(word_run(inner=t("Column") + '<w:br w:type="column"/>' + t("break"))))
+          == "Column\nbreak\n",
+          "  and a column break inside a run is that newline, where it stands, never merging the words")
+
+    with isolated_private_state():
+        folder = context()
+        session = console.Session(folder)
+        data = word_document(word_para(word_run("Break Policy"), style="Title")
+                             + word_para(word_run(inner=t("Line one") + br + t("Line two")))
+                             + word_para(word_run("Plain", '<w:b w:val="0"/><w:i w:val="false"/>')))
+        staged = stage_text(session, "break-policy.docx", data)
+        expected = "# Break Policy\n\nLine one\\\nLine two\n\nPlain\n"
+        check(staged["markdown"] == expected and staged["kind"] == "DOCX"
+              and staged["suggested_title"] == "Break Policy",
+              "through the import route: the uploaded .docx is the text the person reviews")
+        do(session, "add", {"title": staged["suggested_title"], "body": staged["markdown"],
+                            "source": f"break-policy.docx (sha256 {staged['sha256'][:12]})"})
+        cs = ps.PrivateState.default().for_context(folder)
+        [name] = cs.candidates()
+        filed = cs.read_candidate(name)
+        check(filed.endswith(expected) and "Line oneLine two" not in filed and "**Plain**" not in filed,
+              "  and the candidate filed from it keeps the break and the plain text")
+        shutil.rmtree(folder)
+
+
 def case_text_encodings() -> None:
     """A text file is read in the encoding it declares, or as UTF-8, or as
     unmistakable UTF-16; anything else is refused, never decoded with
@@ -1186,6 +1383,7 @@ def run() -> int:
     case_peek()
     case_archived_listing()
     case_conversion_errors()
+    case_docx_conversion()
     case_stage_front_matter()
     case_stage_leaves_nothing()
     case_recent_while_open()

@@ -348,6 +348,8 @@ def case_change_set_warning() -> None:
         plan = au.plan(folder, "changeset", request)
         check(plan.notes == [au.changed_outside_note("Lambda")] and not plan.blocked,
               "the changed candidate is named in one warning, and the plan is not blocked")
+        check(plan.to_json()["attention"] == plan.to_json()["notes"],
+              "  marked advisory, for the non-blocking attention treatment of its candidate chip")
         resulting = next(c.new for c in plan.changes if c.path == "authoritative/b.md")
         check("LAMBDA-HAND-EDIT" in resulting, "the preview shows its current text, which is what applies")
         au.apply(folder, "changeset", request, plan.plan_id, au.CONFIRM_PHRASE)
@@ -428,6 +430,177 @@ def case_orphan_and_privacy() -> None:
         check(ps._default_root() == root, "all of it ran against isolated private state")
 
 
+_MISSING = object()
+
+
+def malformed_records(day: str) -> list:
+    """(what is wrong, the record's bytes): every way a baseline record can fail
+    to be exactly one Charter wrote."""
+    good = {"version": prov.RECORD_VERSION, "event": prov.CREATED, "date": day, "text": "# Kappa\n"}
+
+    def rec(**changes) -> bytes:
+        d = dict(good)
+        for k, v in changes.items():
+            if v is _MISSING:
+                d.pop(k)
+            else:
+                d[k] = v
+        return json.dumps(d).encode("utf-8")
+    deep = 200000
+    cases = [
+        ("the review's record: an event that is a list", rec(event=[], text="x")),
+        ("not JSON", b"not a baseline"),
+        ("JSON cut short", rec()[:-7]),
+        ("an empty file", b""),
+        ("not UTF-8", rec(text="café").replace("\\u00e9".encode(), b"\xff")),
+        ("a byte-order mark before it", b"\xef\xbb\xbf" + rec()),
+        ("JSON nested past any parser's depth", b"[" * deep + b"]" * deep),
+        ("a field nested past any parser's depth",
+         rec()[:-1] + b', "deep": ' + b"[" * deep + b"]" * deep + b"}"),
+        ("a repeated key", rec()[:-1] + b', "event": "created"}'),
+        ("an extra field", rec(note="extra")),
+        ("a lone surrogate in its text", rec(text="\ud800")),
+    ]
+    for top in ([], {}, "text", 1, None, True):
+        cases.append((f"{json.dumps(top)} rather than an object", json.dumps(top).encode()))
+    for field in ("version", "event", "date", "text"):
+        cases.append((f"no `{field}`", rec(**{field: _MISSING})))
+    wrong = {"version": [[], {}, "1", 1.0, True, None, 0, 2],
+             "event": [[], {}, 1, None, True, "", "Created", "unknown", ["created"]],
+             "date": [[], {}, 20261021, None, True, "", "21-10-2026", "2026-13-01", "2026-02-30",
+                      "２０２６-10-21", day + "\n", day + "T00:00:00"],
+             "text": [[], {}, 1, None, True, ["# Kappa\n"]]}
+    for field, values in wrong.items():
+        for value in values:
+            cases.append((f"`{field}` {json.dumps(value)}", rec(**{field: value})))
+    return cases
+
+
+def case_malformed_baselines() -> None:
+    print("\nA baseline record that is not one Charter wrote is no baseline, and stops nothing")
+    with isolated_private_state():
+        folder = context()
+        cs = cs_of(folder)
+        kappa = add(folder, "Kappa")
+        lam = add(folder, "Lambda")
+        edit_by_hand(cs, lam)  # an unrelated candidate, with a valid baseline, changed
+        ctx = changeset.Ctx(folder)
+        draft = changeset.create(ctx, start={"candidate": kappa, "decision": "govern-alongside"})
+        request = {"draft_id": draft["id"], "draft_revision": draft["revision"]}
+        session = console.Session(folder)
+        record = record_file(cs, kappa)
+        none = {"state": "none", "event": "", "date": ""}
+        cases = malformed_records(today())
+        failed = []
+        for label, data in cases:
+            with open(record, "wb") as fh:
+                fh.write(data)
+            before = private_files(cs)
+            try:
+                listed = entries(folder)  # the console's whole state, as the page asks for it
+                shown = console.preview(session, {"source": "document", "path": kappa})["provenance"]
+                compared = refusal(console.compare, session, {"candidate": kappa, "against": prov.CHARTER_VERSION})
+                seen = console.mark_candidate_seen(session, {"candidate": kappa, "sha": shown["sha"]})
+                planned = au.plan(folder, "changeset", request)
+                ok = (prov.read(cs, kappa) is None and listed[kappa]["provenance"] == none
+                      and listed[lam]["provenance"]["state"] == "changed"
+                      and dict(shown, sha=None) == dict(none, sha=None)
+                      and compared == "Charter has no earlier version of this candidate recorded."
+                      and seen == {"seen": True, "changed": False}
+                      and not planned.blocked and not planned.notes
+                      and mg.check(folder, git=False)["agents_served"]
+                      and private_files(cs) == before)
+            except Exception as exc:  # noqa: BLE001 — reported as this case's failure
+                ok, label = False, f"{label} ({type(exc).__name__}: {str(exc)[:80]})"
+            if not ok:
+                failed.append(label)
+        check(not failed, f"each of {len(cases)} malformed records is no baseline: console state, Read, Compare, "
+                          "Mark as seen, a change set and agent access all work, and viewing writes nothing"
+                          + (f" — failed: {failed}" if failed else ""))
+
+        print("\n  records that are not regular files, or too large")
+        valid = prov.render(cs.read_candidate(kappa), prov.CREATED, today())
+        with open(record, "w", encoding="utf-8", newline="") as fh:
+            fh.write(valid)
+        check(prov.read(cs, kappa) is not None, "(a valid record reads as a baseline)")
+        real = prov.MAX_RECORD_BYTES
+        prov.MAX_RECORD_BYTES = len(valid.encode("utf-8")) - 1
+        try:
+            check(prov.read(cs, kappa) is None and entries(folder)[kappa]["provenance"] == none,
+                  "a record larger than any Charter writes is not read: no baseline")
+        finally:
+            prov.MAX_RECORD_BYTES = real
+        os.remove(record)
+        os.mkdir(record)
+        before = private_files(cs)
+        check(prov.read(cs, kappa) is None and entries(folder)[kappa]["provenance"] == none
+              and os.path.isdir(record) and private_files(cs) == before,
+              "a folder where the record should be: no baseline, and left as it is")
+        os.rmdir(record)
+        elsewhere = os.path.join(cs.base, "elsewhere.json")
+        with open(elsewhere, "w", encoding="utf-8", newline="") as fh:
+            fh.write(valid)
+        try:
+            os.symlink(elsewhere, record)
+            linked = True
+        except (OSError, NotImplementedError):
+            linked = False
+        if linked:
+            check(prov.read(cs, kappa) is None and entries(folder)[kappa]["provenance"] == none
+                  and os.path.islink(record), "a link to a valid record is not followed: no baseline")
+            os.remove(record)
+        else:
+            print("  SKIPPED: this system does not let this account create a link, so a linked record "
+                  "is not exercised here.")
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(record)
+            check(prov.read(cs, kappa) is None and entries(folder)[kappa]["provenance"] == none,
+                  "a pipe where the record should be is never opened for reading: no baseline, no wait")
+            os.remove(record)
+        else:
+            print("  SKIPPED: this system has no named pipes to put where a record should be.")
+        os.remove(elsewhere)
+
+        print("\n  Charter's own next write replaces it; nothing else does")
+        with open(record, "wb") as fh:
+            fh.write(cases[0][1])
+        decided = au.plan(folder, "reject-proposal", {"proposal_id": file_proposal(folder, {
+            "agent": "a", "operation": "create", "target_path": "authority-candidates/new.md",
+            "reason": "R.", "proposed_body": "# New\n"})})
+        au.apply(folder, "reject-proposal", decided.request, decided.plan_id, True)
+        check(open(record, "rb").read() == cases[0][1],
+              "an unrelated action, here rejecting a proposal, leaves the record exactly as it was")
+        apply(folder, "edit-candidate", {"candidate": kappa, "title": "Kappa", "scope": "Kappa scope.",
+                                         "body": "# Kappa\n\nEdited in Charter.\n"})
+        base = prov.read(cs, kappa)
+        check(base is not None and base["event"] == prov.EDITED and base["text"] == cs.read_candidate(kappa)
+              and entries(folder)[kappa]["provenance"]["state"] == "matching",
+              "editing the candidate in Charter writes a new baseline, as every Charter write does")
+
+
+def case_valid_baselines_exact() -> None:
+    print("\nA record Charter wrote reads exactly as before")
+    with isolated_private_state():
+        folder = context()
+        cs = cs_of(folder)
+        kappa = add(folder, "Kappa")
+        text = cs.read_candidate(kappa)
+        record = record_file(cs, kappa)
+        for event, label in prov.EVENT_LABELS.items():
+            with open(record, "w", encoding="utf-8", newline="") as fh:
+                fh.write(prov.render(text.replace("\n", "\r\n"), event, "2026-01-31"))
+            base = prov.read(cs, kappa)
+            listed = entries(folder)[kappa]["provenance"]
+            check(base == {"text": text, "event": event, "date": "2026-01-31"}
+                  and listed == {"state": "matching", "event": label, "date": "2026-01-31"},
+                  f"`{event}`: its text line-ending-normalized, read as “{label}” on its date, and matching")
+        with open(record, "w", encoding="utf-8", newline="") as fh:
+            fh.write(prov.render("# Earlier\n", prov.SEEN, "2024-02-29"))
+        check(entries(folder)[kappa]["provenance"] == {"state": "changed", "event": "marked as seen",
+                                                       "date": "2024-02-29"},
+              "a leap day is a date; a record of other text is changed")
+
+
 def main() -> None:
     case_lifecycle()
     case_states()
@@ -436,6 +609,8 @@ def main() -> None:
     case_change_set_warning()
     case_rollback()
     case_orphan_and_privacy()
+    case_malformed_baselines()
+    case_valid_baselines_exact()
     print("\nAll candidate provenance checks passed.")
 
 

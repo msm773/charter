@@ -44,37 +44,82 @@ def pdf_available() -> bool:
 
 # --- DOCX --------------------------------------------------------------------
 
-def _runs_to_markdown(node: ET.Element) -> str:
-    parts: List[str] = []
+# Word's boolean (ST_OnOff) values that turn a property off. A property that
+# is present with no value, or with any other value, is on.
+_OFF = ("0", "false", "off")
+
+# Markdown's hard line break: a backslash ending the line.
+HARD_BREAK = "\\\n"
+
+
+def _on(props: Optional[ET.Element], name: str) -> bool:
+    if props is None:
+        return False
+    el = props.find(W + name)
+    if el is None:
+        return False
+    return (el.get(W + "val") or "").strip().lower() not in _OFF
+
+
+def _styled(text: str, bold: bool, italic: bool) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return text
+    lead = text[: len(text) - len(text.lstrip())]
+    trail = text[len(text.rstrip()):]
+    if bold:
+        stripped = f"**{stripped}**"
+    if italic:
+        stripped = f"_{stripped}_"
+    return lead + stripped + trail
+
+
+def _run_lines(node: ET.Element) -> List[str]:
+    """The text of `node`'s runs as the lines its explicit line breaks make,
+    each run's children read in document order. A page or column break is
+    not a line break: it stays a plain newline, as before."""
+    lines: List[List[str]] = [[]]
     for run in node.iter():
-        tag = run.tag
-        if tag == W + "r":
-            props = run.find(W + "rPr")
-            bold = props is not None and props.find(W + "b") is not None
-            italic = props is not None and props.find(W + "i") is not None
-            text = "".join(t.text or "" for t in run.findall(W + "t"))
-            if run.find(W + "br") is not None:
-                text += "\n"
-            if run.find(W + "tab") is not None:
-                text += " "
-            if not text:
-                continue
-            stripped = text.strip()
-            if stripped:
-                lead = text[: len(text) - len(text.lstrip())]
-                trail = text[len(text.rstrip()):]
-                if bold:
-                    stripped = f"**{stripped}**"
-                if italic:
-                    stripped = f"_{stripped}_"
-                text = lead + stripped + trail
-            parts.append(text)
-    return "".join(parts).strip()
+        if run.tag != W + "r":
+            continue
+        props = run.find(W + "rPr")
+        bold, italic = _on(props, "b"), _on(props, "i")
+        segments = [""]
+        for child in run:
+            tag = child.tag
+            if tag == W + "t":
+                segments[-1] += child.text or ""
+            elif tag == W + "tab":
+                segments[-1] += " "
+            elif tag == W + "cr" or (tag == W + "br" and child.get(W + "type") in (None, "textWrapping")):
+                segments.append("")
+            elif tag == W + "br":
+                segments[-1] += "\n"
+        for index, segment in enumerate(segments):
+            if index:
+                lines.append([])
+            if segment:
+                lines[-1].append(_styled(segment, bold, italic))
+    texts = ["".join(parts).strip() for parts in lines]
+    # A break at either end of the paragraph separates nothing.
+    while texts and not texts[0]:
+        texts.pop(0)
+    while texts and not texts[-1]:
+        texts.pop()
+    return texts
+
+
+def _runs_to_markdown(node: ET.Element, line_break: str = HARD_BREAK) -> str:
+    """`node`'s text, its explicit line breaks written as `line_break`: a
+    Markdown hard break unless the text must stay on one line."""
+    lines = _run_lines(node)
+    if line_break.strip() == "":
+        lines = [line for line in lines if line]
+    return line_break.join(lines)
 
 
 def _paragraph_markdown(para: ET.Element, numbering: Dict[str, str]) -> str:
-    text = _runs_to_markdown(para)
-    if not text:
+    if not _run_lines(para):
         return ""
     props = para.find(W + "pPr")
     style = ""
@@ -82,14 +127,15 @@ def _paragraph_markdown(para: ET.Element, numbering: Dict[str, str]) -> str:
         style_el = props.find(W + "pStyle")
         if style_el is not None:
             style = (style_el.get(W + "val") or "").lower()
+    # A Markdown heading is one line: a line break in one is a space.
     match = re.match(r"heading(\d)", style) or re.match(r"h(\d)$", style)
     if match:
         level = min(int(match.group(1)), 6)
-        return "#" * level + " " + text
+        return "#" * level + " " + _runs_to_markdown(para, " ")
     if style in ("title",):
-        return "# " + text
+        return "# " + _runs_to_markdown(para, " ")
     if style in ("subtitle",):
-        return "## " + text
+        return "## " + _runs_to_markdown(para, " ")
     if props is not None and props.find(W + "numPr") is not None:
         num_pr = props.find(W + "numPr")
         ilvl_el = num_pr.find(W + "ilvl")
@@ -97,10 +143,13 @@ def _paragraph_markdown(para: ET.Element, numbering: Dict[str, str]) -> str:
         num_el = num_pr.find(W + "numId")
         num_id = num_el.get(W + "val") if num_el is not None else ""
         marker = "1." if numbering.get(num_id) == "decimal" else "-"
-        return "  " * level + f"{marker} {text}"
+        indent = "  " * level
+        # Lines after a break continue the item, indented to its text.
+        text = _runs_to_markdown(para, HARD_BREAK + indent + " " * (len(marker) + 1))
+        return indent + f"{marker} {text}"
     if style in ("quote", "intensequote"):
-        return "> " + text
-    return text
+        return "> " + _runs_to_markdown(para, HARD_BREAK + "> ")
+    return _runs_to_markdown(para)
 
 
 def _table_markdown(table: ET.Element) -> List[str]:
@@ -108,8 +157,9 @@ def _table_markdown(table: ET.Element) -> List[str]:
     for tr in table.findall(W + "tr"):
         cells = []
         for tc in tr.findall(W + "tc"):
+            # A table row is one line: a line break in a cell is a space.
             cell = " ".join(
-                filter(None, (_runs_to_markdown(p) for p in tc.findall(W + "p")))
+                filter(None, (_runs_to_markdown(p, " ") for p in tc.findall(W + "p")))
             )
             cells.append(cell.replace("|", "\\|").strip())
         if cells:

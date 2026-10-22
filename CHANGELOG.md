@@ -176,7 +176,16 @@ Git.
   **Add a review**, then **Add another review**, adds reviews whose reviewing
   agent and text save automatically; only a structurally valid report counts
   as attached advisory evidence, invalid text stays saved with validation
-  feedback, and **Remove review** asks first only for a valid report.
+  feedback, and **Remove review** asks first only for a valid report. A
+  summary or review whose save fails says so and keeps what was written, with
+  its own draft, until it saves: leaving the draft, opening another and coming
+  back show that text, never the older saved text, and save it again; it is
+  never sent to another draft, **Preview and apply** waits until it is saved,
+  and only **Discard draft** or **Remove review** drops it unsaved. While such
+  text is unsaved, reloading, closing or leaving the console page asks for the
+  browser's own leave-page confirmation, in the browser's own words; never for
+  an edit only pending or saving, nor once it is saved or discarded, and never
+  when moving within the console.
   **Preview and Apply** shows, in one pass, any blocking problem or
   decision-relevant warning, **Changes to Apply**, naming each document the
   change set changes and what happens to it, with no scope comparison or
@@ -535,7 +544,11 @@ Git.
   selected; **Import N proposals** checks them again under the writer and
   intake locks and files all of them or none, in one transaction, so even the
   process dying part-way leaves none. Any change to the list needs a fresh
-  check; **Replace…** works on one row, apart from any import; at most 20 items
+  check; **Replace…** works on one row, apart from any import, and likewise
+  checks again under the writer and intake locks, so a proposal accepted or
+  rejected meanwhile never comes back, and a Replace that fails, or whose
+  process dies, leaves the waiting proposal trusted, as it was or as replaced;
+  at most 20 items
   at a time. Importing never accepts a proposal or makes a candidate or change
   set. The console's import API now takes `items`, each `{"text": …}` or
   `{"bytes": <base64>}`, with `/api/proposals/import/replace` for Replace.
@@ -601,7 +614,11 @@ Git.
   confirmation, says "Marked as seen.", and changes nothing else. Preview and
   Apply warns, without blocking, of each candidate it uses that changed outside
   Charter. Baselines never reach the Agent Context, MCP, `charter read`,
-  activity or Recent, and never affect validity.
+  activity or Recent, and never affect validity. A baseline record that is not
+  exactly one Charter wrote — unreadable, not a regular file, not UTF-8 JSON,
+  nested too deeply, or with a field missing, extra or of the wrong type or
+  value — is no baseline: it shows no chip, stops nothing, and viewing leaves
+  it as it is.
 - **A candidate file Charter cannot use no longer stops other work.** A
   candidate file that is not UTF-8 text, or that the system refuses to open,
   used to fail the console's whole page and every authority action, related
@@ -625,6 +642,45 @@ Git.
   no longer exists — while an agent submitting against it is still answered
   `target_unavailable`, exactly as for a name that does not exist. Observing
   any of it writes nothing, and Charter repairs, moves or removes nothing.
+- **A console refresh no longer breaks a write on Windows.** Charter's own
+  readers of private state never open a write's temporary files, never list
+  them as unexpected proposals or files Charter cannot use, and a file another
+  reader holds open for a moment is tried again briefly — under a second —
+  before a rename or removal fails. Replace used to fail, keep its record of
+  the write and refuse agents until the Agent Context was opened again when
+  the page refreshed at the wrong moment. A failure that persists is still
+  reported, never treated as success, and an atomic record write that fails
+  removes its own temporary file. A record read at the moment it is renamed
+  over is read again rather than taken as missing, so a refresh never shows
+  every proposal as unexpected. A write still in progress that changes only
+  private state — Replace, a decision, Mark as seen — no longer refuses agents,
+  `charter propose` or an import check for its duration; an interrupted write,
+  and a write to the Agent Context itself, still do.
+- **Word line breaks, tabs and turned-off formatting survive DOCX
+  conversion.** A line break inside a run is kept as a Markdown line break
+  (a space in a heading or table cell; a list item or quote continues across
+  it), a tab stays a space where it stands, and bold or italic that Word turns
+  off (`0`, `false`, `off`) is plain text, where conversion used to merge
+  `Line one` and `Line two` into `Line oneLine two` and show such text as
+  bold or italic. Page and column breaks convert as before.
+- **Keyboard, screen-reader and contrast corrections in the console.** Read,
+  Compare and the Charter command dialog are dialogs on an element that may
+  take that role, and keep Tab and Shift+Tab within their own controls,
+  including a long diff or other region that scrolls. Closing Read after
+  **Mark as seen**, and finishing **Plan a change set…**, a proposal's
+  **Replace** or an **Import**, puts focus on a control that is there now —
+  the card's **Read**, the new plan's **Name**, **Check proposals**, or
+  **Import agent proposals…** — never on a removed button or the page itself.
+  Notices such as "Marked as seen." are placed in a live region present from
+  the start, so they are announced. "No open change sets." meets 4.5:1
+  contrast; Preview and Apply's warning that a candidate changed outside
+  Charter uses the yellow of its candidate chip; and Build Change Set's
+  candidate and withdrawal lists grow with the page instead of scrolling on
+  their own. Its sections sit under a heading naming the change set, as on
+  Preview and Apply, so no heading level is skipped, and so do Agent
+  Proposals' cards, under a heading naming their group. An applied
+  receipt's **Change set applied** and its outcome summary, Connect Agents'
+  install note and Settings' project-name hint meet 4.5:1 contrast.
 - **Removed:** governance workspaces, published surfaces, bindings,
   publication and repair, registration and identity, configuration migration,
   capability records, every Git write (commits, recovery commits, branch

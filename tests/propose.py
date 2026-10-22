@@ -608,6 +608,58 @@ def case_command_line_access_route() -> None:
         shutil.rmtree(folder)
 
 
+def case_relative_context_refused() -> None:
+    """Product Specification §3.3: `--context` is `.` or the Agent Context's
+    absolute path. Any other relative path is refused, even one that would
+    resolve to the Agent Context from where the command runs."""
+    print("\n`--context` is `.` or a full path: every other relative path is refused")
+    launch = os.path.join(HERE, "_launch.py")
+    with isolated_private_state() as state_root:
+        folder = context()
+        state = os.path.dirname(state_root)
+        parent, name = os.path.split(folder)
+        inside = os.path.join(folder, "authoritative")
+        good = {"agent": "rel", "operation": "create", "target_path": "authority-candidates/rel.md",
+                "reason": "Relative paths.", "proposed_body": "# Rel\n\nText.\n"}
+        data = json.dumps(good).encode("ascii")
+
+        def run_propose(context_arg: str, cwd: str) -> tuple:
+            p = subprocess.run([sys.executable, launch, state, "propose", "--context", context_arg],
+                               input=data, capture_output=True, cwd=cwd)
+            return p.returncode, json.loads(p.stdout), p.stderr
+
+        before = snapshot(folder)
+        # Each names the Agent Context from its working folder, so none is a missing folder.
+        relative = [(name, parent, "a bare folder name"),
+                    (os.path.join(os.path.basename(parent), name), os.path.dirname(parent),
+                     "a nested relative path"),
+                    ("..", inside, "`..`"),
+                    (os.path.join("..", name), inside, "a path through `..`"),
+                    ("." + os.sep, folder, "`.` with a trailing separator"),
+                    ("~" + os.sep + name, parent, "a path starting with `~`")]
+        if os.name == "nt":
+            drive, rest = os.path.splitdrive(folder)
+            relative += [(drive + name, parent, "a drive-relative path such as `C:folder`"),
+                         (rest, parent, "a root-relative path such as `\\folder`")]
+        for context_arg, cwd, label in relative:
+            code, out, err = run_propose(context_arg, cwd)
+            problems = out.get("problems") or [{}]
+            message = problems[0].get("message", "")
+            check(code == 3 and out["result"] == "refused" and err == b""
+                  and [p["code"] for p in problems] == ["bad_command"]
+                  and "`.` or by its full path" in message and "Do not search" in message
+                  and folder not in message and name not in message,
+                  f"{label}: `refused` `bad_command`, exit 3, naming no folder")
+        check(pending_files(folder) == [] and snapshot(folder) == before,
+              "none of them filed anything or touched the Agent Context")
+        code, out, _ = run_propose(".", folder)
+        check(code == 0 and out["result"] == "pending", "`.` in the Agent Context still files: exit 0")
+        code, out, _ = run_propose(folder, parent)
+        check(code == 5 and out["result"] == "duplicate",
+              "the absolute path still reaches the same Agent Context: a `duplicate`, exit 5")
+        shutil.rmtree(folder)
+
+
 def run() -> None:
     case_create()
     case_amend_and_retire()
@@ -619,6 +671,7 @@ def run() -> None:
     case_process()
     case_map_format_mismatch()
     case_command_line_access_route()
+    case_relative_context_refused()
     print(f"\n{OK} All propose checks passed.")
 
 

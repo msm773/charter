@@ -31,6 +31,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from . import agent_proposals as apx
+from .read import absolute
 
 EXIT = {"pending": 0, "refused": 3, "unavailable": 4, "duplicate": 5}
 
@@ -71,6 +72,14 @@ def submit(argv: List[str], data: bytes) -> Dict[str, Any]:
             "bad_command", "Name the Agent Context with `--context`, exactly as your project "
                            "instructions or the context map give, with one JSON proposal on "
                            "standard input. Do not search for an Agent Context.")])
+    # `.` or a full path, nothing else: `..`, `sub\folder`, `C:folder` and
+    # `\folder` would each name a folder relative to wherever the command ran.
+    if folder != "." and not absolute(folder):
+        return apx.refused_result([apx._problem(
+            "bad_command", "`--context` names the Agent Context as `.` or by its full path, and "
+                           "this is neither, so nothing was filed. Run the exact command your "
+                           "project instructions or the context map give. Do not search for an "
+                           "Agent Context.")])
     try:
         raw = apx.read_submission(data)
     except apx.Malformed as exc:
@@ -78,7 +87,7 @@ def submit(argv: List[str], data: bytes) -> Dict[str, Any]:
     # The transport digest is of the bytes exactly as given, before the mark
     # and surrounding whitespace were set aside for parsing; duplicates are
     # matched on the checked content (`agent_proposals.proposal_fingerprint`).
-    return apx.file(os.path.abspath(os.path.expanduser(folder)), raw, source=apx.AGENT,
+    return apx.file(os.path.abspath(folder), raw, source=apx.AGENT,
                     submitted=bytes(data))
 
 

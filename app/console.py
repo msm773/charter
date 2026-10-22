@@ -711,8 +711,18 @@ def import_check(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
     try:
         target = apx.open_target(folder)
     except apx.Unavailable as exc:
-        return {"unavailable": {"message": exc.message}, "items": []}
+        return {"unavailable": {"message": _import_unavailable(folder, exc)}, "items": []}
     return {"unavailable": None, "items": _import_rows(apx.assess(target, [r for r, _ in items]), target)}
+
+
+def _import_unavailable(folder: str, exc: apx.Unavailable) -> str:
+    """Why the Agent Context cannot accept proposals now, for the person. The
+    intake's own words for a map-format mismatch speak to the agent that
+    submitted; the person is told what the status above every view says, with
+    its remedy: Rebuild Agent Context for an out-of-date map."""
+    if exc.code in ("map_outdated", "charter_outdated"):
+        return mg._headline(ac.examine(folder), False)
+    return exc.message
 
 
 def import_file(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -728,11 +738,16 @@ def import_file(session: Session, body: Dict[str, Any]) -> Dict[str, Any]:
         try:
             target = apx.open_target(folder)
         except apx.Unavailable as exc:
-            return apx.unavailable_result(exc)
-        return {"result": "refused", "items": _import_rows(result["items"], target)}
+            result = apx.unavailable_result(exc)
+        else:
+            return {"result": "refused", "items": _import_rows(result["items"], target)}
     if result["result"] == "pending":
         return {"result": "pending", "count": len(result["proposal_ids"]),
                 "proposal_ids": result["proposal_ids"]}
+    if result["result"] == "unavailable":
+        problem = result["problem"]
+        exc = apx.Unavailable(problem["code"], problem["message"], retryable=result["retryable"])
+        result = dict(result, problem=dict(problem, message=_import_unavailable(folder, exc)))
     return result
 
 

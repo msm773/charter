@@ -194,7 +194,9 @@
       <button class="btn small" id="btnImportProposal" type="button">Import agent proposals…</button>
     </div>
     <p class="lede" id="proposalsIntro">Accepted proposals become authority candidates.</p>
-    <section class="proposal-group" id="proposalsPendingGroup" aria-label="Proposals from agents, awaiting your review">
+    <section class="proposal-group" id="proposalsPendingGroup" aria-labelledby="proposalsPendingTitle">
+      <!-- Named like the other groups, so each card's title sits under a group heading; shown only to assistive technology. -->
+      <h3 class="sr-only" id="proposalsPendingTitle">Proposals from agents, awaiting your review</h3>
       <div id="pendingProposals"></div>
     </section>
     <section class="proposal-group" id="proposalsImportedGroup" aria-labelledby="proposalsImportedTitle" hidden>
@@ -245,6 +247,10 @@
 
 <!-- the Markdown viewer: over any view, read-only -------------------------- -->
 <div class="viewer-layer" id="docViewer" hidden></div>
+
+<!-- notices: a live region present from the start, outside anything made inert,
+     so a notice placed in it is announced ----------------------------------- -->
+<div id="notices" role="status" aria-live="polite"></div>
 
 <script src="/markdown.js"></script>
 <script src="/app.js"></script>

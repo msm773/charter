@@ -154,7 +154,7 @@ def _read(path: str) -> Optional[bytes]:
         return None
     if not _plain_file(st):
         raise TransactionError("A file to be written is not a regular file.")
-    fd = os.open(path, os.O_RDONLY | _O_BINARY | _O_NOFOLLOW)
+    fd = hs.retry_shared(os.open, path, os.O_RDONLY | _O_BINARY | _O_NOFOLLOW)
     try:
         opened = os.fstat(fd)
         if (opened.st_ino, opened.st_dev) != (st.st_ino, st.st_dev):
@@ -223,6 +223,7 @@ def path_problems(cs: ContextState, writes: List["Write"]) -> List[str]:
     jdir = cs.path(ps_STAGING, JOURNAL_KIND)
     worst_id = "f" * _TXID_LENGTH
     problems: List[str] = []
+    too_long: Dict[str, int] = {}
     private_paths = [os.path.join(jdir, _JOURNAL_TEMP)]
     for n, w in enumerate(writes):
         target = os.path.join(roots.get(w.root, cs.base), *w.path.split("/"))
@@ -243,12 +244,39 @@ def path_problems(cs: ContextState, writes: List["Write"]) -> List[str]:
                 f"`{w.path}` safely: its temporary file would need {longest} characters, and "
                 f"this system allows {limit}. Move the Agent Context to a folder with a shorter "
                 "path" + (", or enable long paths in Windows." if os.name == "nt" else "."))
-        elif longest > limit:
-            private_paths.append(temp)
+        elif w.root != CONTEXT and longest > limit:
+            # The target itself, not only its temporary file: a candidate's
+            # baseline record is longer than the candidate.
+            candidate = _candidate_of(w.path)
+            if candidate:
+                too_long[candidate] = max(longest, too_long.get(candidate, 0))
+            else:
+                private_paths.append(target if len(target) >= len(temp) else temp)
+    for candidate, needed in too_long.items():
+        problems.append(
+            f"Charter's private state path is too long for this system to keep the authority "
+            f"candidate `{candidate}`: its private records would need {needed} characters, and "
+            f"this system allows {limit}. " + CANDIDATE_PATH_REMEDY)
     if any(len(p) > limit for p in private_paths):
         problems.append("Charter's private state path is too long for this system "
                         f"to write safely (it allows {limit} characters).")
     return problems
+
+
+# True of every action: a withdrawal, for one, names its candidate from the
+# governing file, and the person cannot shorten that name.
+CANDIDATE_PATH_REMEDY = ("Use a shorter candidate name where this action allows one"
+                         + (", or enable long paths in Windows." if os.name == "nt" else "."))
+
+
+def _candidate_of(path: str) -> str:
+    """The logical candidate a private write is for — its file or its
+    baseline record — or ""."""
+    for folder, suffix in ((ps.CANDIDATES, ""), (ps.BASELINES, ".json")):
+        head = folder + "/"
+        if path.startswith(head) and path.endswith(suffix) and "/" not in path[len(head):]:
+            return ps.logical_candidate(path[len(head):len(path) - len(suffix)])
+    return ""
 
 
 # --- what may be written, and what a journal may name --------------------------------------
@@ -369,7 +397,14 @@ def _remove_file(root: str, rel_parts: List[str]) -> Optional[str]:
         return None
     if not _plain_file(st):
         return "not a plain file"
-    os.remove(path)
+
+    def still_plain() -> None:
+        if not _plain_file(os.lstat(path)):
+            raise TransactionError("A file to be removed was replaced by something else.")
+    try:
+        hs.retry_shared(os.remove, path, revalidate=still_plain)
+    except FileNotFoundError:
+        pass  # gone meanwhile: nothing to remove
     return None
 
 
@@ -610,10 +645,13 @@ class Transaction:
             for e, w in self._pairs(entries):
                 self._unchanged(e)
                 target = self._abs(e["root"], e["path"])
+                # A reader with either file open, for a moment, is waited for
+                # briefly; the target must still be what was backed up.
                 if w.text is None:
-                    os.remove(target)
+                    hs.retry_shared(os.remove, target, revalidate=lambda e=e: self._unchanged(e))
                 else:
-                    os.replace(self._sibling(e, "temp"), target)
+                    hs.retry_shared(os.replace, self._sibling(e, "temp"), target,
+                                    revalidate=lambda e=e: self._unchanged(e))
                 self.fault(f"replace:{e['path']}")
             for sub in pruned:
                 _contained(self.cs.folder, sub.split("/") + ["-"])
@@ -623,7 +661,7 @@ class Transaction:
                 self.validate()
             self.fault("before-commit")
             # Final: once the journal is gone, the transaction cannot roll back.
-            os.remove(os.path.join(jdir, JOURNAL_FILE))
+            hs.retry_shared(os.remove, os.path.join(jdir, JOURNAL_FILE))
         except Exception as exc:
             concurrent = list(getattr(exc, "concurrent", []) or [])
             message = getattr(exc, "message", "") or str(exc) or exc.__class__.__name__
@@ -719,7 +757,11 @@ def rollback(cs: ContextState, journal: Dict[str, Any],
         temp = os.path.join(os.path.dirname(target), e["restore_temp"])
         _write_new(temp, data)
         _contained(root, parts(e["path"]))
-        os.replace(temp, target)
+
+        def still_ours(target: str = target, e: Dict[str, Any] = e) -> None:
+            if _sha(_read(target)) != e["new"]:
+                raise TransactionError("A file being restored changed meanwhile.")
+        hs.retry_shared(os.replace, temp, target, revalidate=still_ours)
     for root, sub in reversed(journal.get("created_dirs", [])):
         folder = _contained(roots[root], parts(sub) + ["-"])
         path = os.path.dirname(folder)
@@ -903,6 +945,30 @@ def interrupted(cs: ContextState) -> bool:
     back, so MCP refuses the context until it is. Only looks: it creates
     nothing, not even the staging folder."""
     return journal_state(cs) != "none"
+
+
+def unfinished(cs: ContextState) -> bool:
+    """For a reader deciding whether to serve or accept: whether a Charter
+    write to this context was interrupted, or the Agent Context is part-way
+    through one. Unlike `interrupted`, a write still in progress that changes
+    private state alone — its writer alive, holding the writer lock — is
+    neither: the Agent Context is not changing, and the write finishes or
+    rolls back by itself. A write to the Agent Context folder counts while in
+    progress, and so does every record that cannot be read or trusted. Code
+    that holds the writer lock, or keeps the ledger, uses `interrupted`. Only
+    looks: never waits, and creates nothing."""
+    if journal_state(cs) != "present":
+        return interrupted(cs)
+    journal = _load_journal(os.path.join(cs.path(ps_STAGING, JOURNAL_KIND), JOURNAL_FILE))
+    if journal is None:
+        return interrupted(cs)  # finished meanwhile, or not
+    if journal is _UNREAD or journal_problem(journal) or journal.get("pruned_dirs") \
+            or any(e["root"] != PRIVATE for e in journal["entries"]) \
+            or any(root != PRIVATE for root, _sub in journal.get("created_dirs", [])):
+        return True
+    if hs.lock_held(cs.path(ps.LOCKS, "writer.lock")):
+        return False  # a live write to private state alone
+    return interrupted(cs)  # no live writer: it finished just now, or died
 
 
 def _refused(cs: ContextState, why: str) -> TransactionError:

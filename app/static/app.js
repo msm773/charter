@@ -69,21 +69,23 @@ async function call(path, body) {
 
    An error stays until it is dismissed: it says why something did not happen,
    and nobody should have to read that against a clock. A success message goes
-   by itself, but never while it is being pointed at or has focus. */
+   by itself, but never while it is being pointed at or has focus. It is placed
+   in the page's own live region, `#notices`, which is there from the start, so
+   a screen reader announces it; an error is an alert of its own. */
 const TOAST_MS = 4500;
 const TOAST_ACTION_MS = 8000;
 
 function toast(message, isError, action) {
   document.querySelectorAll(".toast").forEach((t) => t.remove());
   const actions = [].concat(action || []);  // one action, or several
-  const node = el("div", { class: "toast" + (isError ? " error" : ""), role: isError ? "alert" : "status" }, [
+  const node = el("div", { class: "toast" + (isError ? " error" : ""), role: isError ? "alert" : null }, [
     el("span", { class: "toast-text" }, withCode(message)),
     ...actions.map((a) => el("button", { type: "button", class: "btn ghost small toast-action", text: a.label,
       onclick: () => { node.remove(); a.onclick(); } })),
     isError ? el("button", { type: "button", class: "btn ghost small toast-dismiss", text: "Dismiss",
       onclick: () => node.remove() }) : null,
   ]);
-  document.body.appendChild(node);
+  (isError ? document.body : ($("notices") || document.body)).appendChild(node);
   if (isError) return;
   let timer = null;
   const start = () => { clearTimeout(timer); timer = setTimeout(() => node.remove(), actions.length ? TOAST_ACTION_MS : TOAST_MS); };
@@ -346,8 +348,11 @@ let panelOpener = null;
    operability). */
 function showFormPanel(title, inner, options = {}) {
   const panel = $("review");
-  panelOpener = (typeof document !== "undefined" && document.activeElement
-                 && document.activeElement.focus) ? document.activeElement : null;
+  // The control that opened it: given, as not every browser focuses a button
+  // it clicks, or else the one with focus.
+  panelOpener = options.opener ? focusReturn(options.opener)
+    : (typeof document !== "undefined" && document.activeElement
+       && document.activeElement.focus) ? focusReturn(document.activeElement) : null;
   panel.textContent = "";
   const heading = el("h3", { text: title, tabindex: "-1" });
   panel.appendChild(el("section", { class: "review" }, [
@@ -363,7 +368,7 @@ function closePanel() {
   const opener = panelOpener;
   panelOpener = null;
   $("review").textContent = "";
-  if (opener && opener.focus) opener.focus();
+  if (opener) returnFocus(opener);
 }
 
 /* After an action completes, move focus to a meaningful, visible destination —
@@ -388,6 +393,107 @@ function focusAfter(target) {
    an action completes without opening something more specific. */
 function currentViewHeading() {
   return document.querySelector("#view-" + currentView + " h2");
+}
+
+/* Whether `node` is in the page now: a redraw leaves the node it replaced
+   detached. */
+function attached(node) {
+  for (let n = node; n; n = n.parentNode) if (n === document.documentElement) return true;
+  return false;
+}
+
+function shown(node) {
+  for (let n = node; n && n !== document.documentElement; n = n.parentNode) if (n.hidden) return false;
+  return true;
+}
+
+/* What to return focus to when a dialog or panel closes, held by what it is
+   — its id, or the action it offers on a document card — not by the node
+   alone: anything redrawn while the dialog was open, such as the card after
+   Mark as seen, has a new node, and focus goes to the control now standing in
+   the old one's place. */
+function focusReturn(node) {
+  if (!node || !node.getAttribute) return node && node.view !== undefined ? node : null;
+  let card = node.parentNode;
+  while (card && !(card.classList && card.classList.contains("doc"))) card = card.parentNode;
+  return { node, id: node.id || null, action: node.getAttribute("data-action"),
+    path: card ? card.getAttribute("data-path") : null, view: currentView };
+}
+
+/* Focus what `target` (from focusReturn) names, as the page now stands, or
+   else `fallback`, or the heading of the view the person is on: never a
+   detached node, and never <body>. */
+function returnFocus(target, fallback) {
+  const usable = (node) => !!node && node !== document.body && attached(node) && shown(node) && !node.disabled
+    && !!node.focus;
+  let node = null;
+  if (target) {
+    if (usable(target.node)) node = target.node;
+    else if (target.id && usable($(target.id))) node = $(target.id);
+    else if (target.action && target.path && target.view === currentView) {
+      const card = [...document.querySelectorAll(".doc")].find((d) => attached(d)
+        && d.getAttribute("data-path") === target.path);
+      node = card ? [...card.querySelectorAll("button")].find((b) => b.getAttribute("data-action") === target.action)
+        : null;
+      if (!usable(node)) node = null;
+    }
+  }
+  if (!node && fallback) node = typeof fallback === "string" ? $(fallback) : fallback;
+  return focusAfter(node && attached(node) ? node : currentViewHeading());
+}
+
+/* The controls Tab moves between inside `root`, in document order. */
+function tabStops(root) {
+  const out = [];
+  const walk = (node) => {
+    for (const child of node.children || []) {
+      if (child.hidden || child.disabled) continue;
+      const tag = child.tagName.toLowerCase();
+      const index = child.getAttribute("tabindex");
+      if (index !== "-1" && (index !== null || ["button", "select", "textarea"].includes(tag)
+          || (tag === "input" && child.type !== "hidden") || (tag === "a" && child.getAttribute("href") !== null))) {
+        out.push(child);
+      }
+      walk(child);
+    }
+  };
+  walk(root);
+  return out;
+}
+
+/* A region of a dialog that scrolls — a long diff, a wide metadata table, the
+   text on a narrow screen — and holds no control of its own is made a Tab stop,
+   so it can be scrolled from the keyboard in every browser, and Tab's cycle
+   within the dialog includes it. */
+function keyboardScrollable(root) {
+  if (typeof getComputedStyle !== "function" || !root) return;
+  const walk = (node) => {
+    for (const child of node.children || []) {
+      walk(child);
+      const s = getComputedStyle(child);
+      const scrolls = (/auto|scroll/.test(s.overflowY) && child.scrollHeight > child.clientHeight + 1)
+        || (/auto|scroll/.test(s.overflowX) && child.scrollWidth > child.clientWidth + 1);
+      if (scrolls && child.getAttribute("tabindex") === null && !tabStops(child).length) {
+        child.setAttribute("tabindex", "0");
+      }
+    }
+  };
+  walk(root);
+}
+
+/* A modal dialog keeps Tab and Shift+Tab within its own controls: past the
+   last comes the first, and before the first, the last. */
+function containTab(event) {
+  const viewer = $("docViewer");
+  if (event.key !== "Tab" || !viewer || viewer.hidden) return;
+  const stops = tabStops(viewer);
+  if (!stops.length) return;
+  const at = stops.indexOf(document.activeElement);
+  const next = event.shiftKey ? (at <= 0 ? stops[stops.length - 1] : null)
+    : (at === -1 || at === stops.length - 1 ? stops[0] : null);
+  if (!next) return;
+  event.preventDefault();
+  next.focus();
 }
 
 async function planFor(kind, request, options) {
@@ -665,7 +771,7 @@ async function openCommandDialog(opener) {
   const close = el("button", { class: "btn ghost small close", text: "Close", onclick: closeCommandDialog });
   const viewer = $("docViewer");
   viewer.textContent = "";
-  viewer.appendChild(el("article", { class: "reader command-dialog", role: "dialog", "aria-modal": "true",
+  viewer.appendChild(el("div", { class: "reader command-dialog", role: "dialog", "aria-modal": "true",
     "aria-labelledby": "commandTitle", id: "commandDialog" }, [
     el("header", {}, [el("div", { class: "reader-heading" }, [
       el("h3", { id: "commandTitle", text: "Charter Command Needs Attention" })]), close]),
@@ -686,6 +792,7 @@ async function openCommandDialog(opener) {
   ]));
   viewer.hidden = false;
   setBackgroundInert(true);
+  keyboardScrollable(viewer);
   close.focus();
 }
 
@@ -1033,19 +1140,20 @@ function docRow(doc) {
     isCandidate && doc.co_revisions > 0
       ? el("div", { class: "origin competing", text: competingNotice(doc.co_revisions) }) : null,
   ]);
-  const governingAction = (text, cls, onclick) => el("button", { class: cls, text, onclick,
-    disabled: canChangeGoverning() ? null : "",
+  const governingAction = (text, cls, onclick, action) => el("button", { class: cls, text, onclick,
+    "data-action": action, disabled: canChangeGoverning() ? null : "",
     "aria-describedby": canChangeGoverning() ? null : UNAVAILABLE_NOTE[doc.kind] });
   const actions = el("div", { class: "actions" }, [
-    el("button", { class: "btn ghost small", text: "Read",
+    el("button", { class: "btn ghost small", text: "Read", "data-action": "read",
       onclick: (event) => openDocument(doc.path, event.currentTarget) }),
-    doc.kind === "candidate" ? el("button", { class: "btn ghost small", text: "Edit…",
+    doc.kind === "candidate" ? el("button", { class: "btn ghost small", text: "Edit…", "data-action": "edit",
       onclick: () => startCandidateEdit(doc) }) : null,
     isCandidate && doc.revises_path ? el("button", { class: "btn ghost small", text: "Compare with governing…",
+      "data-action": "compare-governing",
       onclick: (event) => openComparison(doc.path, [doc.revises_path],
         `Compare “${doc.title}” with the Governing Document It Revises`, event.currentTarget) }) : null,
     isCandidate && doc.co_revisions > 0 ? el("button", { class: "btn ghost small", text: "Compare revisions…",
-      onclick: (event) => openComparison(doc.path,
+      "data-action": "compare-revisions", onclick: (event) => openComparison(doc.path,
         (state.documents || []).filter((d) => d.kind === "candidate"
           && d.revises_path === doc.revises_path && d.path !== doc.path).map((d) => d.path),
         `Compare “${doc.title}” with Competing Revision Candidates`, event.currentTarget) }) : null,
@@ -1054,12 +1162,13 @@ function docRow(doc) {
     doc.kind === "candidate" ? el("button", { class: "btn ghost small", text: "Retire…",
       onclick: () => startRetirement(doc) }) : null,
     doc.kind === "governing" ? governingAction("Withdraw in a change set…", "btn ghost small",
-      () => startWithdrawal(doc)) : null,
+      () => startWithdrawal(doc), "withdraw") : null,
     doc.kind === "candidate" ? governingAction("Plan a change set…", "btn small primary-action",
-      () => startCandidateChangeSet(doc)) : null,
+      () => startCandidateChangeSet(doc), "plan-change-set") : null,
   ]);
+  // Its path names the card, so a control on it can be found again after a redraw.
   return el("div", {
-    class: "doc" + (doc.governing ? " is-authority" : ""),
+    class: "doc" + (doc.governing ? " is-authority" : ""), "data-path": doc.path,
   }, [meta, actions]);
 }
 
@@ -1082,7 +1191,7 @@ const BANNER_TONE = { governing: "note authority", mismatch: "note warn" };
 async function openPreview(source, opener) {
   try {
     const data = await call("/api/preview", source);
-    reading = { source, data, opener: opener || null };
+    reading = { source, data, opener: focusReturn(opener) };
     readerMode = "rendered";
     renderReader();
   } catch (err) { toast(err.message, true); }
@@ -1104,7 +1213,7 @@ async function openComparison(candidatePath, againsts, label, opener) {
       { candidate: candidatePath, against }));
   } catch (err) { toast(err.message, true); return; }
   comparing = true;
-  comparisonOpener = opener || null;
+  comparisonOpener = focusReturn(opener);
   const viewer = $("docViewer");
   viewer.textContent = "";
   const close = el("button", { class: "btn ghost small close", text: "Close", onclick: closeComparison });
@@ -1114,13 +1223,14 @@ async function openComparison(candidatePath, againsts, label, opener) {
       text: `“${s.left.title}” Compared with “${s.right.title}”` }));
     inner.appendChild(renderDiff(s.diff));
   });
-  viewer.appendChild(el("article", { class: "reader", role: "dialog", "aria-modal": "true",
+  viewer.appendChild(el("div", { class: "reader", role: "dialog", "aria-modal": "true",
     "aria-labelledby": "cmpTitle" }, [
     el("header", {}, [el("div", { class: "reader-heading" }, [el("h3", { id: "cmpTitle", text: label })]), close]),
     inner,
   ]));
   viewer.hidden = false;
   setBackgroundInert(true);
+  keyboardScrollable(viewer);
   close.focus();
 }
 
@@ -1133,7 +1243,7 @@ function closeComparison() {
   $("docViewer").textContent = "";
   $("docViewer").hidden = true;
   setBackgroundInert(false);
-  if (opener && opener.focus) opener.focus();
+  if (opener) returnFocus(opener);
 }
 
 /* Reading is a view, not a state the utility holds on your behalf. Leaving a
@@ -1144,7 +1254,7 @@ function closeDocument() {
   $("docViewer").textContent = "";
   $("docViewer").hidden = true;
   setBackgroundInert(false);  // release the focus trap
-  if (opener && opener.focus) opener.focus();
+  if (opener) returnFocus(opener);
 }
 
 function renderReader() {
@@ -1156,7 +1266,7 @@ function renderReader() {
   const { meta, body } = CharterMarkdown.splitFrontMatter(data.text);
   const rendered = readerMode === "rendered";
   const close = el("button", { class: "btn ghost small close", text: "Close", onclick: closeDocument });
-  const article = el("article", { class: "reader", role: "dialog", "aria-modal": "true",
+  const dialog = el("div", { class: "reader", role: "dialog", "aria-modal": "true",
     "aria-labelledby": "readerTitle", "data-state": data.state }, [
     el("header", {}, [
       el("div", { class: "reader-heading" }, [
@@ -1187,10 +1297,11 @@ function renderReader() {
   } else {
     inner.appendChild(el("pre", { class: "code", text: data.text }));
   }
-  article.appendChild(inner);
-  viewer.appendChild(article);
+  dialog.appendChild(inner);
+  viewer.appendChild(dialog);
   viewer.hidden = false;
   setBackgroundInert(true);  // trap focus in the dialog: the rail and main are inert
+  keyboardScrollable(viewer);
   close.focus();
 }
 
@@ -1264,6 +1375,7 @@ $("docViewer").addEventListener("click", (event) => {
 });
 if (document.addEventListener) {
   document.addEventListener("keydown", (event) => {
+    containTab(event);
     if (event.key !== "Escape") return;
     if (commandDialogOpen()) closeCommandDialog();
     else if (reading) closeDocument();
@@ -1371,6 +1483,8 @@ async function startChangeSet(start) {
   $("review").textContent = "";
   review = null;
   showChangeSet(made);
+  // The control that started it is in another view now: focus the plan's first field.
+  returnFocus(null, "csTitle");
   return made;
 }
 
@@ -1728,15 +1842,16 @@ function unexpectedRow(u) {
       el("button", { class: "btn ghost small", text: "View contents", onclick: () => viewUnexpected(u, false) }),
       /* Only a file has text to import; a folder, link or special file does not. */
       u.regular === false ? null
-        : el("button", { class: "btn ghost small", text: "Import a copy…", onclick: () => viewUnexpected(u, true) }),
+        : el("button", { class: "btn ghost small", text: "Import a copy…",
+          onclick: (event) => viewUnexpected(u, true, event.currentTarget) }),
     ]),
   ]);
 }
 
-async function viewUnexpected(u, asImport) {
+async function viewUnexpected(u, asImport, opener) {
   let got;
   try { got = await call("/api/proposals/unexpected", { name: u.name }); } catch (err) { toast(err.message, true); return; }
-  if (asImport && got.regular !== false) { startImport(got.text); return; }
+  if (asImport && got.regular !== false) { startImport(got.text, opener); return; }
   review = null;
   showFormPanel(`Unexpected Local Record ${u.name}`, el("div", { class: "inner" }, got.regular === false
     ? [el("div", { class: "note warn", id: "unexpectedText", text: got.message })]
@@ -1780,7 +1895,7 @@ function fileBase64(file) {
   });
 }
 
-function startImport(prefill) {
+function startImport(prefill, opener) {
   review = null;
   const seq = ++importSeq;
   const live = () => seq === importSeq;
@@ -1930,9 +2045,12 @@ function startImport(prefill) {
     } catch (err) { if (live()) { countLabel(); toast(err.message, true); } return; }
     if (!live()) return;
     if (filed.result === "pending") {
+      const opener = panelOpener;
       importPanel = null;
       closeReview();
       await refreshQuiet();
+      // The panel is gone: back to what opened it, as the page now stands.
+      returnFocus(opener, "btnImportProposal");
       toast(filed.count === 1 ? "Imported the agent proposal for review. It is not context."
         : `Imported ${filed.count} agent proposals for review. They are not context.`);
       return;
@@ -1970,6 +2088,8 @@ function startImport(prefill) {
     invalidate();
     await refreshQuiet();
     if (!live()) return;
+    // Its row is gone, and the list must be checked again: focus that next step.
+    returnFocus(null, "btnCheckImport");
     toast("Replaced the waiting proposal with this one, for review. It is not context.");
   }
 
@@ -2010,11 +2130,11 @@ function startImport(prefill) {
       el("button", { class: "btn ghost", id: "btnCancelImport", type: "button", text: "Cancel", onclick: () => {
         const opener = panelOpener;
         discardImport();
-        if (opener && opener.focus) opener.focus();
+        if (opener) returnFocus(opener);
       } }),
     ]),
   ]);
-  showFormPanel("Import Agent Proposals", inner, { close: false });
+  showFormPanel("Import Agent Proposals", inner, { close: false, opener });
   importPanel = inner;
   draw();
 }
@@ -2375,7 +2495,11 @@ function renderChangeSetPreview(panel, plan, options) {
   const inner = el("div", { class: "inner cs-preview", id: "csPreviewBody" });
   const issues = plan.issues || [];
   if (issues.length) inner.appendChild(el("ul", { class: "issues", id: "planProblems" }, issues.map(issueItem)));
-  (plan.notes || []).forEach((n) => inner.appendChild(el("div", { class: "note warn cs-preview-warning" }, withCode(n))));
+  /* A candidate changed outside Charter is advisory: the non-blocking attention
+     treatment of its candidate chip, never the warning red. */
+  const attention = plan.attention || [];
+  (plan.notes || []).forEach((n) => inner.appendChild(el("div", {
+    class: (attention.indexOf(n) !== -1 ? "note attention" : "note warn") + " cs-preview-warning" }, withCode(n))));
 
   inner.appendChild(el("section", { class: "cs-section", id: "csChangesToApply", "aria-labelledby": "csChangesToApplyTitle" }, [
     el("h4", { id: "csChangesToApplyTitle", text: "Changes to Apply" }),
@@ -2557,7 +2681,6 @@ async function applyFailed(err) {
 let changeSet = null;  // the draft open in the editor, as the server describes it
 let csScreen = "build";  // "build", or "preview" while its preview is open
 let csQueue = Promise.resolve();  // changes to the draft, sent one at a time
-let csRationale = null;  // rationale typed but not yet saved: { text, timer }
 let csPacket = {};  // the review packet's save, for one plan: { plan, confirm, typing, error, saved }
 const csOpen = {};  // which of the editor's disclosures the person opened, across redraws
 
@@ -2643,8 +2766,9 @@ function changeSetCounts(d) {
    place of it. Opening one adds a history entry on the same address, so
    Back returns to the index and Forward reopens it. */
 function showChangeSet(next) {
-  if (!changeSet || changeSet.draft.id !== next.draft.id) {
-    csScreen = "build"; csPacket = {}; csConverting = false; dropRationale(); dropReviews();
+  const arriving = !changeSet || changeSet.draft.id !== next.draft.id;
+  if (arriving) {
+    csScreen = "build"; csPacket = {}; csConverting = false;
     refreshChangeSetTally();  // a newly started draft counts at once
   }
   const entering = !changeSet;
@@ -2658,6 +2782,9 @@ function showChangeSet(next) {
   renderChangeSetEditor();
   const view = $("view-changesets");
   if (entering && view && view.scrollIntoView) view.scrollIntoView({ block: "start" });
+  // Text an earlier save of this draft could not keep is shown above, not
+  // the older saved text, and is saved again now.
+  if (arriving && hasUnsaved(next.draft.id)) { flushRationale(); flushReviews(); }
 }
 
 async function openChangeSet(id, options = {}) {
@@ -2691,8 +2818,12 @@ async function closeChangeSet() {
    an autosave never races another edit. A draft changed elsewhere is
    reloaded, never overwritten. */
 function changeSetCall(route, body) {
+  // A change is for the draft open when it was made, and is never sent to
+  // another one opened before its turn came: it is then not sent at all,
+  // and answers `undefined`, where a change that failed answers `null`.
+  const target = changeSet ? changeSet.draft.id : null;
   const run = async () => {
-    if (!changeSet) return null;
+    if (!changeSet || changeSet.draft.id !== target) return undefined;
     const d = changeSet.draft;
     try {
       const next = await call(route, Object.assign({ id: d.id, revision: d.revision }, body || {}));
@@ -2703,7 +2834,8 @@ function changeSetCall(route, body) {
       return next;
     } catch (err) {
       toast(err.message, true);
-      if (err.data && /changed since you last loaded/.test(err.message)) await openChangeSet(d.id, { quiet: true });
+      if (err.data && /changed since you last loaded/.test(err.message)
+          && changeSet && changeSet.draft.id === d.id) await openChangeSet(d.id, { quiet: true });
       return null;
     }
   };
@@ -2737,6 +2869,7 @@ async function discardChangeSet() {
   await flushReviews();
   const next = await changeSetCall("/api/changeset/abandon");
   if (!next) return;
+  forgetUnsaved(d.id);  // discarded, with anything in it not yet saved
   toast(`Discarded ${label}.`);
   await leaveChangeSet();
 }
@@ -2746,6 +2879,7 @@ async function deleteChangeSet(id, label) {
       + "No governing context is affected.")) return;
   try { await call("/api/changeset/delete", { id, confirm: true }); }
   catch (err) { toast(err.message, true); return; }
+  forgetUnsaved(id);
   if (changeSet && changeSet.draft.id === id) { await leaveChangeSet(); return; }
   await renderChangeSets();
 }
@@ -2811,12 +2945,15 @@ function restoreFocus(saved) {
 }
 
 /* The two screens are said in words. While the plan is being built, its name
-   is the plan's first field; otherwise it heads the panel. */
+   is the plan's first field; otherwise it heads the panel. Either way the
+   change set's name is the heading its sections sit under: while it is being
+   built, for assistive technology only, so the screen looks as it does. */
 function changeSetHeader(cs, active, previewing) {
   const d = cs.draft;
   const editing = active && !previewing && cs.form !== "earlier";
   return el("header", { class: "cs-head" }, [
-    editing ? null : el("h3", { class: "cs-title-text", id: "csTitleText", text: d.title }),
+    editing ? el("h3", { class: "sr-only", id: "csBuildHeading", text: d.title })
+      : el("h3", { class: "cs-title-text", id: "csTitleText", text: d.title }),
     active ? el("ol", { class: "cs-steps", id: "csSteps", "aria-label": "Steps" }, [
       el("li", { "aria-current": previewing ? null : "step", text: "1. Build Change Set" }),
       el("li", { "aria-current": previewing ? "step" : null, text: "2. Preview and Apply" }),
@@ -2839,9 +2976,12 @@ function changeSetPreviewing() {
 }
 
 async function previewChangeSet() {
-  await flushRationale();
-  await flushReviews();
+  const saved = await flushRationale();
+  const reviewsSaved = await flushReviews();
   await csQueue;  // the preview is of the draft with every edit saved
+  // A save that failed has said so; previewing now would show the draft
+  // without that text as though it were saved. It stays here to be saved.
+  if (!saved || !reviewsSaved) return;
   const cs = changeSet;
   if (!cs || !cs.valid) return;
   csScreen = "preview";
@@ -3096,7 +3236,7 @@ function viewCandidateDetails(cs, c, opener) {
             : c.revises_title}”`, event.currentTarget) }) : null,
     ]),
   ]));
-  if (opener) panelOpener = opener;
+  if (opener) panelOpener = focusReturn(opener);
 }
 
 /* Governing documents the plan withdraws: each stops governing and becomes an
@@ -3139,7 +3279,7 @@ let csConverting = false;  // the conversion's confirmation is open
 
 function changeSetEarlier(cs, active) {
   const earlier = cs.earlier || { rows: [], alongside: [], others: [] };
-  const rows = el("ul", { class: "cs-list", id: "csEarlierRows" }, earlier.rows.map((r) =>
+  const rows = el("ul", { class: "cs-list bounded", id: "csEarlierRows" }, earlier.rows.map((r) =>
     el("li", { class: "cs-item cs-row", "data-path": r.path }, [
       el("div", { class: "cs-row-head" }, [
         el("div", {}, [el("div", { class: "title", text: r.title }), el("div", { class: "path", text: r.path })]),
@@ -3147,7 +3287,7 @@ function changeSetEarlier(cs, active) {
       ]),
       r.candidate ? el("p", { class: "hint", text: `With “${r.candidate.title}” — ${r.candidate.path}` }) : null,
     ])));
-  const alongside = earlier.alongside.length ? el("ul", { class: "cs-list", id: "csEarlierAlongside" },
+  const alongside = earlier.alongside.length ? el("ul", { class: "cs-list bounded", id: "csEarlierAlongside" },
     earlier.alongside.map((c) => el("li", { class: "cs-item cs-row" }, [el("div", { class: "cs-row-head" }, [
       el("div", {}, [el("div", { class: "title", text: c.title }), el("div", { class: "path", text: c.path })]),
       chip("Govern alongside", null)])]))) : null;
@@ -3243,37 +3383,94 @@ function candidateScope(c, row, effect, nested) {
    that leaves or previews the draft. There is no Save step. */
 const RATIONALE_PAUSE_MS = 800;
 
+/* What the person wrote in a draft that is not saved yet, by draft: its
+   summary, `{ text, timer }`, and each review being written, by review,
+   `{ label, text, timer }`. Kept in this page only, never stored anywhere
+   else, until that exact text is saved: leaving the draft, opening another,
+   coming back, or a save failing never loses it, and a draft shows its own
+   unsaved text, never older saved text, until then. Only the person's own
+   discarding — the draft, or a review — drops it unsaved. Text whose save
+   failed, and that has not changed since, is marked `failed`. */
+const csUnsaved = {};
+
+/* While any text is unsaved because its save failed, leaving the page —
+   reload, close, or navigating away — asks the browser for its own
+   leave-page confirmation, in the browser's own words. Never for an edit
+   only pending or saving, and no longer once that text is saved or
+   discarded. Moving within the console never unloads the page. */
+function leavePageGuard(event) {
+  event.preventDefault();
+  event.returnValue = "";  // older browsers ask only when this is set
+}
+
+function guardLeavingPage() {
+  const failed = Object.values(csUnsaved).some((u) => (u.rationale && u.rationale.failed)
+    || Object.values(u.reviews).some((d) => d.failed));
+  if (typeof window === "undefined" || !window.addEventListener) return;
+  if (failed) window.addEventListener("beforeunload", leavePageGuard);
+  else window.removeEventListener("beforeunload", leavePageGuard);
+}
+
+function unsavedOf(id) {
+  if (!csUnsaved[id]) csUnsaved[id] = { rationale: null, reviews: {} };
+  return csUnsaved[id];
+}
+
+function hasUnsaved(id) {
+  const u = csUnsaved[id];
+  return !!u && (u.rationale !== null || Object.keys(u.reviews).length > 0);
+}
+
+function forgetUnsaved(id) {
+  const u = csUnsaved[id];
+  if (!u) return;
+  if (u.rationale && u.rationale.timer) clearTimeout(u.rationale.timer);
+  Object.keys(u.reviews).forEach((r) => { if (u.reviews[r].timer) clearTimeout(u.reviews[r].timer); });
+  delete csUnsaved[id];
+  guardLeavingPage();
+}
+
 function changeSetRationale(cs) {
+  const id = cs.draft.id;
   const rationale = el("textarea", { id: "csRationale", rows: 3, "aria-labelledby": "csRationaleHeading" });
-  rationale.value = csRationale ? csRationale.text : (cs.draft.rationale || "");
+  const pending = csUnsaved[id] && csUnsaved[id].rationale;
+  rationale.value = pending ? pending.text : (cs.draft.rationale || "");
   rationale.addEventListener("input", () => {
-    if (csRationale && csRationale.timer) clearTimeout(csRationale.timer);
-    csRationale = { text: rationale.value, timer: setTimeout(() => flushRationale(), RATIONALE_PAUSE_MS) };
+    const u = unsavedOf(id);
+    if (u.rationale && u.rationale.timer) clearTimeout(u.rationale.timer);
+    u.rationale = { text: rationale.value, timer: setTimeout(() => flushRationale(id), RATIONALE_PAUSE_MS) };
+    guardLeavingPage();  // new text is only pending
   });
   rationale.addEventListener("change", () => {
-    if (!csRationale) csRationale = { text: rationale.value, timer: null };
-    flushRationale();
+    const u = unsavedOf(id);
+    if (!u.rationale) u.rationale = { text: rationale.value, timer: null };
+    flushRationale(id);
   });
   return el("section", { class: "cs-section", id: "csRationaleSection" }, [
     el("h4", { id: "csRationaleHeading", text: "Change Set Summary" }), rationale]);
 }
 
-/* Save the rationale typed so far, once. Text typed while it saves stays
-   pending, and is saved next. */
-async function flushRationale() {
-  if (!csRationale || !changeSet) { csRationale = null; return; }
-  if (csRationale.timer) clearTimeout(csRationale.timer);
-  const text = csRationale.text;
-  csRationale.timer = null;
-  if (text === (changeSet.draft.rationale || "")) { csRationale = null; return; }
+/* Save the summary typed so far in draft `id` — the open draft unless named —
+   once. Text typed while it saves stays unsaved, and is saved next. A draft
+   that is not open keeps its text until it is open again. Returns whether
+   nothing is left unsaved because a save failed. */
+async function flushRationale(id) {
+  if (id === undefined) id = changeSet ? changeSet.draft.id : null;
+  const u = id !== null ? csUnsaved[id] : null;
+  const pending = u && u.rationale;
+  if (!pending) return true;
+  if (pending.timer) clearTimeout(pending.timer);
+  pending.timer = null;
+  if (!changeSet || changeSet.draft.id !== id) return true;  // saved when the draft is open again
+  const text = pending.text;
+  if (text === (changeSet.draft.rationale || "")) { u.rationale = null; guardLeavingPage(); return true; }
   const saved = await changeSetCall("/api/changeset/update", { rationale: text });
   // Kept when the save failed, so nothing typed is lost.
-  if (saved && csRationale && csRationale.text === text && !csRationale.timer) csRationale = null;
-}
-
-function dropRationale() {
-  if (csRationale && csRationale.timer) clearTimeout(csRationale.timer);
-  csRationale = null;
+  const now = csUnsaved[id] && csUnsaved[id].rationale;
+  if (saved && now && now.text === text && !now.timer) csUnsaved[id].rationale = null;
+  else if (saved === null && now && now.text === text && !now.timer) now.failed = true;
+  guardLeavingPage();
+  return !!saved;
 }
 
 function changeSetReasons(cs, active) {
@@ -3419,7 +3616,7 @@ const recordCopy = (p) => changeSetCall("/api/changeset/prompt/copied",
    with what is wrong with it. */
 function changeSetAgentReview(cs, active) {
   const reviews = cs.reports || [];
-  const list = el("div", { class: "cs-reviews", id: "csReviews" }, reviews.map((r, i) => reviewEntry(r, i, active)));
+  const list = el("div", { class: "cs-reviews", id: "csReviews" }, reviews.map((r, i) => reviewEntry(r, i, active, cs.draft.id)));
   return el("section", { class: "cs-col cs-review cs-section", id: "csAgentReview" }, [
     el("h4", { text: "Agent Review" }),
     ...(active ? reviewMaterial(cs) : []),
@@ -3458,29 +3655,31 @@ function reviewMaterial(cs) {
   return body;
 }
 
-/* Reviews being written: what the person typed, kept until it is saved, so
-   a redraw never loses it. Each review saves on its own, shortly after the
-   person stops typing, when they leave the field, and before anything that
-   leaves or previews the draft. */
-const csReviewDrafts = {};
-
-function reviewEntry(r, i, active) {
-  const pending = csReviewDrafts[r.id] || {};
+/* Reviews being written: what the person typed, kept with the draft's other
+   unsaved text (`csUnsaved`) until it is saved, so a redraw, leaving the
+   draft or a failed save never loses it. Each review saves on its own,
+   shortly after the person stops typing, when they leave the field, and
+   before anything that leaves or previews the draft. */
+function reviewEntry(r, i, active, draftId) {
+  const pending = (csUnsaved[draftId] && csUnsaved[draftId].reviews[r.id]) || {};
   const label = el("input", { type: "text", id: `csReviewAgent-${i}`, maxlength: "200", disabled: active ? null : "" });
   label.value = pending.label !== undefined ? pending.label : (r.label || "");
   const text = el("textarea", { id: `csReviewText-${i}`, rows: 6, disabled: active ? null : "",
     "aria-describedby": `csReviewState-${i}` });
   text.value = pending.text !== undefined ? pending.text : (r.text || "");
   const edited = (field, input) => () => {
-    const d = csReviewDrafts[r.id] = csReviewDrafts[r.id] || {};
+    const reviews = unsavedOf(draftId).reviews;
+    const d = reviews[r.id] = reviews[r.id] || {};
+    if (d[field] !== input.value) d.failed = false;  // new text is only pending
     d[field] = input.value;
     if (d.timer) clearTimeout(d.timer);
-    d.timer = setTimeout(() => flushReview(r.id), RATIONALE_PAUSE_MS);
+    d.timer = setTimeout(() => flushReview(r.id, draftId), RATIONALE_PAUSE_MS);
+    guardLeavingPage();
   };
   label.addEventListener("input", edited("label", label));
   text.addEventListener("input", edited("text", text));
-  label.addEventListener("change", () => { edited("label", label)(); flushReview(r.id); });
-  text.addEventListener("change", () => { edited("text", text)(); flushReview(r.id); });
+  label.addEventListener("change", () => { edited("label", label)(); flushReview(r.id, draftId); });
+  text.addEventListener("change", () => { edited("text", text)(); flushReview(r.id, draftId); });
   return el("article", { class: "cs-review-entry" + (r.valid ? " is-valid" : ""), id: `csReview-${i}`, "data-report": r.id }, [
     el("div", { class: "field" }, [el("label", { for: `csReviewAgent-${i}`, text: "Reviewing agent" }), label]),
     el("div", { class: "field" }, [el("label", { for: `csReviewText-${i}`, text: "Response" }), text]),
@@ -3506,30 +3705,37 @@ function reviewState(r, i) {
   return el("div", { id }, [reportCard(Object.assign({}, r, { label: r.label || "Unnamed reviewing agent" }), false)]);
 }
 
-async function flushReview(id) {
-  const d = csReviewDrafts[id];
-  if (!d || !changeSet) { delete csReviewDrafts[id]; return; }
+/* Save review `id` of draft `draftId` — the open draft unless named — once,
+   as `flushRationale` saves the summary. Returns whether nothing is left
+   unsaved because a save failed. */
+async function flushReview(id, draftId) {
+  if (draftId === undefined) draftId = changeSet ? changeSet.draft.id : null;
+  const reviews = draftId !== null && csUnsaved[draftId] ? csUnsaved[draftId].reviews : null;
+  const d = reviews && reviews[id];
+  if (!d) return true;
   if (d.timer) clearTimeout(d.timer);
   d.timer = null;
+  if (!changeSet || changeSet.draft.id !== draftId) return true;  // saved when the draft is open again
   const body = { report_id: id };
   if (d.label !== undefined) body.label = d.label;
   if (d.text !== undefined) body.text = d.text;
   const sent = { label: d.label, text: d.text };
   const saved = await changeSetCall("/api/changeset/review/save", body);
   // Kept when the save failed, or when the person typed more meanwhile.
-  const now = csReviewDrafts[id];
-  if (saved && now && !now.timer && now.label === sent.label && now.text === sent.text) delete csReviewDrafts[id];
+  const now = reviews[id];
+  const unchanged = now && !now.timer && now.label === sent.label && now.text === sent.text;
+  if (saved && unchanged) delete reviews[id];
+  else if (saved === null && unchanged) now.failed = true;
+  guardLeavingPage();
+  return !!saved;
 }
 
 async function flushReviews() {
-  for (const id of Object.keys(csReviewDrafts)) await flushReview(id);
-}
-
-function dropReviews() {
-  Object.keys(csReviewDrafts).forEach((id) => {
-    if (csReviewDrafts[id].timer) clearTimeout(csReviewDrafts[id].timer);
-    delete csReviewDrafts[id];
-  });
+  const id = changeSet ? changeSet.draft.id : null;
+  if (id === null || !csUnsaved[id]) return true;
+  let all = true;
+  for (const report of Object.keys(csUnsaved[id].reviews)) all = (await flushReview(report, id)) && all;
+  return all;
 }
 
 async function addReview() {
@@ -3546,8 +3752,10 @@ async function removeReview(r) {
   if (r.valid && typeof confirm === "function" && !confirm(`Remove the review from `
       + `${r.label ? `“${r.label}”` : "an unnamed reviewing agent"}? It is a structurally valid report, so it counts `
       + "as attached advisory evidence. Removing it changes nothing in the plan or governing context.")) return;
-  if (csReviewDrafts[r.id] && csReviewDrafts[r.id].timer) clearTimeout(csReviewDrafts[r.id].timer);
-  delete csReviewDrafts[r.id];
+  const reviews = csUnsaved[changeSet.draft.id] ? csUnsaved[changeSet.draft.id].reviews : {};
+  if (reviews[r.id] && reviews[r.id].timer) clearTimeout(reviews[r.id].timer);
+  delete reviews[r.id];
+  guardLeavingPage();
   await changeSetCall("/api/changeset/report/remove", { report_id: r.id });
 }
 
@@ -3667,7 +3875,7 @@ function changeSetReceipt(cs) {
       el("p", { class: "note", id: "csRecorded", text: "Agents read the new context now. Git is untouched: "
         + "Charter did not operate it, so commit it when you choose." }),
       csSection(`Changed Documents (${changed.length})`, [
-        el("ul", { class: "cs-list", id: "csReceiptOutcomes" }, changed.map(outcomeLine)),
+        el("ul", { class: "cs-list bounded", id: "csReceiptOutcomes" }, changed.map(outcomeLine)),
       ], null, "csReceiptFinal"),
       retained.length ? el("section", { class: "cs-section", id: "csReceiptRetainedSection" }, [
         csDisclosure("receipt-retained", groupLabel("Retained Governing Documents", retained.length),
@@ -3762,7 +3970,7 @@ function renderSettings() {
   });
   box.appendChild(el("div", { class: "field" }, [
     el("label", { for: "settingsProjectName", text: "Project name" }), name,
-    el("p", { class: "hint",
+    el("p", { class: "hint", id: "settingsProjectNameHint",
       text: "Used in the generated context map (AGENT-CONTEXT.md) that agents read. "
         + "It does not rename the folder." })]));
   box.appendChild(el("fieldset", { class: "field settings-guidance", id: "settingsGuidance" },
@@ -3844,7 +4052,7 @@ $("btnCancelIntake").addEventListener("click", async () => {
   resetIntake();
   await leaveIntake();
 });
-$("btnImportProposal").addEventListener("click", () => startImport(""));
+$("btnImportProposal").addEventListener("click", (event) => startImport("", event.currentTarget));
 
 /* ---------------------------------------------------- no Agent Context open */
 

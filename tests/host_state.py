@@ -227,6 +227,132 @@ def case_spellings() -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
+def case_shared_files() -> None:
+    """A file another handle has open (Windows refuses to rename over or
+    remove it) is tried again briefly, then the refusal is raised as it was;
+    nothing else is retried, and an atomic write never leaves its temporary
+    file behind."""
+    print("\nfiles another handle has open: a short, bounded retry, and nothing left behind")
+    from tests.harness import HeldOpen
+    windows = os.name == "nt"
+    base = tempfile.mkdtemp(prefix="charter-shared-")
+    try:
+        path = os.path.join(base, "record.json")
+        host_state.write_json_atomic(path, {"v": 1})
+        with HeldOpen("after-refusal") as reader:
+            reader.open(path)
+            host_state.write_json_atomic(path, {"v": 2})
+        check(host_state.read_json(path) == {"v": 2} and os.listdir(base) == ["record.json"]
+              and (not windows or [r[2] for r in reader.refusals] in ([5], [32])),
+              "a reader that finishes: the write is refused once"
+              + (f" (WinError {reader.refusals[0][2]})" if reader.refusals else "")
+              + ", tried again, and succeeds, with no temporary file left")
+
+        with HeldOpen("never") as reader:
+            reader.open(path)
+            started = time.monotonic()
+            try:
+                host_state.write_json_atomic(path, {"v": 3})
+                raised = None
+            except OSError as exc:
+                raised = exc
+            took = time.monotonic() - started
+        if windows:
+            check(raised is not None and host_state.sharing_violation(raised) and len(reader.refusals) == 10
+                  and took < 2.0 and host_state.read_json(path) == {"v": 2} and os.listdir(base) == ["record.json"],
+                  f"a reader that does not finish: ten attempts in {took:.2f}s, then the refusal itself is "
+                  "raised; the record is as it was and the temporary file is removed")
+        else:
+            check(raised is None, "(elsewhere an open handle refuses nothing: the write succeeds)")
+
+        attempts = []
+
+        def missing() -> None:
+            attempts.append(1)
+            os.replace(os.path.join(base, "absent"), os.path.join(base, "other"))
+        try:
+            host_state.retry_shared(missing)
+            other = None
+        except FileNotFoundError as exc:
+            other = exc
+        check(other is not None and attempts == [1], "any other failure is raised at once, never retried")
+
+        if windows:
+            held = os.open(path, os.O_RDONLY)
+            stopped = []
+            try:
+                def stop() -> None:
+                    stopped.append(1)
+                    raise RuntimeError("no longer the same operation")
+                try:
+                    host_state.retry_shared(os.remove, path, revalidate=stop)
+                except RuntimeError:
+                    pass
+            finally:
+                os.close(held)
+            check(stopped == [1] and os.path.exists(path),
+                  "before trying again, the operation is confirmed still the same, and stopped if not")
+
+            # A real permission problem: a read-only file cannot be replaced, and
+            # access denied looks like the sharing refusal. It is never success.
+            locked = os.path.join(base, "locked.json")
+            host_state.write_json_atomic(locked, {"v": 1})
+            os.chmod(locked, stat_readonly())
+            try:
+                try:
+                    host_state.write_json_atomic(locked, {"v": 2})
+                    denied = None
+                except OSError as exc:
+                    denied = exc
+            finally:
+                os.chmod(locked, 0o600)
+            # Opening a record that is being renamed over that moment: the C
+            # runtime reports the refusal as errno EACCES alone (a folder opened
+            # as a file gives the same real error). Read briefly refused, the
+            # record is still read; refused for good, it is never read as missing.
+            try:
+                open(base, "rb")
+                errno_only = None
+            except PermissionError as exc:
+                errno_only = exc
+            check(errno_only is not None and getattr(errno_only, "winerror", None) is None
+                  and host_state.sharing_violation(errno_only),
+                  "an open refused with errno EACCES alone counts as the same passing refusal")
+            refusals = []
+
+            def opens_after_one_refusal(*args):
+                if not refusals:
+                    refusals.append(1)
+                    raise errno_only
+                return open(*args)
+            host_state.open = opens_after_one_refusal
+            try:
+                reread = host_state.read_json(path)
+            finally:
+                del host_state.open
+            check(refusals == [1] and reread == {"v": 2},
+                  "a record read the moment it is renamed over: refused once, then read — never taken as missing")
+            try:
+                host_state.read_json(base)
+                unread = None
+            except HostStateError as exc:
+                unread = exc
+            check(unread is not None, "  one that cannot be opened at all is still refused, after the same few tries")
+
+            check(denied is not None and getattr(denied, "winerror", None) == 5
+                  and host_state.read_json(locked) == {"v": 1}
+                  and sorted(os.listdir(base)) == ["locked.json", "record.json"],
+                  "a persistent access denial fails after the same bounded tries, the file unchanged and "
+                  "nothing left behind: never reported as written")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def stat_readonly() -> int:
+    import stat
+    return stat.S_IREAD
+
+
 def run() -> None:
     case_paths()
     case_spellings()
@@ -235,6 +361,7 @@ def run() -> None:
     case_private_folders()
     case_locks()
     case_json()
+    case_shared_files()
     print(f"\n{OK} All private-location helper checks passed.")
 
 

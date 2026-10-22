@@ -63,6 +63,35 @@ UTF-8 — which is how an earlier copy of Charter, sharing this private state,
 still recognizes a byte-identical resubmission. Every such route reads those
 bytes the same way (`read_submission`). A record filed through the MCP tool
 keeps none: its arguments never were submitted bytes.
+
+Locks. Two per-context locks guard the inbox, always taken in one order,
+`writer` then `intake`, and never the other way round:
+
+  * `writer` — held by every action that writes through a transaction
+    (`authority.apply`, so accepting and rejecting; recovery), by the
+    console's import (`file_batch`) and by Replace (`replace`). It is what
+    makes a decision and a Replace of the same proposal one after the other,
+    never interleaved.
+  * `intake` — held while the ledger is read and written: by `file` (the
+    command, the MCP tool), `file_batch`, `replace` and `forget_decided`.
+
+`file` takes `intake` alone: it only ever adds a record under a new id, so it
+cannot bring back or alter a decided proposal, and agents are never kept
+waiting on a person's longer actions. Replace takes both, rechecking under
+them that the proposal still awaits a decision with the same content.
+
+Replacing a record is one recoverable transition. The record already exists,
+so the ledger cannot simply vouch for the new bytes first: until the record is
+rewritten that would leave the waiting proposal vouched for by nothing. For
+the moment of the change its entry vouches for both — the record as it is, and
+the `replacement` about to be written — so whichever is on disk after a
+failure, or after the process dies at any step, is trusted. The record itself
+is written through a journaled `transaction.Transaction`, which recovery rolls
+back. The entry is settled to the one record on disk as soon as the record is
+written, and otherwise at the next ledger write, so nothing keeps what was
+replaced. While any transaction's journal is present — in progress, or
+interrupted and not yet recovered — a ledger write neither settles an entry
+nor drops one whose record is missing: that record may be about to be put back.
 """
 from __future__ import annotations
 
@@ -274,11 +303,14 @@ def _mcp_integrity(exam: ac.Examination) -> str:
 
 
 def open_target(folder: str, state: Optional[ps.PrivateState] = None,
-                route: str = COMMAND) -> Target:
+                route: str = COMMAND, writing: bool = False) -> Target:
     """The Agent Context at `folder` exactly — never a folder above or below
     it — ready for intake, or Unavailable. `folder` may be `.` or an absolute
     path (Product Specification §3.3); nothing here searches for one, and no
-    message tells an agent to move into, search for or find one."""
+    message tells an agent to move into, search for or find one. `writing`:
+    the caller holds the writer lock, so any record of a write is one that
+    was interrupted; otherwise another's private write still in progress is
+    not (`transaction.unfinished`)."""
     folder = os.path.abspath(folder)
     if not os.path.isdir(folder) or not ac.is_context_root(folder):
         if route == MCP:
@@ -320,7 +352,7 @@ def open_target(folder: str, state: Optional[ps.PrivateState] = None,
     except (ps.PrivateStateError, hs.HostStateError, OSError):
         raise Unavailable("intake_unavailable", "Charter cannot file proposals on "
                                                 "this computer now.", retryable=False)
-    if tx.interrupted(cs):
+    if tx.interrupted(cs) if writing else tx.unfinished(cs):
         raise Unavailable("context_invalid", "A Charter write to this Agent Context "
                                              "was interrupted. A person must open it in Charter "
                                              "first.", retryable=False)
@@ -604,11 +636,53 @@ def _active_ledger(cs: ps.ContextState) -> Dict[str, Any]:
     """The ledger's entries for proposals still awaiting a decision. Entries
     whose record is gone — decided, or kept by an earlier Charter for decided
     proposals — vouch for nothing and are dropped when the ledger is next
-    written. Call with the intake lock held: the ledger vouches for a record
-    before the record is written."""
+    written, and an entry left mid-replacement is settled to the record on
+    disk. Call with the intake lock held: the ledger vouches for a record
+    before the record is written.
+
+    While a transaction's journal is present, the ledger is kept exactly as
+    it is: a decision part-way through has removed a record that rolling it
+    back restores, and a Replace part-way through may yet be rolled back to
+    the record it replaced."""
+    ledger = _ledger(cs)
+    if tx.interrupted(cs):
+        return dict(ledger)
     folder = cs.path(ps.PROPOSALS, PENDING)
-    return {pid: entry for pid, entry in _ledger(cs).items()
-            if os.path.isfile(os.path.join(folder, pid + ".json"))}
+    active: Dict[str, Any] = {}
+    for pid, entry in ledger.items():
+        path = os.path.join(folder, pid + ".json")
+        if os.path.isfile(path):
+            active[pid] = _settled(path, entry)
+    return active
+
+
+def _vouched(entry: Any) -> Dict[str, str]:
+    """The record digests a ledger entry vouches for, each with its source:
+    its own, and, mid-replacement, the replacement's."""
+    if not isinstance(entry, dict):
+        return {}
+    out: Dict[str, str] = {}
+    replacement = entry.get("replacement")
+    if isinstance(replacement, dict) and isinstance(replacement.get("sha256"), str) \
+            and _SHA.match(replacement["sha256"]) and replacement.get("source") in (AGENT, IMPORTED):
+        out[replacement["sha256"]] = replacement["source"]
+    if isinstance(entry.get("sha256"), str):
+        out[entry["sha256"]] = entry.get("source", AGENT)
+    return out
+
+
+def _settled(path: str, entry: Any) -> Any:
+    """`entry`, vouching only for the record now at `path` when it was
+    left mid-replacement; unchanged otherwise, or when the record is neither
+    of the two it vouched for."""
+    if not isinstance(entry, dict) or "replacement" not in entry:
+        return entry
+    try:
+        digest = hashlib.sha256(_read_regular(path, MAX_INPUT + 1)).hexdigest()
+    except (NotRegular, OSError):
+        return entry
+    vouched = _vouched(entry)
+    return {"sha256": digest, "source": vouched[digest]} if digest in vouched else entry
 
 
 def record_fingerprint(record: Dict[str, Any]) -> Optional[str]:
@@ -690,39 +764,112 @@ def file(folder: str, raw: Any, source: str = AGENT,
         return unavailable_result(write_failure(exc))
 
 
+NOT_WAITING = ("That proposal is no longer awaiting review with the same content. Check the "
+               "proposal again.")
+
+
 def replace(folder: str, raw: Any, proposal_id: Any, source: str = IMPORTED,
-            state: Optional[ps.PrivateState] = None, submitted: Any = None) -> Dict[str, Any]:
+            state: Optional[ps.PrivateState] = None, submitted: Any = None,
+            fault: Optional[Any] = None) -> Dict[str, Any]:
     """Replace a waiting proposal with a submission of the same checked
     content, in place: the same proposal, now with this submission's received
     time, source, checked content and digests. No second proposal, and no
     record of what it replaced. Refused unless `proposal_id` still awaits a
-    decision with the same content."""
+    decision with the same content — decided under the writer and intake
+    locks, so a proposal accepted or rejected meanwhile is never brought back.
+
+    The ledger first vouches for both the record and its replacement, the
+    record is then rewritten through a journaled transaction, and the ledger
+    then vouches for the replacement alone (module docstring): a failure, or
+    the process dying, at any step leaves the waiting proposal trusted, as it
+    was or as replaced. `fault` is for tests: called with each step's name, as
+    `transaction.Transaction` calls it, and passed on to it."""
+    fault = fault or (lambda _step: None)
     try:
-        target = open_target(folder, state)
-        proposal, problems = check(raw, target)
-        if problems:
-            return refused_result(problems)
-        fingerprint = proposal_fingerprint(proposal)
-        cs = target.cs
-        with cs.lock("intake", INTAKE_TIMEOUT) as held:
-            if not held:
+        cs = open_target(folder, state).cs
+        with cs.lock("writer", INTAKE_TIMEOUT) as writer:
+            if not writer:
                 raise _busy()
-            waiting = find_duplicate(cs, fingerprint)
-            if waiting is None or waiting["proposal_id"] != proposal_id:
-                return refused_result([_problem(
-                    "not_duplicate", "That proposal is no longer awaiting review with the same "
-                                     "content. Check the proposal again.")])
-            record = _new_record(cs, proposal_id, source, proposal, fingerprint, submitted)
-            data = _record_bytes(record)
-            ledger = _active_ledger(cs)
-            ledger[proposal_id] = {"sha256": hashlib.sha256(data).hexdigest(), "source": source}
-            _write_ledger(cs, ledger)
-            hs.write_json_atomic(cs.path(ps.PROPOSALS, PENDING, proposal_id + ".json"), record)
-        return pending_result(proposal_id)
+            with cs.lock("intake", INTAKE_TIMEOUT) as held:
+                if not held:
+                    raise _busy()
+                # Everything is decided again here, under both locks: the
+                # context as it is now, and whether the proposal still waits.
+                target = open_target(folder, state, writing=True)
+                proposal, problems = check(raw, target)
+                if problems:
+                    return refused_result(problems)
+                fingerprint = proposal_fingerprint(proposal)
+                waiting = find_duplicate(cs, fingerprint)
+                if waiting is None or waiting["proposal_id"] != proposal_id:
+                    return refused_result([_problem("not_duplicate", NOT_WAITING)])
+                return _replace_record(cs, waiting, source, proposal, fingerprint, submitted, fault)
     except Unavailable as exc:
         return unavailable_result(exc)
+    except tx.TransactionError as exc:
+        if exc.concurrent:
+            # The record changed after it was checked, outside Charter: it is
+            # left as it is, and nothing was replaced.
+            return refused_result([_problem("not_duplicate", NOT_WAITING)])
+        if exc.restored:
+            return unavailable_result(Unavailable(
+                "intake_unavailable", "Charter could not replace the waiting proposal, so it is "
+                                      "still awaiting review, unchanged.", retryable=_transient(exc)))
+        return unavailable_result(Unavailable(
+            "intake_unavailable", "Charter could not finish replacing the waiting proposal. It is "
+                                  "still awaiting review, as it was or as replaced: open the Agent "
+                                  "Context in Charter again.", retryable=False))
     except (ps.PrivateStateError, hs.HostStateError, OSError) as exc:
         return unavailable_result(write_failure(exc))
+
+
+def _replace_record(cs: ps.ContextState, waiting: Dict[str, Any], source: str,
+                    proposal: Dict[str, Any], fingerprint: str, submitted: Any,
+                    fault: Any) -> Dict[str, Any]:
+    """The writes of `replace`, holding both locks. `waiting` is the trusted
+    record just found for this content."""
+    proposal_id = waiting["proposal_id"]
+    rel = f"{ps.PROPOSALS}/{PENDING}/{proposal_id}.json"
+    try:
+        old = _read_regular(cs.path(*rel.split("/")), MAX_INPUT + 1)
+    except (NotRegular, OSError):
+        raise tx.ConcurrentChange([rel])
+    old_sha = hashlib.sha256(old).hexdigest()
+    previous = _active_ledger(cs)
+    if _vouched(previous.get(proposal_id)).get(old_sha) != waiting["source"]:
+        raise tx.ConcurrentChange([rel])  # changed since `find_duplicate` read it
+    data = _record_bytes(_new_record(cs, proposal_id, source, proposal, fingerprint, submitted))
+    new_sha = hashlib.sha256(data).hexdigest()
+    ledger = dict(previous)
+    ledger[proposal_id] = {"sha256": old_sha, "source": waiting["source"],
+                           "replacement": {"sha256": new_sha, "source": source}}
+    try:
+        fault("before-ledger")
+        _write_ledger(cs, ledger)
+        fault("after-ledger")
+        tx.Transaction(cs, [tx.Write(tx.PRIVATE, rel, data.decode("utf-8"),
+                                     tx.expect(old.decode("utf-8")))], fault=fault).run()
+    except (tx.TransactionError, ps.PrivateStateError, hs.HostStateError, OSError) as exc:
+        restored = getattr(exc, "restored", True)
+        if restored:
+            try:
+                _write_ledger(cs, previous)  # tidy only: the entry still vouches for the record
+            except (ps.PrivateStateError, hs.HostStateError, OSError):
+                pass
+        if isinstance(exc, tx.TransactionError):
+            raise
+        # Nothing was replaced: the record is as it was.
+        raise tx.TransactionError(getattr(exc, "strerror", None) or str(exc)) from exc
+    # The replacement is written and vouched for. Settling the entry only
+    # tidies: if it fails, the next ledger write settles it.
+    try:
+        fault("before-settle")
+        ledger[proposal_id] = {"sha256": new_sha, "source": source}
+        _write_ledger(cs, ledger)
+        fault("after-settle")
+    except (ps.PrivateStateError, hs.HostStateError, OSError):
+        pass
+    return pending_result(proposal_id)
 
 
 # --- several proposals at once: the console's import ------------------------------------
@@ -788,7 +935,7 @@ def file_batch(folder: str, items: List[Tuple[Any, Any]], source: str = IMPORTED
             with cs.lock("intake", INTAKE_TIMEOUT) as held:
                 if not held:
                     raise _busy()
-                target = open_target(folder, state)  # the context as it is now, under the locks
+                target = open_target(folder, state, writing=True)  # the context as it is now, under the locks
                 assessed = assess(target, [raw for raw, _submitted in items])
                 if any(a["status"] != READY for a in assessed):
                     return {"result": "refused", "items": assessed}
@@ -830,8 +977,10 @@ def file_batch(folder: str, items: List[Tuple[Any, Any]], source: str = IMPORTED
 
 def forget_decided(cs: ps.ContextState) -> None:
     """After a decision removed a proposal's record, drop its ledger entry, so
-    nothing vouches for, or remembers, a decided proposal. Best effort: an
-    entry left behind is dropped when the ledger is next written."""
+    nothing vouches for, or remembers, a decided proposal. Called with the
+    writer lock held, so it takes `intake` second, in the one lock order.
+    Best effort: an entry left behind is dropped when the ledger is next
+    written."""
     try:
         with cs.lock("intake", INTAKE_TIMEOUT) as held:
             if held:
@@ -876,7 +1025,7 @@ def _read_regular(path: str, limit: int) -> bytes:
         raise NotRegular(kind)
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) \
         | getattr(os, "O_BINARY", 0)
-    fd = os.open(path, flags)
+    fd = hs.retry_shared(os.open, path, flags)
     with os.fdopen(fd, "rb") as fh:
         if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
             raise NotRegular("a special file")
@@ -906,9 +1055,19 @@ def records(cs: ps.ContextState) -> Tuple[List[Dict[str, Any]], List[Dict[str, A
         path = os.path.join(folder, name)
         if name.startswith(".") and name.endswith(".tmp"):
             continue  # a write still in progress, or cut short: Charter's own
+        if name.startswith(ac.TRANSACTION_PREFIXES):
+            # A Charter transaction's own file beside the record it replaces,
+            # removed when the transaction ends or is recovered: never a
+            # proposal, and never opened here, where holding it open would
+            # stop that transaction finishing on Windows.
+            continue
         regular = not _not_regular(path)
         data, record = _read_record(path) if regular else (None, None)
         entry = ledger.get(name[:-5]) if name.endswith(".json") else None
+        # Mid-replacement, an entry vouches for the record as it was and as
+        # replaced, whichever is on disk (module docstring).
+        vouched = _vouched(entry)
+        digest = hashlib.sha256(data).hexdigest() if data is not None else ""
         why = ""
         if not regular:
             why = "It is not a regular file."
@@ -916,13 +1075,13 @@ def records(cs: ps.ContextState) -> Tuple[List[Dict[str, Any]], List[Dict[str, A
             why = "It cannot be read as a proposal record."
         elif not isinstance(entry, dict) or record.get("proposal_id") != name[:-5]:
             why = "Charter's intake did not file it."
-        elif hashlib.sha256(data).hexdigest() != entry.get("sha256"):
+        elif digest not in vouched:
             why = "It changed after Charter filed it."
         if why:
             unexpected.append({"name": name, "bytes": len(data or b""), "why": why,
                                "regular": regular})
         else:
-            filed.append(dict(record, source=entry.get("source", AGENT)))
+            filed.append(dict(record, source=vouched[digest]))
     return filed, unexpected
 
 
@@ -952,7 +1111,8 @@ def unexpected_text(cs: ps.ContextState, name: str, limit: int = 65536) -> str:
     """An unexpected file's text, for the person to inspect. Read only. A record
     that is not a regular file raises NotRegular, saying what it is."""
     folder = cs.path(ps.PROPOSALS, PENDING)
-    if name not in os.listdir(folder) or "/" in name or "\\" in name:
+    if name not in os.listdir(folder) or "/" in name or "\\" in name \
+            or name.startswith(ac.TRANSACTION_PREFIXES):
         raise ValueError("No such unexpected record.")
     try:
         data = _read_regular(os.path.join(folder, name), limit)
@@ -1008,7 +1168,11 @@ def listing(folder: str, state: Optional[ps.PrivateState] = None) -> Dict[str, A
     shown = []
     for record in sorted(filed, key=lambda r: r.get("received", "")):
         p = record["proposal"]
-        stale = staleness(p, target) if target else ["The Agent Context is not valid now."]
+        # Stale is about a proposal's own target (UI Standards). An Agent
+        # Context that cannot be reviewed against now, its map out of date
+        # among them, is unavailable as a whole: the status above every view
+        # names it and its remedy, and no card is marked for it.
+        stale = staleness(p, target) if target else []
         title, title_kind = title_of(p, target, cs)
         shown.append({"proposal_id": record["proposal_id"], "source": record["source"],
                       "title": title, "title_kind": title_kind,

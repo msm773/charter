@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -436,21 +437,103 @@ def file_lock(path: str, timeout: float) -> Iterator[bool]:
         os.close(fd)
 
 
+def lock_held(path: str) -> bool:
+    """Whether a live holder has the lock at `path` now, as `file_lock` takes
+    it. Never waits, and never creates the lock file: one that is not there is
+    held by nobody."""
+    try:
+        fd = os.open(path, os.O_RDWR | _O_BINARY)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        return False
+    finally:
+        os.close(fd)
+
+
 # --- atomic JSON records ----------------------------------------------------------------
 
+# --- files another handle has open --------------------------------------------------------
+
+# Windows refuses to rename over, delete, or sometimes open a file that another
+# handle has open without delete sharing — as a lock-free reader in this very
+# process may, for a moment. These codes say so: sharing and lock violations,
+# and access denied, which the same moment produces but which also means a
+# real permission problem. So each is tried again only a few times, briefly;
+# a failure that persists is raised exactly as it was, never passed over.
+_SHARING_WINERRORS = (5, 32, 33)
+_SHARING_DELAYS = (0.002, 0.005, 0.01, 0.02, 0.04, 0.08, 0.15, 0.25, 0.4)  # under a second in all
+
+
+def sharing_violation(exc: BaseException) -> bool:
+    """Whether `exc` is a Windows refusal because another handle has the file
+    open — or, opening one, because it is being renamed over that moment."""
+    if not isinstance(exc, OSError) or os.name != "nt":
+        return False
+    code = getattr(exc, "winerror", None)
+    if code is not None:
+        return code in _SHARING_WINERRORS
+    # Opening a file goes through the C runtime, which reports the same
+    # refusal as errno EACCES alone, with no Windows code.
+    return exc.errno == errno.EACCES
+
+
+def retry_shared(op: Any, *args: Any, revalidate: Any = None) -> Any:
+    """`op(*args)`, tried again a bounded number of times while it fails only
+    because another handle has the file open (Windows). Before each retry,
+    `revalidate()` — when given — confirms the retry is still the same
+    operation, raising to stop. Any other failure is raised at once."""
+    for delay in _SHARING_DELAYS + (None,):
+        try:
+            return op(*args)
+        except OSError as exc:
+            if delay is None or not sharing_violation(exc):
+                raise
+        time.sleep(delay)
+        if revalidate is not None:
+            revalidate()
+    return None  # unreachable: the last attempt returns or raises
+
+
 def write_json_atomic(path: str, data: Any) -> None:
-    """Replace `path` with `data` as JSON, flushed, in one rename."""
+    """Replace `path` with `data` as JSON, flushed, in one rename. If that
+    fails, its own temporary file — created for this call alone — is removed."""
     folder = os.path.dirname(path)
     os.makedirs(folder, exist_ok=True)
     tmp = os.path.join(folder, f".{os.path.basename(path)}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     raw = (json.dumps(data, ensure_ascii=False, indent=1, sort_keys=True) + "\n").encode("utf-8")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
     try:
-        os.write(fd, raw)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp, path)
+        try:
+            os.write(fd, raw)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        retry_shared(os.replace, tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            retry_shared(os.remove, tmp)
+        raise
 
 
 def _reject_nonfinite(token: str) -> float:
@@ -476,7 +559,7 @@ def loads_strict(text: str) -> Any:
 
 def read_json(path: str, default: Any = None) -> Any:
     try:
-        with open(path, "rb") as fh:
+        with retry_shared(open, path, "rb") as fh:
             return json.loads(fh.read().decode("utf-8"))
     except FileNotFoundError:
         return default

@@ -181,7 +181,13 @@ global.history = {
   back() { goBack(); },
 };
 const windowListeners = {};
-global.window = { addEventListener(type, fn) { (windowListeners[type] = windowListeners[type] || []).push(fn); } };
+global.window = {  // as a browser's: one listener added twice is there once
+  addEventListener(type, fn) {
+    const list = windowListeners[type] = windowListeners[type] || [];
+    if (!list.includes(fn)) list.push(fn);
+  },
+  removeEventListener(type, fn) { windowListeners[type] = (windowListeners[type] || []).filter((f) => f !== fn); },
+};
 const popstate = () => (windowListeners.popstate || []).forEach((fn) => fn({}));
 const goBack = () => { addressBook.index--; popstate(); };
 const goForward = () => { addressBook.index++; popstate(); };
@@ -207,6 +213,10 @@ const lastCall = (url) => calls.filter((c) => c.url === url).pop();
 const lastPlan = () => lastCall("/api/plan");
 const requestKeys = () => JSON.stringify(Object.keys(lastPlan().body.request).sort());
 const toastNow = () => document.querySelector(".toast");
+/* A success notice is announced by the page's own live region, there from the
+   start (#notices), never by a live role of its own added with it. */
+const announced = (node) => !!node && node.parentNode === $("notices") && node.getAttribute("role") === null
+  && $("notices").getAttribute("role") === "status" && $("notices").getAttribute("aria-live") === "polite";
 const clearToasts = () => document.querySelectorAll(".toast").forEach((t) => t.remove());
 const click = async (node) => { node.click(); await settle(); };
 const type = (node, value) => { node.value = value; node.dispatch("input"); };
@@ -700,6 +710,94 @@ for (const file of ["markdown.js", "app.js"]) {
     && !calls.some((c) => /\/api\/(plan|apply|changeset)/.test(c.url))
     && toastNow() && toastNow().querySelector(".toast-text").textContent === "Marked as seen.",
     "Mark as seen sends the text it read, asks no further confirmation, plans nothing, and says exactly “Marked as seen.”");
+  check(announced(toastNow()), "  in the page's own live region, so it is announced");
+  vm.runInThisContext("closeDocument()");
+
+  console.log("\nFocus goes back to the control in the opener's place, even after a redraw");
+  {
+    const attachedNow = vm.runInThisContext("attached");
+    await navTo("candidates");
+    const gammaRead = () => buttonSaying(rowOf("candidatesList", "Gamma rules"), "Read");
+    const asChanged = "reading.data.provenance = { state: 'changed', event: 'created', date: '2026-10-21', "
+      + "sha: 'a'.repeat(64) }; renderReader();";
+    for (const how of ["Close", "Escape"]) {
+      const opener = gammaRead();
+      await click(opener);
+      vm.runInThisContext(asChanged);  // as for a candidate changed outside Charter
+      await click($("readerMarkSeen"));
+      await settle();
+      const current = gammaRead();
+      check(!attachedNow(opener) && current !== opener && attachedNow(current) && !$("docViewer").hidden,
+        `(${how}) Mark as seen redraws the cards: the Read that opened the reader is detached, another stands in its place`);
+      if (how === "Close") await click(buttonSaying($("docViewer"), "Close"));
+      else { document.dispatch("keydown", { key: "Escape" }); await settle(); }
+      check($("docViewer").hidden && document.activeElement === current,
+        `  ${how} returns focus to the card's current Read, never a detached button or <body>`);
+      clearToasts();
+    }
+    const returnFocus = vm.runInThisContext("returnFocus");
+    const focusReturn = vm.runInThisContext("focusReturn");
+    const gone = document.createElement("button");
+    returnFocus(focusReturn(gone));
+    check(document.activeElement === $("view-candidates").querySelector("h2"),
+      "a control that is gone, with nothing in its place: the view's heading, never a detached node");
+    returnFocus(focusReturn(document.body));
+    check(document.activeElement !== document.body && document.activeElement === $("view-candidates").querySelector("h2"),
+      "  and <body> is never a destination");
+  }
+
+  console.log("\nThe reader, Compare and the command dialog: modal dialogs that keep Tab inside");
+  {
+    const opener = buttonSaying(rowOf("candidatesList", "Gamma rules"), "Read");
+    await click(opener);
+    vm.runInThisContext("reading.data.provenance = { state: 'changed', event: 'created', date: '2026-10-21', "
+      + "sha: 'a'.repeat(64) }; renderReader();");
+    const stops = vm.runInThisContext("tabStops")($("docViewer"));
+    check(stops.map((b) => b.textContent).join("|") === "View source|Close|Compare with Charter's version|Mark as seen",
+      "the reader's own controls, in order, are its Tab stops");
+    const tab = (shiftKey) => {
+      let prevented = false;
+      document.dispatch("keydown", { key: "Tab", shiftKey, preventDefault() { prevented = true; } });
+      return prevented;
+    };
+    stops[stops.length - 1].focus();
+    check(tab(false) && document.activeElement === stops[0], "Tab from the last control goes to the first");
+    check(tab(true) && document.activeElement === stops[stops.length - 1], "Shift+Tab from the first goes to the last");
+    stops[1].focus();
+    check(!tab(false) && !tab(true), "between them, Tab and Shift+Tab are the browser's own");
+    document.body.focus();
+    check(tab(false) && document.activeElement === stops[0], "focus outside the dialog is brought back into it");
+    await click($("readerCompareCharter"));
+    await settle();
+    const compare = $("docViewer").querySelector(".reader");
+    check(compare.tagName === "DIV" && compare.getAttribute("role") === "dialog" && compare.getAttribute("aria-modal") === "true"
+      && compare.getAttribute("aria-labelledby") === "cmpTitle" && !$("docViewer").querySelectorAll("article").length,
+      "Compare is a modal dialog named by its title, never an <article>");
+    const compareStops = vm.runInThisContext("tabStops")($("docViewer"));
+    compareStops[compareStops.length - 1].focus();
+    check(tab(false) && document.activeElement === compareStops[0], "  and keeps Tab inside it too");
+    /* A browser lays the diff out; here it is said to overflow, as a long one does on a narrow screen. */
+    const diff = $("docViewer").querySelector(".reader-body").children.find((n) => n.tagName !== "H4");
+    const header = $("docViewer").querySelector("header");
+    Object.assign(diff, { scrollHeight: 900, clientHeight: 300, scrollWidth: 300, clientWidth: 300 });
+    Object.assign(header, { scrollHeight: 40, clientHeight: 40, scrollWidth: 300, clientWidth: 300 });
+    global.getComputedStyle = (node) => ({ overflowY: node === diff ? "auto" : "visible", overflowX: "visible" });
+    vm.runInThisContext("keyboardScrollable")($("docViewer"));
+    delete global.getComputedStyle;
+    const withDiff = vm.runInThisContext("tabStops")($("docViewer"));
+    check(diff.getAttribute("tabindex") === "0" && header.getAttribute("tabindex") === null
+      && withDiff.length === compareStops.length + 1 && withDiff[withDiff.length - 1] === diff,
+      "  a diff that overflows becomes a Tab stop, so it can be scrolled from the keyboard; nothing else does");
+    diff.focus();
+    check(tab(false) && document.activeElement === withDiff[0], "  and Tab's cycle includes it");
+    document.dispatch("keydown", { key: "Escape" });
+    await settle();
+    check($("docViewer").hidden && document.activeElement === buttonSaying(rowOf("candidatesList", "Gamma rules"), "Read"),
+      "Escape closes Compare, focus back on the Read that opened the reader");
+    let prevented = false;
+    document.dispatch("keydown", { key: "Tab", preventDefault() { prevented = true; } });
+    check(!prevented, "with no dialog open, Tab is left alone");
+  }
   vm.runInThisContext("closeDocument()");
   const pickLabel = vm.runInThisContext("candidateLabel")(
     { title: "X", source_kind: "proposal", revises_title: "Alpha", scope: "short scope",
@@ -849,6 +947,7 @@ for (const file of ["markdown.js", "app.js"]) {
   check(/display:\s*none/.test(rule(css, ".record-group[hidden]")), "an empty group is not shown at all");
 
   console.log("\nGoverning documents: the map is a reference block, then the labelled list");
+  await navTo("governing");  // its controls are pressed where the person can see them
   const mapSiblings = $("contextMapSection").parentNode.children;
   const govGroup = $("governingGroup");
   const govLabel = $("governingGroupLabel");
@@ -926,9 +1025,13 @@ for (const file of ["markdown.js", "app.js"]) {
     "a governing document's banner says it is current context");
   check(!/follow/i.test($("docViewer").querySelector(".reader-banner").textContent),
     "the banner does not claim agents follow it: Charter cannot make them");
-  check($("docViewer").querySelector("article").getAttribute("role") === "dialog"
+  const readerDialog = $("docViewer").querySelector(".reader");
+  check(readerDialog.tagName === "DIV" && readerDialog.getAttribute("role") === "dialog"
+    && readerDialog.getAttribute("aria-modal") === "true" && readerDialog.getAttribute("aria-labelledby") === "readerTitle"
+    && !$("docViewer").querySelectorAll("article").length
     && document.activeElement === buttonSaying($("docViewer"), "Close"),
-    "it is a dialog, with focus on Close");
+    "it is a modal dialog named by its title, on an element that may take that role (never an <article>), "
+    + "with focus on Close");
   await click(buttonSaying($("docViewer"), "View source"));
   check($("docViewer").querySelector("pre.code").textContent === fixture.previews[fixture.rich].text,
     "View source shows the text exactly");
@@ -967,6 +1070,8 @@ for (const file of ["markdown.js", "app.js"]) {
     && $("csCandidates").querySelectorAll(".cs-row").length === 1
     && $("csCandidates").querySelector(".cs-row .title").textContent === "Beta revised",
     "its editor opens with that one candidate, a compact row led by its title, in place of the index");
+  check(document.activeElement === $("csTitle") && vm.runInThisContext("attached")($("csTitle")),
+    "focus moves to the new plan's first field, Name: never left on a card in another view, or on <body>");
   const decision0 = $("csDecision-0");
   check(decision0.tagName === "SELECT" && decision0.value === ""
     && decision0.options.map((o) => `${o.value}=${o.textContent}`).join("|")
@@ -999,6 +1104,26 @@ for (const file of ["markdown.js", "app.js"]) {
   check(!/position:\s*sticky|overflow|max-height/.test(rule(css, ".cs-review"))
     && !/overflow|max-height/.test(rule(css, ".cs-item")) && !/max-height|overflow/.test(rule(css, ".report-grid")),
     "the page scrolls as a whole: no candidate row or review panel scrolls on its own");
+  check(!/overflow|max-height/.test(rule(css, ".cs-list")) && /max-height/.test(rule(css, ".cs-list.bounded"))
+    && !$("csCandidates").classList.contains("bounded")
+    && /class: "cs-list", id: "csWithdrawals"/.test(fs.readFileSync(path.join(STATIC, "app.js"), "utf8")),
+    "the candidate and withdrawal lists grow with the page: neither is a nested scroll region");
+  const headingLevels = (root) => {
+    const out = [];
+    const walk = (node) => node.children.forEach((c) => { if (/^H[1-6]$/.test(c.tagName)) out.push(c); walk(c); });
+    walk(root);
+    return out;
+  };
+  const buildHeadings = headingLevels($("changeSetEditor"));
+  const buildLevels = buildHeadings.map((h) => +h.tagName[1]);
+  check(buildHeadings[0] && buildHeadings[0].id === "csBuildHeading" && buildHeadings[0].tagName === "H3"
+    && buildHeadings[0].textContent === vm.runInThisContext("changeSet").draft.title && !$("csTitleText")
+    && buildLevels.slice(1).length >= 3 && buildLevels.slice(1).every((n) => n === 4)
+    && buildLevels.every((n, i) => i === 0 || n <= buildLevels[i - 1] + 1),
+    "Build Change Set's headings run in order: the change set's name (h3), then each section (h4), none skipped");
+  check(buildHeadings[0].className === "sr-only" && /position:\s*absolute/.test(rule(css, ".sr-only"))
+    && /clip:/.test(rule(css, ".sr-only")),
+    "  while it is being built that name heading is for assistive technology only: the Name field shows it, as before");
   check(!$("confirmPhrase") && calls.filter((c) => c.url === "/api/plan").length === plansBeforeRevised && noGoverningApply(),
     "no phrase is asked for and nothing is previewed or applied until the change set is");
   csNext = fixture.cs_start_replace_pending;
@@ -1909,7 +2034,7 @@ for (const file of ["markdown.js", "app.js"]) {
   await click(buttonSaying(toastNow(), "Dismiss"));
   check(!toastNow(), "Dismiss removes it");
   vm.runInThisContext("toast")("Done.", false, { label: "View details", onclick: () => {} });
-  check(scheduled.length === 1 && scheduled[0].ms === 8000 && toastNow().getAttribute("role") === "status",
+  check(scheduled.length === 1 && scheduled[0].ms === 8000 && announced(toastNow()),
     "a success with a follow-up goes by itself, politely announced");
   toastNow().dispatch("mouseenter");
   check(cleared.includes(1), "pointing at it pauses the timer");
@@ -1954,6 +2079,19 @@ for (const file of ["markdown.js", "app.js"]) {
   const titleOf = (c) => c.querySelector("h4.proposal-title").textContent;
   check(cards.length === fixture.proposals.pending.length && fresh && staleCard && untitled && importedCreate,
     "each pending and imported proposal has a card");
+  const groupHeading = (groupId) => {
+    const group = $(groupId);
+    const heading = $(group.getAttribute("aria-labelledby"));
+    return heading && heading.tagName === "H3" && heading.parentNode === group ? heading : null;
+  };
+  const pendingHeading = groupHeading("proposalsPendingGroup");
+  check(pendingHeading && pendingHeading.className === "sr-only"
+    && pendingHeading.textContent === "Proposals from agents, awaiting your review"
+    && !$("proposalsPendingGroup").getAttribute("aria-label") && groupHeading("proposalsImportedGroup")
+    && groupHeading("proposalsUnexpectedGroup")
+    && document.querySelectorAll(".proposal").every((c) => c.querySelector(".proposal-title").tagName === "H4"),
+    "every proposal group is named by an h3 — awaiting review's for assistive technology only — and each card's "
+    + "title is an h4 beneath it: no heading level is skipped after the view's h2");
   check(titleOf(titled) === "Release checklist" && titled.getAttribute("aria-labelledby") === titled.querySelector("h4").getAttribute("id")
     && !/Proposed title/.test(titled.textContent),
     "a create leads with the title it supplies, with no operation word or Proposed title badge");
@@ -2143,7 +2281,7 @@ for (const file of ["markdown.js", "app.js"]) {
     && !/file “/i.test(fixture.plans["accept-proposal"].summary) && !/does not govern/.test(fixture.plans["accept-proposal"].summary),
     "the acceptance summary names the candidate by friendly title, never “file <name>”");
   check(toastNow().textContent === "Proposal accepted." && !toastNow().querySelectorAll("button").length
-    && !toastNow().querySelectorAll("a").length && toastNow().getAttribute("role") === "status",
+    && !toastNow().querySelectorAll("a").length && announced(toastNow()),
     "the notice says exactly “Proposal accepted.”: no button, link, document name or other detail");
   clearToasts();
 
@@ -2180,7 +2318,7 @@ for (const file of ["markdown.js", "app.js"]) {
     && !$("confirmPhrase"),
     "Reject rejects it, sending no reason, confirmed ordinarily");
   check(toastNow().textContent === "Proposal rejected." && !toastNow().querySelectorAll("button").length
-    && !toastNow().querySelectorAll("a").length && toastNow().getAttribute("role") === "status",
+    && !toastNow().querySelectorAll("a").length && announced(toastNow()),
     "the notice says exactly “Proposal rejected.”: no button, link, document name or other detail");
   clearToasts();
 
@@ -2349,6 +2487,8 @@ for (const file of ["markdown.js", "app.js"]) {
   check(!$("importJson") && /^Imported the agent proposal for review\. It is not context\.$/.test(toastNow().textContent)
     && !/\bp-[\w-]+/.test(toastNow().textContent),
     "filed: the panel closes and says so, with no internal id");
+  check(document.activeElement === $("btnImportProposal") && announced(toastNow()),
+    "  focus goes back to Import agent proposals…, which opened the panel, and the notice is announced");
   clearToasts();
   await click($("btnImportProposal"));
   $("importFiles").files = [impFileOf("one.json", "{}"), impFileOf("two.json", "{}")];
@@ -2360,6 +2500,7 @@ for (const file of ["markdown.js", "app.js"]) {
   check(lastCall("/api/proposals/import").body.items.length === 2
     && toastNow().textContent === "Imported 2 agent proposals for review. They are not context.",
     "both filed, and counted");
+  check(document.activeElement === $("btnImportProposal"), "  focus back on Import agent proposals…");
   clearToasts();
 
   console.log("\n  Replace…, one row at a time");
@@ -2386,6 +2527,8 @@ for (const file of ["markdown.js", "app.js"]) {
     && impReplaceBody.item.text === fixture.import_returned && impReplaceBody.confirm === true
     && /Replaced the waiting proposal/.test(toastNow().textContent) && !impRowsNow().length,
     "Replace replaces that one waiting proposal with this row, separately from any import, and the row goes");
+  check(document.activeElement === $("btnCheckImport") && vm.runInThisContext("attached")($("btnCheckImport")),
+    "  focus moves from the Replace that went with its row to Check proposals, the list's next step");
   clearToasts();
   await click($("btnCancelImport"));
 
@@ -2652,6 +2795,24 @@ for (const file of ["markdown.js", "app.js"]) {
   clearToasts();
 
   console.log("\nPreview and apply: one typed confirmation, then a receipt");
+  const planNotes = { notes: fixture.cs_plan.notes, attention: fixture.cs_plan.attention };
+  const changedNote = "“Gamma rules” changed outside Charter since Charter last wrote it.";
+  const earlierNote = "“Beta revised” was made from an earlier version of “Beta”. Compare them before you apply.";
+  fixture.cs_plan.notes = [changedNote, earlierNote];
+  fixture.cs_plan.attention = [changedNote];
+  await click($("csPreview"));
+  const warnings = $("csPreviewBody").querySelectorAll(".cs-preview-warning");
+  check(warnings.length === 2 && warnings[0].className === "note attention cs-preview-warning"
+    && warnings[0].textContent === changedNote && warnings[1].className === "note warn cs-preview-warning",
+    "a candidate changed outside Charter is warned of in the attention treatment; any other warning keeps its own");
+  const attentionRule = rule(css, ".note.attention"), chipRule = rule(css, ".chip.warn");
+  check(/background:\s*var\(--brass-wash\)/.test(attentionRule) && /background:\s*var\(--brass-wash\)/.test(chipRule)
+    && /[^-]color:\s*var\(--brass-ink\)/.test(attentionRule) && /[^-]color:\s*var\(--brass-ink\)/.test(chipRule)
+    && /brick/.test(rule(css, ".note.warn")),
+    "  that is the yellow of the candidate's Changed outside Charter chip, while the warning red stays as it was");
+  fixture.cs_plan.notes = planNotes.notes;
+  fixture.cs_plan.attention = planNotes.attention;
+  vm.runInThisContext("closeReview")();
   await click($("csPreview"));
   check(lastPlan().body.kind === "changeset"
     && JSON.stringify(lastPlan().body.request) === JSON.stringify({ draft_id: fixture.cs_refreshed.draft.id,
@@ -3260,7 +3421,7 @@ for (const file of ["markdown.js", "app.js"]) {
   await click($("btnCommandStatus"));
   await settle();
   const dialog = $("commandDialog");
-  check(lastCall("/api/command") && dialog && dialog.getAttribute("role") === "dialog"
+  check(lastCall("/api/command") && dialog && dialog.tagName === "DIV" && dialog.getAttribute("role") === "dialog"
     && dialog.getAttribute("aria-modal") === "true" && $("commandTitle").textContent === "Charter Command Needs Attention"
     && document.querySelector(".rail").inert === true && document.querySelector(".skip-link").inert === true
     && document.activeElement && document.activeElement.textContent === "Close",
@@ -3428,6 +3589,297 @@ for (const file of ["markdown.js", "app.js"]) {
     "a revision titled differently from what it revises names that document");
   check(Object.values(differing).concat(Object.values(proposed), [alone, earlier]).every((l) => l.length <= 120),
     "options stay short enough for a native dropdown: none past 120 characters");
+
+  console.log("\nA summary or review that could not be saved is kept, with its own draft, until it saves");
+  {
+    /* Two drafts on a small stateful stand-in for the server: each keeps its
+       own summary, reviews and revision; a save can be made to fail, or to
+       answer only once the test lets it. */
+    const A = "a".repeat(16), B = "b".repeat(16);
+    const CONFLICT = "This change set changed since you last loaded it. Reload it, review it, and try again.";
+    const make = (id, rationale) => {
+      const p = JSON.parse(JSON.stringify(fixture.cs_reports));
+      Object.assign(p.draft, { id, rationale, state: "active" });
+      return p;
+    };
+    const store = { [A]: make(A, "Stored summary A"), [B]: make(B, "Stored summary B") };
+    const sent = [];
+    let failNext = 0, failWith = 500, hold = null;
+    const realFetch = global.fetch;
+    global.fetch = async (url, options) => {
+      const body = options && options.body ? JSON.parse(options.body) : undefined;
+      if (!body || !store[body.id] || !url.startsWith("/api/changeset/")) return realFetch(url, options);
+      sent.push({ url, body });
+      const answer = (data) => ({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(data)) });
+      const refuse = (status, error) => ({ ok: false, status, json: async () => ({ error }) });
+      const gate = hold;
+      hold = null;
+      if (gate) await gate.promise;
+      const p = store[body.id];
+      if (url === "/api/changeset/get") return answer(p);
+      if (failNext > 0) {
+        failNext -= 1;
+        return failWith === 409 ? refuse(409, CONFLICT) : refuse(500, "Charter could not save this draft now.");
+      }
+      if (url === "/api/changeset/update" && body.rationale !== undefined) p.draft.rationale = body.rationale;
+      if (url === "/api/changeset/review/save") {
+        const r = p.reports.find((x) => x.id === body.report_id);
+        if (body.label !== undefined) r.label = body.label;
+        if (body.text !== undefined) r.text = body.text;
+      }
+      if (url === "/api/changeset/report/remove") p.reports = p.reports.filter((x) => x.id !== body.report_id);
+      if (url === "/api/changeset/abandon") p.draft.state = "abandoned";
+      p.draft.revision += 1;
+      return answer(p);
+    };
+    const gated = () => { let release; const promise = new Promise((r) => { release = r; }); return { promise, release }; };
+    const open = async (id) => { await vm.runInThisContext("openChangeSet")(id); await settle(); };
+    const close = async () => { await vm.runInThisContext("closeChangeSet")(); await settle(); };
+    const openId = () => { const cs = vm.runInThisContext("changeSet"); return cs && cs.draft.id; };
+    const unsaved = (id) => { try { return vm.runInThisContext("hasUnsaved")(id); } catch (e) { return undefined; } };
+    const write = (node, value) => { node.value = value; node.dispatch("input"); };
+    const saves = (id, field, value) => sent.filter((c) => c.body.id === id && c.body[field] === value
+      && /\/(update|review\/save)$/.test(c.url));
+    /* Whether leaving the page now would ask the browser for its own
+       leave-page confirmation: a `beforeunload` listener that cancels the
+       unload, with no wording of Charter's own. */
+    const leaveAsked = () => {
+      const listeners = windowListeners.beforeunload || [];
+      if (!listeners.length) return false;
+      const event = { defaultPrevented: false, returnValue: undefined, preventDefault() { this.defaultPrevented = true; } };
+      listeners.forEach((fn) => fn(event));
+      return event.defaultPrevented && event.returnValue === "" && listeners.length === 1;
+    };
+    await close();
+    clearToasts();
+    check(!leaveAsked(), "nothing unsaved: leaving the page asks nothing");
+
+    console.log("\n  a failed summary save, leaving the draft, and coming back");
+    await open(A);
+    write($("csRationale"), "Unsaved summary A");
+    check(!leaveAsked(), "an edit only pending its automatic save never asks before leaving the page");
+    failNext = 1;
+    $("csRationale").dispatch("change");
+    await settle();
+    check(toastNow() && toastNow().classList.contains("error") && $("csRationale").value === "Unsaved summary A"
+      && store[A].draft.rationale === "Stored summary A" && unsaved(A),
+      "the failed save says so, and the summary keeps what was written");
+    check(leaveAsked(), "  while it is unsaved, leaving the page asks for the browser's own confirmation, with no wording of Charter's");
+    failNext = 1;  // leaving saves first, and that fails too
+    await close();
+    check(store[A].draft.rationale === "Stored summary A" && unsaved(A),
+      "  leaving the draft keeps it, unsaved, with that draft");
+    check(leaveAsked() && vm.runInThisContext("currentView") === "changesets",
+      "  moving within the console keeps it, and still asks before leaving the page");
+    clearToasts();
+    await open(A);
+    check($("csRationale").value === "Unsaved summary A",
+      "  back in the draft, the summary shows what was written, not the older saved text");
+    check(store[A].draft.rationale === "Unsaved summary A" && saves(A, "rationale", "Unsaved summary A").length === 3
+      && !unsaved(A) && !toastNow(), "  and it is saved again, this time successfully, and kept no longer");
+    check(!leaveAsked(), "  once saved, leaving the page asks nothing");
+    const afterRetry = sent.length;
+    await close();
+    await open(A);
+    check($("csRationale").value === "Unsaved summary A"
+      && !sent.slice(afterRetry).some((c) => c.url === "/api/changeset/update"),
+      "  once saved, opening the draft again saves nothing more");
+
+    console.log("\n  two drafts, each with its own unsaved text");
+    write($("csRationale"), "Second summary A");
+    failNext = 2;
+    $("csRationale").dispatch("change");
+    await settle();
+    await close();
+    await open(B);
+    check($("csRationale").value === "Stored summary B" && !sent.some((c) => c.body.id === B && /summary A/.test(JSON.stringify(c.body))),
+      "opening another draft shows its own saved summary, and nothing of the first is sent to it");
+    write($("csRationale"), "Unsaved summary B");
+    failNext = 2;
+    $("csRationale").dispatch("change");
+    await settle();
+    await close();
+    check(unsaved(A) && unsaved(B), "  each draft keeps its own unsaved summary");
+    check(leaveAsked(), "  and leaving the page asks first");
+    clearToasts();
+    await open(A);
+    check($("csRationale").value === "Second summary A" && store[A].draft.rationale === "Second summary A" && !unsaved(A),
+      "  the first draft shows and saves its own text");
+    check(leaveAsked(), "  with the second draft's text still unsaved, leaving the page still asks");
+    await close();
+    await open(B);
+    check($("csRationale").value === "Unsaved summary B" && store[B].draft.rationale === "Unsaved summary B" && !unsaved(B)
+      && !sent.some((c) => c.body.id === A && /summary B/.test(JSON.stringify(c.body))),
+      "  and the second its own: neither draft's text ever reaches the other");
+    check(!leaveAsked(), "  with both saved, leaving the page asks nothing");
+    await close();
+
+    console.log("\n  writing again after a failed save");
+    await open(A);
+    write($("csRationale"), "Failed, then rewritten");
+    failNext = 1;
+    $("csRationale").dispatch("change");
+    await settle();
+    check(leaveAsked(), "a failed save asks before leaving the page");
+    write($("csRationale"), "Failed, then rewritten, then more");
+    check(!leaveAsked() && unsaved(A), "  new text after it is only pending its automatic save: nothing is asked");
+    hold = gated();
+    const saving = hold;
+    $("csRationale").dispatch("change");
+    await settle();
+    check(!leaveAsked(), "  nor while that text is saving");
+    saving.release();
+    await settle();
+    check(!leaveAsked() && !unsaved(A) && store[A].draft.rationale === "Failed, then rewritten, then more",
+      "  and once it saves, nothing is asked");
+    clearToasts();
+    await close();
+
+    console.log("\n  a failed review save");
+    await open(A);
+    const reportId = store[A].reports[0].id;
+    write($("csReviewText-0"), "Unsaved review text");
+    failNext = 1;
+    $("csReviewText-0").dispatch("change");
+    await settle();
+    check($("csReviewText-0").value === "Unsaved review text" && store[A].reports[0].text !== "Unsaved review text"
+      && toastNow() && toastNow().classList.contains("error") && unsaved(A),
+      "the failed review save says so, and the review keeps what was written");
+    check(leaveAsked(), "  while it is unsaved, leaving the page asks first");
+    failNext = 1;
+    await close();
+    check(leaveAsked(), "  moving within the console keeps it, and still asks before leaving the page");
+    clearToasts();
+    await open(A);
+    check($("csReviewText-0").value === "Unsaved review text" && store[A].reports[0].text === "Unsaved review text"
+      && saves(A, "text", "Unsaved review text").every((c) => c.body.report_id === reportId) && !unsaved(A),
+      "  back in the draft, the review shows what was written and is saved, to that review");
+    check(!leaveAsked(), "  once saved, leaving the page asks nothing");
+    write($("csReviewText-0"), "Review only pending");
+    check(!leaveAsked(), "  a review edit only pending its automatic save asks nothing");
+    $("csReviewText-0").dispatch("change");
+    await settle();
+    await close();
+
+    console.log("\n  a save answered late, after the person has gone to another draft");
+    await open(A);
+    write($("csRationale"), "Late summary A");
+    hold = gated();
+    const lateFailure = hold;
+    failNext = 1;
+    failWith = 409;
+    $("csRationale").dispatch("change");
+    await settle();
+    await open(B);  // as the browser's Forward opens it, without leaving through the index
+    lateFailure.release();
+    await settle();
+    failWith = 500;
+    check(openId() === B && $("csRationale").value === "Unsaved summary B" && unsaved(A),
+      "a late refusal of the first draft's save leaves the person in the second draft, and the text with the first");
+    clearToasts();
+    await close();
+    await open(A);
+    check($("csRationale").value === "Late summary A" && store[A].draft.rationale === "Late summary A" && !unsaved(A),
+      "  back in the first draft, it is shown and saved");
+    write($("csRationale"), "Late success A");
+    hold = gated();
+    const lateSuccess = hold;
+    $("csRationale").dispatch("change");
+    await settle();
+    await open(B);
+    lateSuccess.release();
+    await settle();
+    check(openId() === B && store[A].draft.rationale === "Late success A" && !unsaved(A),
+      "  a late success is kept as saved, and nothing of it is left unsaved");
+    await close();
+
+    console.log("\n  a change waiting its turn is never sent to a draft opened meanwhile");
+    await open(A);
+    write($("csRationale"), "Queued first");
+    hold = gated();
+    const slow = hold;
+    $("csRationale").dispatch("change");
+    await settle();
+    write($("csRationale"), "Queued second");
+    $("csRationale").dispatch("change");  // waits behind the first save
+    await settle();
+    await open(B);
+    slow.release();
+    await settle();
+    check(store[B].draft.rationale === "Unsaved summary B" && !sent.some((c) => c.body.id === B && /Queued/.test(JSON.stringify(c.body)))
+      && unsaved(A), "the waiting save of the first draft is not sent to the second, and stays with the first");
+    check(!leaveAsked(), "  a save not sent has not failed: leaving the page asks nothing");
+    await close();
+    await open(A);
+    check($("csRationale").value === "Queued second" && store[A].draft.rationale === "Queued second" && !unsaved(A),
+      "  back in the first draft, it is shown and saved");
+
+    console.log("\n  previewing after a failed save");
+    write($("csRationale"), "Before preview");
+    failNext = 1;
+    $("csRationale").dispatch("change");
+    await settle();
+    const plansBefore = calls.filter((c) => c.url === "/api/plan").length;
+    check($("csPreview") && !$("csPreview").disabled, "  (the draft is ready to preview)");
+    failNext = 1;
+    await click($("csPreview"));
+    check(calls.filter((c) => c.url === "/api/plan").length === plansBefore && !$("csPreviewing")
+      && $("csRationale").value === "Before preview" && unsaved(A),
+      "a preview never starts while a save has failed: the draft stays on Build Change Set, its text kept");
+    clearToasts();
+    await click($("csPreview"));
+    check(calls.filter((c) => c.url === "/api/plan").length === plansBefore + 1
+      && store[A].draft.rationale === "Before preview" && !unsaved(A),
+      "  once the save succeeds, the preview is of the draft with that text saved");
+    vm.runInThisContext("closeReview")();
+    await settle();
+    await close();
+
+    console.log("\n  the person's own discarding");
+    await open(B);
+    write($("csRationale"), "Written, then discarded");
+    failNext = 2;  // the save fails, and so does the save before discarding
+    $("csRationale").dispatch("change");
+    await settle();
+    check(leaveAsked(), "(a failed save asks before leaving the page)");
+    const priorConfirm = global.confirm;
+    global.confirm = () => true;
+    await click($("csDiscard"));
+    check(store[B].draft.state === "abandoned" && !unsaved(B),
+      "Discard draft discards its unsaved text with it");
+    check(!leaveAsked(), "  and leaving the page asks nothing more");
+    await open(B);
+    check(!sent.some((c) => c.body.id === B && /Written, then discarded/.test(JSON.stringify(c.body)) && c.url === "/api/changeset/update"
+      && sent.indexOf(c) > sent.findIndex((x) => x.url === "/api/changeset/abandon")),
+      "  and opening that draft again saves none of it");
+    await close();
+    await open(A);
+    write($("csReviewText-0"), "Review then removed");
+    failNext = 1;
+    $("csReviewText-0").dispatch("change");
+    await settle();
+    check(leaveAsked(), "(a failed review save asks before leaving the page)");
+    await click($("csRemoveReview-0"));
+    check(!unsaved(A) && !store[A].reports.some((r) => r.id === reportId),
+      "Remove review discards that review's unsaved text with it");
+    check(!leaveAsked(), "  and leaving the page asks nothing more");
+    global.confirm = priorConfirm;
+    clearToasts();
+
+    console.log("\n  a save that succeeds is unchanged");
+    const before = sent.length;
+    write($("csRationale"), "Saved at once");
+    $("csRationale").dispatch("change");
+    await settle();
+    const updates = sent.slice(before).filter((c) => c.url === "/api/changeset/update");
+    check(updates.length === 1 && updates[0].body.rationale === "Saved at once" && updates[0].body.id === A
+      && store[A].draft.rationale === "Saved at once" && !unsaved(A) && !toastNow(),
+      "written and saved once, with nothing kept unsaved and nothing said");
+    check(!leaveAsked(), "  and leaving the page asks nothing");
+    await close();
+    global.fetch = realFetch;
+    clearToasts();
+  }
 
   console.log("\nA server's `code` is shown as code, never as raw backticks");
   clearToasts();

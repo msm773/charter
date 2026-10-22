@@ -25,11 +25,20 @@ Charter last wrote, and how.
     in the Agent Context folder, never served through MCP, `charter read` or file
     access, never activity or Recent, and never part of the approved-context
     check. A difference blocks nothing.
+  * A record that is not exactly one Charter wrote — unreadable, not a regular
+    file, too large, not UTF-8 JSON, too deeply nested, with a field missing,
+    extra or of the wrong type, or an unknown version, event or date — is no
+    baseline: it is never shown, never stops anything, and viewing it writes,
+    repairs and removes nothing. Its candidate has none until Charter next
+    writes it.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import re
+import stat
 from typing import Any, Dict, Iterable, List, Optional
 
 from . import agent_context as ac
@@ -80,20 +89,90 @@ def render(text: str, event: str, day: str) -> str:
                       ensure_ascii=False, indent=1, sort_keys=True) + "\n"
 
 
+RECORD_FIELDS = frozenset(("version", "event", "date", "text"))
+# Far beyond any record Charter writes — the largest text the console accepts,
+# as JSON — so only a file that cannot be one is refused unread.
+MAX_RECORD_BYTES = 256 * 1024 * 1024
+_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+
+
 def read(cs: ps.ContextState, logical: str) -> Optional[Dict[str, str]]:
     """A candidate's baseline — `{text, event, date}` — or None when it has
     none, or its record cannot be read or is not one Charter wrote. Never
-    raises: a baseline is advisory and never stops anything."""
+    raises: a baseline is advisory and never stops anything. Every value's
+    type is checked before it is used, and nothing is written."""
     try:
-        with open(cs.path(*record_path(logical).split("/")), "rb") as fh:
-            data = json.loads(fh.read().decode("utf-8"))
-    except (OSError, ValueError, ps.PrivateStateError):
+        data = _parse(_read_record(cs.path(*record_path(logical).split("/"))))
+    except Exception:  # noqa: BLE001 — any record that cannot be read is no baseline
         return None
-    if not isinstance(data, dict) or data.get("version") != RECORD_VERSION \
-            or data.get("event") not in EVENT_LABELS or not isinstance(data.get("date"), str) \
-            or not isinstance(data.get("text"), str):
+    return _baseline(data)
+
+
+def _read_record(path: str) -> bytes:
+    """The bytes of the regular file at `path`, never following a link or
+    opening a folder, pipe or device, which could read another file or wait
+    forever. Raises OSError for anything else, or for a file too large."""
+    if not stat.S_ISREG(os.lstat(path).st_mode):
+        raise OSError("not a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) \
+        | getattr(os, "O_BINARY", 0)
+    with os.fdopen(os.open(path, flags), "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise OSError("not a regular file")
+        data = fh.read(MAX_RECORD_BYTES + 1)
+    if len(data) > MAX_RECORD_BYTES:
+        raise OSError("too large")
+    return data
+
+
+def _parse(data: bytes) -> Any:
+    """Strict UTF-8 JSON, a repeated key refused rather than one silently kept."""
+    def pairs(items: List[Any]) -> Dict[str, Any]:
+        out = dict(items)
+        if len(out) != len(items):
+            raise ValueError("repeated key")
+        return out
+    return json.loads(data.decode("utf-8"), object_pairs_hook=pairs)
+
+
+def _baseline(data: Any) -> Optional[Dict[str, str]]:
+    """The baseline a parsed record holds, or None unless it is exactly the
+    shape `render` writes: each value's type is checked before it is compared,
+    looked up or shown."""
+    if not isinstance(data, dict) or set(data) != RECORD_FIELDS:
         return None
-    return {"text": data["text"].replace("\r\n", "\n"), "event": data["event"], "date": data["date"]}
+    version, event, day, text = data["version"], data["event"], data["date"], data["text"]
+    # `type`, not `isinstance`: JSON `true` is a bool, and a bool is an int.
+    if type(version) is not int or version != RECORD_VERSION:
+        return None
+    if not isinstance(event, str) or event not in EVENT_LABELS:
+        return None
+    if not isinstance(day, str) or not _is_date(day):
+        return None
+    if not isinstance(text, str) or not _is_utf8(text):
+        return None
+    return {"text": text.replace("\r\n", "\n"), "event": event, "date": day}
+
+
+def _is_date(day: str) -> bool:
+    """A calendar date as `today` writes it, YYYY-MM-DD."""
+    if not _DATE.match(day):
+        return False
+    try:
+        datetime.date.fromisoformat(day)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_utf8(text: str) -> bool:
+    """Whether `text` can be sent as UTF-8: JSON can spell an unpaired
+    surrogate, which no response could carry."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def state(cs: ps.ContextState, logical: str, text: str) -> Dict[str, str]:

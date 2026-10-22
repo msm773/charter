@@ -48,6 +48,23 @@ Through MCP and `charter read`, Charter checks the Agent Context before serving 
 
 Charter runs locally with Python 3.9+ and works alongside Git without managing your commits or branches. It requires no hosted service, remote API, embeddings, or AI provider.
 
+**What Charter is not.** It isn't an AI agent and never contacts one; it doesn't run, sandbox, or supervise your agents; and it doesn't operate Git. It serves context and files proposals; the agent host (below) decides what an agent may do on your computer.
+
+### Key terms
+
+| Term | What it is | Who sees it |
+| --- | --- | --- |
+| **Agent Context** | A folder holding `AGENT-CONTEXT.md` (the generated map), `.agent-context.json`, and `authoritative/`. Portable: you can copy it or commit it to Git. | Agents, and anyone with the folder |
+| **Governing context** | The documents in `authoritative/` that the map lists. The only thing agents are told to treat as authoritative. | Agents |
+| **Authority candidate** | A document under consideration. It governs nothing until a person includes it in a change set and applies it. | Only you, in the console |
+| **Agent Proposal** | An agent's request to create, amend, or retire a candidate. Accepting one creates or changes a candidate; it never changes governing context. | Only you, in the console |
+| **Change set** | The one way governing context changes: a reviewed plan you confirm by typing `change governing context`. | Only you, in the console |
+| **Private state** | Candidates, proposals, drafts, receipts, and activity, kept on this computer outside the Agent Context. Not in Git and not copied with the folder. | Only you (but see [Access and trust](#access-and-trust)) |
+| **Agent host** | The app that runs an agent and decides what it may do, such as Claude Code, Codex, or VS Code with an agent extension. | — |
+| **MCP** | Model Context Protocol: a standard way for an agent host to give its agent extra tools. With MCP, the host starts Charter in the background and the agent calls Charter's tools; you don't run a command for it. | — |
+
+Connecting an agent through MCP is separate from using `charter` yourself in a terminal: the host starts Charter by its full path, so it needs no PATH setup, and you never type a command for the agent.
+
 > ⚠️ **Pre-release — `2.0.0.dev0`.** Charter isn't public yet; this guide assumes you received its release ZIP directly.
 
 ### The Charter workflow
@@ -72,6 +89,7 @@ And the process continues as your project evolves.
 - [Create your first Agent Context](#create-your-first-agent-context)
 - [Connect your agents](#connect-your-agents)
 - [Verify your agent retrieved the context](#verify-your-agent-retrieved-the-context)
+- [Try your first Agent Proposal](#try-your-first-agent-proposal)
 
 ### Install Charter
 
@@ -117,7 +135,7 @@ And the process continues as your project evolves.
 
 3. **Open the Charter folder in a terminal.** On Windows, open the folder containing `charter.py` in File Explorer, then choose **Open in Terminal**. On Windows 10, enter `cmd` in File Explorer's address bar instead.
 
-4. **Make `charter` available on PATH**, so you can run it in a terminal (agent hosts don't need this). From that folder:
+4. **Make `charter` available on PATH**, so you can run it in a terminal. Agent hosts connected through MCP or command-line access don't need this; an agent that reads the Agent Context's files directly does, to run `charter propose`. From that folder:
 
    Windows:
 
@@ -133,15 +151,17 @@ And the process continues as your project evolves.
 
    On Windows, expect `Added to your user PATH:` (or `Already on your user PATH:`). On macOS/Linux, Charter changes neither PATH nor any file: it prints an `export PATH=…` line and the file to add it to, `~/.bashrc` for bash or `~/.zshrc` for zsh. For bash on macOS, it names the login file bash reads: `~/.bash_profile`, or your existing `~/.bash_login` or `~/.profile` if you have one and no `~/.bash_profile`. Add the line with a text editor. Agent hosts started from the desktop rather than a terminal may not read that file; on many Linux desktops they get PATH from `~/.profile`, which takes effect only after you log out and back in.
 
-5. **Restart and verify.** Reopen your terminal and any agent hosts (including VS Code, Claude Code, or Codex), then check **this copy** of Charter by its full path, from any folder. Don't use a bare `charter add-to-path --check`: if another copy of Charter comes first on your PATH, that copy answers instead and reports itself as the one that runs.
+5. **Verify.** Check **this copy** of Charter by its full path, from any folder. Don't use a bare `charter add-to-path --check`: if another copy of Charter comes first on your PATH, that copy answers instead and reports itself as the one that runs.
 
-   Windows (PowerShell), with the Python that runs Charter and this copy's `charter.py`:
+   **Windows:** `add-to-path` prints the exact check command for your copy, with the full path of the Python that runs Charter; copy it from there. It reads PATH as Windows gives it to newly started programs, so you can run it at once in PowerShell; an already open PowerShell window works. Its shape:
 
    ```powershell
    & C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path --check
    ```
 
-   macOS/Linux, with this copy's launcher:
+   To type a bare `charter` yourself, open a **new** terminal window: a window that was already open keeps its old PATH. An agent host needs restarting (quit every window, then reopen) only if its agents will run `charter` by name, as an agent that reads the Agent Context's files does for `charter propose`. Hosts connected through MCP or command-line access start Charter by its full path and don't need PATH at all.
+
+   **macOS/Linux:** after adding the line to your shell startup file, open a new terminal, which reads it, and check there with this copy's launcher:
 
    ```bash
    ~/tools/charter/charter add-to-path --check
@@ -156,7 +176,7 @@ And the process continues as your project evolves.
    - **This copy is on PATH, but another comes first:** the output says "Another `charter` comes first on PATH" and names that copy's folder. Remove that folder from your PATH (Windows: **Settings → System → About → Advanced system settings → Environment Variables**, then edit **Path**). Running `add-to-path` again doesn't change that.
    - **This copy isn't on PATH yet:** on macOS/Linux, `This shell runs:` names the other copy, and the output gives this copy's `add-to-path` command by its full path, such as `/home/you/tools/charter/charter add-to-path`. Run it and add the line it prints: that line puts this copy ahead of the other one. On Windows, the output says to remove the other copy's folder from your PATH, then gives this copy's command by its full paths, for PowerShell, such as `& C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path`.
 
-   Then reopen the terminal and check again with this copy's full-path check command, as above. If it reports `nothing:`, see [Troubleshooting](#troubleshooting).
+   Then check again with this copy's full-path check command, as above—on macOS/Linux, in a new terminal. If it reports `nothing:`, see [Troubleshooting](#troubleshooting).
 
 **Read an Agent Context from your terminal.** Once `charter` is on your PATH, name an Agent Context by its full path to read and check it:
 
@@ -192,7 +212,7 @@ On Debian and Ubuntu, `python3 -m venv` itself needs the `python3-venv` package.
 #### Update Charter
 
 1. Quit the console (**Ctrl+C**) and your agent hosts.
-2. Unpack the new release somewhere temporary, then replace the contents of your Charter folder with it: delete the files inside the Charter folder, keep the folder, and copy in the new release's files. For example, in PowerShell:
+2. Unpack the new release somewhere temporary, then replace the contents of your Charter folder with it: delete the files inside the Charter folder, keep the folder, and copy in the new release's files. The commands below delete everything inside the folder they name: first make sure it's your Charter folder, holding `charter.py`, and that you've kept nothing of your own there. Your Agent Contexts and private state live elsewhere and aren't affected. For example, in PowerShell:
 
    ```powershell
    Expand-Archive charter-<new-version>.zip -DestinationPath $env:TEMP\charter-new
@@ -239,7 +259,7 @@ C:\work\my-project\           your project, where agents work
 C:\work\my-project-context\   the Agent Context
 ```
 
-The Agent Context folder doesn't need to exist yet. Its parent folder (`C:\work` in this example) **does**. On Windows, MCP can't be set up for a folder whose path contains any of `% & | < > ^ "`.
+The Agent Context folder doesn't need to exist yet. Its parent folder (`C:\work` in this example) **does**. Any folder path works for MCP except one containing a line break or other control character. On Windows, if a path Charter needs contains `%`, `&`, or `^`, Connect Agents leaves out its Command Prompt forms, which can't carry those characters, and offers the PowerShell (and, for command-line access, Bash) forms, which carry them exactly.
 
 An Agent Context folder cannot be inside another Agent Context folder. Charter recognizes an Agent Context folder by the presence of `AGENT-CONTEXT.md`.
 
@@ -326,7 +346,7 @@ Prefer them in that order: MCP whenever the host supports it, command-line acces
 
 You install Charter once. For MCP, register one server for each Agent Context an agent host should read: each registration serves exactly the one folder it names.
 
-Charter never changes an agent host's configuration for you: it shows the commands and settings, and you apply them.
+Charter never changes an agent host's configuration for you: it shows the commands and settings, and you apply them. They hold this computer's full paths; see [Portable and machine-local material](#portable-and-machine-local-material) before sharing them.
 
 **Before you connect:**
 
@@ -373,7 +393,7 @@ claude mcp add charter-my-project -- C:\Python312\python.exe C:\Tools\Charter\ch
 claude mcp add charter-my-project -- /home/you/tools/charter/charter mcp --context /home/you/work/my-project-context
 ```
 
-Claude Code stores the program and each argument exactly; no shell runs them later. When a path contains `% & | < > ^`, Connect Agents offers only the PowerShell form, which carries them exactly.
+Claude Code stores the program and each argument exactly; no shell runs them later. When a path contains `%`, `&`, or `^`, Connect Agents offers only the PowerShell form, which carries them exactly.
 
 By default, Claude Code uses **local scope**: this server is available to you **in this project**.
 
@@ -580,6 +600,19 @@ Three checks answer three different questions. Each one shows something the one 
 
 These checks are guidance and validation, not enforcement. Each shows what happened in one session; Charter can't prove that an agent keeps following its context.
 
+### Try your first Agent Proposal
+
+This completes the loop: an agent suggests, you decide.
+
+1. In a session connected to Charter, ask the agent:
+
+   > Following "Making an Agent Proposal" in this project's Agent Context, file an Agent Proposal that creates `authority-candidates/glossary.md`: a short document defining two terms this project uses. Then tell me the result.
+
+   ✅ **Success:** it reports `pending` and a `proposal_id`. Your host may ask you to allow `submit_proposal` first. If the agent instead gives you proposal JSON, it couldn't file it: [import it](#importing-a-proposal).
+2. In the console, open **Agent Proposals** (choose it again if it was already open). The proposal's card shows its title and **Submitted by:** with the agent's name.
+3. Choose **Review proposal…** to see what accepting would write, then **Accept as candidate**, or **Reject proposal**. Accepting adds an authority candidate labelled **Proposed by:**. **Nothing governs yet**, and agents still see the same context.
+4. To make it govern, follow [Make your documents govern](#5-make-your-documents-govern) with that candidate. Once applied, a new agent session can retrieve it.
+
 ---
 
 ## Work with Charter
@@ -602,7 +635,7 @@ The console carries no information icons or hover panels; this part of the guide
 2. When the folder already holds an Agent Context, its name appears read-only under **Name**; change it later in [Settings](#settings).
 3. Choose **Open Agent Context**.
 
-**Open Agent Context** checks the folder and shows whether agents can be served; it writes nothing in the folder, except that an interrupted Charter write is rolled back first. **Create Agent Context** makes a new, empty one in an empty folder. Neither action runs Git or creates agent instruction files such as `AGENTS.md` or `CLAUDE.md`.
+**Open Agent Context** checks the folder and shows whether agents can be served; it writes nothing in the folder, except that an interrupted Charter write is rolled back first (see [If applying fails](#if-applying-fails)). **Create Agent Context** makes a new, empty one in an empty folder. Neither action runs Git or creates agent instruction files such as `AGENTS.md` or `CLAUDE.md`.
 
 #### Bring in documents you already have
 
@@ -656,7 +689,7 @@ The top bar names the open Agent Context by its project name and its folder's na
 | **Regenerate map…** | The `AGENT-CONTEXT.md` row under Context changes need review | Only the map's own text no longer matches its recorded hash; it still lists exactly the recorded documents, every one of them matches, and Charter can regenerate a map with exactly the hash `.agent-context.json` records. | Choose it, review the preview, and confirm: it restores only `AGENT-CONTEXT.md`, exactly as the approved context records it. `.agent-context.json` is never changed. |
 | **No Agent Context open** | Top bar | Nothing is open in the console. | Choose **Open Agent Context…**. |
 | **Charter command ready** | Top bar, after the context's status | `charter` in a new terminal runs this copy of Charter. | Nothing. |
-| **Charter command needs attention** | Top bar, after the context's status | `charter` in a new terminal runs another copy of Charter, or isn't found, so a terminal, or an agent running `charter propose`, wouldn't reach this copy. It's a warning about your PATH, not about the Agent Context: nothing is disabled, and agents set up with Connect Agents start this copy by its full path. | Choose it, or **Fix…** beside it. The dialog names the copy found, gives one command to copy that puts this copy on your PATH (after removing any other copy it names), and says to open a new terminal afterwards. The console checks the PATH it was started with, so after the fix, quit the console and start it again from a new terminal for this to read **Charter command ready**. |
+| **Charter command needs attention** | Top bar, after the context's status | `charter` in a new terminal runs another copy of Charter, or isn't found, so a terminal, or an agent running `charter propose`, wouldn't reach this copy. It's a warning about your PATH, not about the Agent Context: nothing is disabled, and agents set up with Connect Agents start this copy by its full path. | Choose it, or **Fix…** beside it. The dialog names the copy found, gives one command to copy that puts this copy on your PATH (after removing any other copy it names), and says to open a new terminal afterwards. On Windows, the console checks PATH as Windows gives it to new programs: after the fix, choose the status again or reload the page, with no restart. On macOS/Linux, it checks the PATH it was started with: quit the console and start it again from a new terminal. |
 | **This Agent Context has no map yet** | Status above every view (with **Map out of date** or **Map not checked**) | The folder holds `authoritative/` but no `AGENT-CONTEXT.md` or `.agent-context.json`, and no document, so agents get an unavailable answer. | Correct or move out each item listed, then choose **Rebuild Agent Context…** to establish an empty context; see [Bring in documents you already have](#bring-in-documents-you-already-have). |
 | **Map current** | Context Map | `AGENT-CONTEXT.md` and `.agent-context.json` are exactly what Charter generates from the governing documents and settings. | Nothing. |
 | **Map out of date** | Context Map | The map or metadata is missing, unreadable, or not what Charter generates, and Charter can correct it without changing which documents govern or their text—for example, after you update Charter, when the status above every view reads "This Agent Context’s map is out of date". | Choose **Rebuild Agent Context…** (or **Regenerate map…**, when that is what's offered), review the preview, and confirm. |
@@ -774,9 +807,21 @@ One change set can combine any number of these, and they apply together. **View 
 
 1. Choose **Preview and apply →**. **Preview and Apply** shows, in order: anything that blocks applying or bears on your decision; **Changes to Apply**, one line for each document the change set changes, by title, saying what happens to it: it replaces a named governing document, governs alongside, or is withdrawn; and every changed file with its diff and **Read**, including the regenerated map. Documents the change set leaves alone aren't listed. To see a resulting document, scope included, choose **Read** on its file.
 2. To change the plan, choose **← Back to Build Change Set**, **Cancel**, or **Close**; nothing is written.
-3. To apply, type **`change governing context`** and choose **Apply**. A wrong phrase is refused and nothing changes. All changes apply together; a failure rolls them back.
+3. To apply, type **`change governing context`** and choose **Apply**. A wrong phrase is refused and nothing changes. All changes apply together; see [If applying fails](#if-applying-fails).
 
 **After applying,** the **Change set applied** receipt leads with a summary such as `1 document updated · 1 newly governing · 1 withdrawn · 1 retained`, lists each changed document with its outcome, and keeps paths, the retained documents, and the full technical summary behind disclosures. Agents read the new context immediately, and Charter doesn't touch Git. **← Change Sets** returns to the index, which lists only active drafts; receipts stay in private state.
+
+#### If applying fails
+
+Charter saves a private record of each write before it changes anything, and undoes only its own writes:
+
+- **Something changed while you applied** (a file the change set replaces or relies on, edited by you, Git, or another program): Charter overwrites nothing, leaves everything as it was, and asks you to review the new preview.
+- **Applying fails part-way:** Charter puts back each file it wrote. A file that someone else changed in the meantime is left as it is and named in the message; check it yourself.
+- **Charter itself is interrupted** (the console is closed or the computer stops mid-apply): agents are refused until Charter rolls the write back, which it does first when you next open the Agent Context in the console. It then says what it did, including any file it left because it had changed meanwhile.
+- **Charter can't safely finish undoing its write:** it stops, keeps its record, and agents stay refused. Opening the Agent Context in the console tries the rollback again.
+- **Charter can't trust its record of the write:** it changes nothing and never acts on any path read from that record, and agents stay refused. Open the Agent Context in the console: its status lists, by path, each leftover temporary file Charter finds in the folder. Check each one, and delete only the files listed. Then delete the one record file at the full path Charter's message gives, which is Charter's own private-state location, not a path taken from the record. Delete nothing else, and never delete by name pattern.
+
+Charter doesn't operate Git. If the Agent Context is in Git, `git status` and `git restore` are your own recovery for anything left unexpected.
 
 **Leave or discard a draft.** **← Change Sets** keeps the draft for later. **Discard draft** asks once, then discards it and returns you to Change Sets; candidates and governing context are unaffected.
 
@@ -811,7 +856,7 @@ An agent submits one proposal at a time. How it submits depends on how it got th
 
 **Through MCP.** `submit_proposal` files the proposal through the same checks as `charter propose` and import, as an ordinary agent proposal awaiting your review. It never accepts a proposal, changes governing context, or grants authority, and Charter records no activity for it. Your host may ask you to allow it, since it writes Charter's private state. It returns the same four results as `charter propose`, below, without exit codes. When it returns `unavailable` with `retryable` `true`—another proposal was being filed, or something unexpected went wrong—the agent submits exactly the same proposal once more: if the first attempt was filed after all, the retry returns `duplicate`. If the tool isn't listed or is denied, returns `unavailable` that isn't retryable, or the retry returns neither `pending` nor `duplicate`, the agent returns the proposal JSON for you to import instead, and after a retry tells you it may already be awaiting review. A result never names a folder, a path on your computer, or an authority candidate.
 
-**ASCII JSON.** An agent sending proposal JSON to `charter propose` writes it as ASCII JSON, encoding every non-ASCII character as a JSON Unicode escape such as `—` for `—`. Some shells change other characters on the way: Windows PowerShell 5.1, by default, turns them into `?` when it pipes text to a program, and the proposal would be filed with `?` where the agent wrote `—` or `é`. Charter can't tell such a `?` from one the agent meant, so it can't repair it; ASCII JSON passes through every shell unchanged. This rule is only for JSON sent to `charter propose`: an agent returning proposal JSON for you to import doesn't need it.
+**ASCII JSON.** An agent sending proposal JSON to `charter propose` writes it as ASCII JSON, encoding every non-ASCII character as a JSON Unicode escape such as `\u2014` for `—`. Some shells change other characters on the way: Windows PowerShell 5.1, by default, turns them into `?` when it pipes text to a program, and the proposal would be filed with `?` where the agent wrote `—` or `é`. Charter can't tell such a `?` from one the agent meant, so it can't repair it; ASCII JSON passes through every shell unchanged. This rule is only for JSON sent to `charter propose`: an agent returning proposal JSON for you to import doesn't need it.
 
 `charter propose` prints one JSON object. Its `result`, and the command's exit code:
 
@@ -913,9 +958,9 @@ A pull, merge, or checkout that leaves the context internally consistent is serv
 
 ### Troubleshooting
 
-- **`charter` not found:** Open a new terminal after PATH changes, then check with this copy's own command, by its full paths: in PowerShell, the Python that runs Charter and this copy's `charter.py`, such as `& C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path --check`; on macOS/Linux, this copy's launcher, such as `/home/you/tools/charter/charter add-to-path --check`. **Diagnostics** shows both paths for your copy. You can run local commands there without PATH as `py charter.py serve` or `python3 charter.py serve`. Agent hosts set up with Connect Agents don't need PATH.
+- **`charter` not found:** A terminal window opened before a PATH change keeps its old PATH: open a new one. Then check with this copy's own command, by its full paths: in PowerShell, the Python that runs Charter and this copy's `charter.py`, such as `& C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path --check`; on macOS/Linux, this copy's launcher, such as `/home/you/tools/charter/charter add-to-path --check`. **Diagnostics** shows both paths for your copy. You can run local commands there without PATH as `py charter.py serve` or `python3 charter.py serve`. Agent hosts set up with Connect Agents don't need PATH.
 - **`Permission denied` running `charter` (macOS/Linux):** The launcher has lost its executable mode, for example after unpacking the release with a tool that drops file permissions. Check with the Python that runs Charter and this copy's `charter.py`, each by its full path, such as `/usr/bin/python3 /home/you/tools/charter/charter.py add-to-path --check`: it prints the `chmod +x` command that fixes it.
-- **Another `charter` comes first on PATH:** the top bar shows **Charter command needs attention**, and `add-to-path --check`, `charter mcp --check` and **Diagnostics** say which copy runs. A terminal, and an agent running `charter propose`, would reach that other copy; agent hosts set up with Connect Agents start this copy by its full path. Choose **Charter command needs attention** for the fix: remove the folder it names from your PATH, run the command it gives, and open a new terminal. To check again, use this copy's own command, by its full paths, as `add-to-path --check` gives it: for example `& C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path --check` in PowerShell, or `/home/you/tools/charter/charter add-to-path --check` on macOS/Linux; see [Install Charter](#install-charter), step 5. The console checks the PATH it started with: quit it and start it again from the new terminal before its top bar can show **Charter command ready**.
+- **Another `charter` comes first on PATH:** the top bar shows **Charter command needs attention**, and `add-to-path --check`, `charter mcp --check` and **Diagnostics** say which copy runs. A terminal, and an agent running `charter propose`, would reach that other copy; agent hosts set up with Connect Agents start this copy by its full path. Choose **Charter command needs attention** for the fix: remove the folder it names from your PATH, run the command it gives, and open a new terminal. To check again, use this copy's own command, by its full paths, as `add-to-path --check` gives it: for example `& C:\Python312\python.exe C:\Tools\Charter\charter.py add-to-path --check` in PowerShell, or `/home/you/tools/charter/charter add-to-path --check` on macOS/Linux; see [Install Charter](#install-charter), step 5. On Windows, reload the console page to update its top bar; on macOS/Linux, the console checks the PATH it started with, so quit it and start it again from the new terminal before its top bar can show **Charter command ready**.
 - **After updating Charter, an agent says the context can't be served:** the agent's message names the cause. `map-outdated`: the map was generated by an earlier version of Charter—open the Agent Context in the console and choose **Rebuild Agent Context…**. `server-outdated`: the agent host is still running an older Charter than the one that generated the map—the context is fine; quit and reopen the agent host, or connect it again if Charter moved. `charter-outdated`, from `charter read`: the copy its instruction runs is older than the map—update that copy, or copy the instruction again from the current one. An older Charter that predates these messages says only `context-invalid`; if `charter check --context <folder>` says agents are served, restart the agent host. From `submit_proposal`, the same causes come back as an `unavailable` result with `map_outdated` or `server_outdated`, and the same remedies.
 - **An MCP agent has no `submit_proposal` tool:** the agent host is still running a Charter from before this release. Quit and reopen the agent host; until then the agent returns its proposal JSON for you to [import](#importing-a-proposal).
 - **`charter read` refuses, or the agent can't run it:** its answer names the reason (the first word of a text answer, `reason` in JSON); see [Agents that run commands](#agents-that-run-commands-without-mcp) for each. `bad-arguments` usually means the instruction was edited or copied incompletely: copy it again from **Connect Agents with Command-Line Access**. If the shell can't find the program, Charter or its Python has moved: copy the instruction again from the console of the copy you now use. `charter check --context <folder>` says whether the folder can be served.
@@ -993,6 +1038,16 @@ It holds this computer's **Recent** list of opened Agent Contexts. For each Agen
 🔒 This material isn't exposed through Charter's agent-facing interfaces. **But account-level access matters:** programs running as you—including agents granted such access—can still reach it. See [Access and trust](#access-and-trust).
 
 Private state is tied to the Agent Context folder's **location on this computer**. A copied, moved, or cloned folder starts without that private history. Losing private state means losing local receipts and unapproved work, **not the governing context**.
+
+#### Portable and machine-local material
+
+| Material | Travels with a copy, clone, or commit? |
+| --- | --- |
+| The Agent Context folder: map, metadata, governing documents | **Yes.** Each checkout's valid folder is its own context. |
+| Private state: candidates, proposals, drafts, receipts, activity, Recent | **No.** It stays on this computer, tied to the folder's location here; a copied or moved folder starts without it. |
+| MCP registrations in your agent host | **No.** They name this computer's Charter folder, Python, and Agent Context by full path. Claude Code's `--scope project` writes them into `.mcp.json`, which shares those paths but won't work on a computer where they differ. |
+| The MCP startup pointer | **Its text, yes.** It names only the server, so it works wherever a server of that name is registered. |
+| Command-line access and file access instructions | **Their text holds this computer's full paths.** In a shared `CLAUDE.md` or `AGENTS.md`, each person needs the paths their own Connect Agents gives. |
 
 #### The MCP server
 

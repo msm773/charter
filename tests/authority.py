@@ -36,6 +36,7 @@ from app import agent_context as ac  # noqa: E402
 from app import authority as au  # noqa: E402
 from app import changeset as chs  # noqa: E402
 from app import private_store as ps  # noqa: E402
+from app import provenance as prov  # noqa: E402
 from app import transaction as tx  # noqa: E402
 from app.docs import parse_front_matter  # noqa: E402
 from tests.agent_context import context, doc_text, read, snapshot, write  # noqa: E402
@@ -1549,8 +1550,139 @@ def case_backup_cleanup() -> None:
         shutil.rmtree(folder)
 
 
-def case_bounded_names() -> None:
-    print("\nnames for archived and withdrawn documents are bounded and always valid")
+def case_candidate_records_path_limit() -> None:
+    """A candidate's baseline record is longer than its file. An action whose
+    candidate record would not fit the path limit is blocked in its preview,
+    naming the candidate, and refused when applied: never a failed apply."""
+    print("\na candidate whose private records would not fit the path limit")
+    # True of every action, a withdrawal's derived name included: never a
+    # promise that the person can shorten a title.
+    REMEDY = ("Use a shorter candidate name where this action allows one, or enable long paths "
+              "in Windows." if os.name == "nt" else
+              "Use a shorter candidate name where this action allows one.")
+    long_stem = "l" * 125
+    name = f"{long_stem[:117]}.md"
+    logical = ps.logical_candidate(name)
+    real = tx.path_limit
+
+    def candidate_problems(p: au.Plan, needed: int) -> bool:
+        return p.blocked and len(p.problems) == 1 and all(
+            f"`{logical}`" in m and f"need {needed} characters" in m and m.endswith(REMEDY)
+            and "document title" not in m for m in p.problems)
+
+    with isolated_private_state():
+        folder = context(docs=(("a.md", "Alpha"), (f"{long_stem}.md", "Long one")))
+        cs = ps.PrivateState.default().for_context(folder)
+        record = cs.path(*prov.record_path(logical).split("/"))
+        request = withdrawal(folder, f"authoritative/{long_stem}.md")
+        before = snapshot(folder)
+        check(len(cs.path(ps.CANDIDATES, name)) < len(record) - 1
+              and len(os.path.join(folder, "authoritative", f"{long_stem}.md")) + 24 < len(record) - 1,
+              "the withdrawn candidate's own file, and every context write, are shorter than its "
+              "baseline record")
+        # A limit its file fits within but its baseline record does not: this
+        # computer's own path lengths play no part.
+        tx.path_limit = lambda: len(record) - 1  # type: ignore[assignment]
+        try:
+            p = au.plan(folder, "changeset", request)
+            check(candidate_problems(p, len(record)),
+                  "a withdrawal: blocked in its preview, naming the candidate, what it needs and the remedy")
+            check(raises(au.ActionRefused, au.apply, folder, "changeset", request, p.plan_id, PHRASE),
+                  "and refused when applied, never a failed apply")
+            tx.path_limit = lambda: len(record)  # type: ignore[assignment]
+            check(not au.plan(folder, "changeset", request).blocked,
+                  "one character more and it fits: nothing else was too long")
+        finally:
+            tx.path_limit = real  # type: ignore[assignment]
+        check(snapshot(folder) == before and cs.candidates() == [] and not os.path.exists(record)
+              and not tx.interrupted(cs), "nothing was written, in the folder or in private state")
+        shutil.rmtree(folder)
+
+    with isolated_private_state():
+        folder = context()
+        cs = ps.PrivateState.default().for_context(folder)
+        new = {"title": "T" * 140, "scope": "", "body": "x\n"}
+        [made] = [c.path for c in au.plan(folder, "add", new).changes
+                  if c.path.startswith(ps.CANDIDATES + "/")]
+        made = ps.logical_candidate(made[len(ps.CANDIDATES) + 1:])
+        record = cs.path(*prov.record_path(made).split("/"))
+        tx.path_limit = lambda: len(record) - 1  # type: ignore[assignment]
+        try:
+            p = au.plan(folder, "add", new)
+            check(p.blocked and any(f"`{made}`" in m and m.endswith(REMEDY) for m in p.problems),
+                  "creating a candidate: blocked at its preview, before anything is filed")
+        finally:
+            tx.path_limit = real  # type: ignore[assignment]
+        check(cs.candidates() == [], "and no candidate was filed")
+
+        # An existing candidate keeps its name and its baseline when an edit
+        # would no longer fit: the edit is refused, nothing is renamed.
+        existing = add(folder, "Kept as it is")
+        file_path = cs.path(ps.CANDIDATES, ps.candidate_name(existing))
+        record = cs.path(*prov.record_path(existing).split("/"))
+        kept = {p: open(p, "rb").read() for p in (file_path, record)}
+        tx.path_limit = lambda: len(record) - 1  # type: ignore[assignment]
+        try:
+            p = au.plan(folder, "edit-candidate", {"candidate": existing, "title": "Kept as it is",
+                                                    "scope": "Cand scope.", "body": "Edited.\n"})
+            check(p.blocked and any(f"`{existing}`" in m for m in p.problems),
+                  "editing an existing candidate whose baseline would not fit: blocked in its preview")
+            with open(file_path, "ab") as fh:
+                fh.write(b"Changed outside Charter.\n")
+            kept[file_path] = open(file_path, "rb").read()
+            sha = ac.sha256_text(cs.read_candidate(existing))
+            try:
+                prov.mark_seen(folder, existing, sha)
+                said = ""
+            except au.ActionRefused as exc:
+                said = str(exc)
+            check(f"`{existing}`" in said and "Nothing was changed" in said,
+                  "Mark as seen: refused in words, naming the candidate")
+        finally:
+            tx.path_limit = real  # type: ignore[assignment]
+        check(cs.candidates() == [existing] and {p: open(p, "rb").read() for p in kept} == kept,
+              "the candidate keeps its name, its text and its baseline, byte for byte")
+        shutil.rmtree(folder)
+
+    # A real long private-state root, where long paths are off: only the
+    # baseline record is past this system's own limit.
+    limit = tx.path_limit()
+    if limit > 1000:
+        print(f"  SKIPPED: this system's path limit ({limit}) is too high to exercise a real long root.")
+        return
+    parent = tempfile.mkdtemp(prefix="charter-root-")
+    try:
+        with isolated_private_state(parent) as probe:
+            folder = context(docs=(("a.md", "Alpha"), (f"{long_stem}.md", "Long one")))
+            offset = len(ps.PrivateState.default().for_context(folder).base) - len(parent)
+        shutil.rmtree(probe, ignore_errors=True)
+        tail = len(os.sep + ps.BASELINES + os.sep + name + ".json")
+        # Exactly one character over where the temporary folder allows it, and
+        # at least one over however long the temporary folder already is.
+        pad = max(1, limit + 1 - (len(parent) + 1 + offset + tail))
+        root = os.path.join(parent, "p" * pad)
+        with isolated_private_state(root):
+            cs = ps.PrivateState.default().for_context(folder)
+            record = cs.path(*prov.record_path(logical).split("/"))
+            if len(cs.path(ps.CANDIDATES, name)) > limit:
+                print("  SKIPPED: the temporary folder is too long for even the candidate's own "
+                      "file to fit; the limits above cover it.")
+                shutil.rmtree(folder)
+                return
+            p = au.plan(folder, "changeset", withdrawal(folder, f"authoritative/{long_stem}.md"))
+            check(len(record) > limit >= len(cs.path(ps.CANDIDATES, name))
+                  and candidate_problems(p, len(record)),
+                  f"a {len(cs.base)}-character private-state root: the withdrawal is blocked in its "
+                  "preview with this system's own limit")
+            check(raises(au.ActionRefused, au.apply, folder, "changeset", p.request, p.plan_id, PHRASE)
+                  and cs.candidates() == [] and not tx.interrupted(cs) and ac.examine(folder).valid,
+                  "and refused when applied: nothing written, and the context still governs as it did")
+        shutil.rmtree(folder)
+    finally:
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+def _bounded_long_names() -> None:
     with isolated_private_state():
         long_stem = "l" * 125
         folder = context(docs=(("a.md", "Alpha"), (f"{long_stem}.md", "Long one"),
@@ -1558,6 +1690,19 @@ def case_bounded_names() -> None:
         cs = ps.PrivateState.default().for_context(folder)
         check(ac.examine(folder).valid, "a governing file name too long or too odd for a private "
                                         "name is still a valid governing document")
+        record = cs.path(*prov.record_path(ps.logical_candidate(f"{long_stem[:117]}.md")).split("/"))
+        if len(record) > tx.path_limit():
+            # This system's private-state root is too long for the longest name's
+            # records: the preview says so, and the rest cannot be exercised here.
+            p = au.plan(folder, "changeset", withdrawal(folder, f"authoritative/{long_stem}.md"))
+            check(p.blocked and any("too long" in m for m in p.problems),
+                  "the longest private name does not fit this private-state root: blocked in its "
+                  "preview, not a failed apply")
+            over = len(record) - tx.path_limit()
+            print(f"  SKIPPED: the rest needs a private-state root {over} "
+                  f"character{'' if over == 1 else 's'} shorter.")
+            shutil.rmtree(folder)
+            return
         for path in (f"authoritative/{long_stem}.md", "authoritative/_Ünï code notes.md"):
             do(folder, "changeset", withdrawal(folder, path))
         names = [ps.candidate_name(c) for c in cs.candidates()]
@@ -1584,6 +1729,10 @@ def case_bounded_names() -> None:
               "replaced: their archived versions have valid, bounded names")
         shutil.rmtree(folder)
 
+
+def case_bounded_names() -> None:
+    print("\nnames for archived and withdrawn documents are bounded and always valid")
+    _bounded_long_names()
     with isolated_private_state():
         # The same governing name written straight into a context, never seen by Charter.
         folder = context(docs=(("a.md", "Alpha"),))
@@ -1675,6 +1824,121 @@ def case_post_commit_follow_up() -> None:
         shutil.rmtree(folder)
 
 
+def case_windows_readers() -> None:
+    """Candidate, archive, baseline, change-set and Agent Context writes with a
+    lock-free reader: the console never lists a transaction's own file, and a
+    reader that has a target open for a moment (Windows then refuses the
+    rename or removal) is waited out, leaving no journal behind."""
+    print("\nlock-free readers during candidate, archive, baseline, change-set and Agent Context writes")
+    import threading
+    from app import console
+    from tests.harness import HeldOpen
+    windows = os.name == "nt"
+    with isolated_private_state():
+        folder = context()
+        cs = ps.PrivateState.default().for_context(folder)
+        do(folder, "add", {"title": "Audit", "scope": "Audit.", "body": "Audit v1.\n"})
+        logical = "authority-candidates/audit.md"
+        candidate_file = cs.candidate_file(logical)
+        session = console.Session(folder)
+
+        def at_first_temp(act):
+            fired = []
+
+            def fault(step):
+                if step.startswith("temp:") and not fired:
+                    fired.append(step)
+                    act()
+            return fault
+
+        def quiet(label):
+            leftovers = [os.path.join(d, n) for d, _s, names in os.walk(cs.base) for n in names
+                         if n.startswith(ac.TRANSACTION_PREFIXES) or n.endswith(".tmp")]
+            leftovers += [n for n in os.listdir(folder) if n.startswith(ac.TRANSACTION_PREFIXES)]
+            check(not tx.interrupted(cs) and not leftovers and ac.examine(folder).valid, label)
+
+        def refused_once(reader):
+            return not windows or len(reader.refusals) == 1
+
+        # Mid-edit, the console's refresh: no file Charter cannot use is listed.
+        seen = {}
+
+        def refresh():
+            seen["temp"] = [n for n in os.listdir(os.path.dirname(candidate_file))
+                            if n.startswith(ac.TRANSACTION_PREFIXES)]
+            t = threading.Thread(target=lambda: seen.update(state=console.state(session),
+                                                             unusable=cs.unusable_candidate_files()))
+            t.start()
+            t.join(60)
+        p = au.plan(folder, "edit-candidate", {"candidate": logical, "scope": "Audit.", "body": "Audit v2.\n"})
+        au.apply(folder, "edit-candidate", p.request, p.plan_id, True, fault=at_first_temp(refresh))
+        check(len(seen["temp"]) == 1 and seen["state"]["unusable_candidate_files"] == [] and seen["unusable"] == []
+              and any(d["path"] == logical for d in seen["state"]["documents"]),
+              "mid-edit, GET /api/state never lists the transaction's file among files Charter cannot use")
+        quiet("  and the edit leaves no journal or debris")
+
+        with HeldOpen("after-refusal") as reader:
+            p = au.plan(folder, "edit-candidate", {"candidate": logical, "scope": "Audit.", "body": "Audit v3.\n"})
+            au.apply(folder, "edit-candidate", p.request, p.plan_id, True,
+                     fault=at_first_temp(lambda: reader.open(candidate_file)))
+        check("Audit v3." in cs.read_candidate(logical) and refused_once(reader),
+              "a candidate open in a reader for a moment, as it is edited: refused once, then written")
+        quiet("  no journal or debris")
+
+        with open(candidate_file, "ab") as fh:
+            fh.write(b"Edited by hand.\n")  # changed outside Charter, so Mark as seen writes
+        with HeldOpen("after-refusal") as reader:
+            reader.open(cs.path(*prov.record_path(logical).split("/")))
+            seen_now = prov.mark_seen(folder, logical, ac.sha256_text(cs.read_candidate(logical)))
+        check(seen_now["changed"] and not prov.changed(cs, logical, cs.read_candidate(logical)) and refused_once(reader),
+              "a baseline open in a reader for a moment, as Mark as seen records it: refused once, then written")
+        quiet("  no journal or debris")
+
+        ctx = chs.Ctx(folder)
+        draft = chs.create(ctx, "Audit plan")
+        with HeldOpen("after-refusal") as reader:
+            reader.open(os.path.join(chs._dir(ctx), draft["id"] + ".json"))
+            draft = chs.update(ctx, draft["id"], draft["revision"], {"rationale": "Why."})
+        check(draft["rationale"] == "Why." and refused_once(reader),
+              "a change-set draft open in a reader for a moment, as it saves: refused once, then saved")
+        quiet("  no temporary file left beside it")
+
+        # Govern it: an agent reading the map at that moment does not stop the change.
+        request = seeded(folder, {"alongside": logical})
+        mid = {}
+
+        def mid_change_set():
+            from app import mcp
+            t = threading.Thread(target=lambda: mid.update(unfinished=tx.unfinished(cs),
+                                                           mcp_refuses=mcp.interrupted(folder)))
+            t.start()
+            t.join(60)
+            reader.open(os.path.join(folder, ac.CONTEXT_MAP))
+        with HeldOpen("after-refusal") as reader:
+            plan = au.plan(folder, "changeset", request)
+            au.apply(folder, "changeset", request, plan.plan_id, au.CONFIRM_PHRASE,
+                     fault=at_first_temp(mid_change_set))
+        check(mid == {"unfinished": True, "mcp_refuses": True},
+              "while a change set is part-way through writing the Agent Context, agents are refused, as before")
+        check(any(d.title == "Audit" for d in ac.examine(folder).documents) and refused_once(reader),
+              "AGENT-CONTEXT.md open in an agent's reader for a moment, as a change set applies: refused once, "
+              "then applied")
+        quiet("  the Agent Context valid, no journal or debris")
+
+        # Withdraw it, then retire the candidate while a reader has it open: it is removed, and archived.
+        from tests.harness import govern
+        govern(folder, {"document": "authoritative/audit.md", "outcome": "withdraw"})
+        back = [c for c in cs.candidates() if "audit" in c][0]
+        with HeldOpen("after-refusal") as reader:
+            p = au.plan(folder, "retire", {"candidate": back})
+            au.apply(folder, "retire", p.request, p.plan_id, True,
+                     fault=at_first_temp(lambda: reader.open(cs.candidate_file(back))))
+        check(back not in cs.candidates() and cs.archived() and refused_once(reader),
+              "a candidate open in a reader for a moment, as it is retired: refused once, then archived")
+        quiet("  no journal or debris")
+        shutil.rmtree(folder)
+
+
 def run() -> None:
     case_candidates()
     case_no_direct_routes()
@@ -1690,6 +1954,7 @@ def run() -> None:
     case_crash_at_every_step()
     case_tooling_files_in_subfolders()
     case_path_limit()
+    case_candidate_records_path_limit()
     case_transaction_bounds()
     case_earlier_name_temporary_files()
     case_concurrent_edits()
@@ -1698,6 +1963,7 @@ def run() -> None:
     case_backup_cleanup()
     case_bounded_names()
     case_post_commit_follow_up()
+    case_windows_readers()
     print(f"\n{OK} All authority action checks passed.")
 
 

@@ -56,6 +56,7 @@ import unicodedata
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from . import host_state as hs
+from .agent_context import TRANSACTION_PREFIXES
 
 CONTEXTS = "contexts"
 CONTEXT_RECORD = "context.json"
@@ -605,7 +606,10 @@ class ContextState:
         except OSError:
             return []
         usable = set(self._markdown(CANDIDATES))
-        return sorted(n for n in names if n not in usable and n.lower() not in _SYSTEM_FILES)
+        # A Charter transaction's own file beside a candidate it replaces is
+        # not a file the person placed there: it is gone when the write ends.
+        return sorted(n for n in names if n not in usable and n.lower() not in _SYSTEM_FILES
+                      and not n.startswith(TRANSACTION_PREFIXES))
 
     def read_archived(self, name: str) -> Optional[str]:
         return _read_text(self.archive_file(name))

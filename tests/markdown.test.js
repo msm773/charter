@@ -46,6 +46,15 @@ check(html("a snake_case_name here") === "<p>a snake_case_name here</p>",
 check(html("***both***") === "<p><strong><em>both</em></strong></p>", "bold italic nests");
 check(html("line one  \nline two") === "<p>line one<br>line two</p>",
   "two trailing spaces is a hard break");
+check(html("Line one\\\nLine two") === "<p>Line one<br>Line two</p>",
+  "a backslash ending a line is a hard break, as a Word document's line break converts");
+check(html("**Bold one**\\\n**Bold two**") === "<p><strong>Bold one</strong><br><strong>Bold two</strong></p>",
+  "formatted lines either side of that break keep their formatting");
+check(html("Gap\\\n\\\nbetween") === "<p>Gap<br><br>between</p>",
+  "two such breaks in a row are two breaks in one paragraph");
+check(html("- A bullet\\\n  more") === '<ul class="md-list"><li>A bullet<br>more</li></ul>'
+  && html("> Quoted\\\n> more") === "<blockquote><p>Quoted<br>more</p></blockquote>",
+  "a list item or quote continues across that break");
 check(html("---") === "<hr>", "a rule is a rule");
 check(html("> quoted\n> lines") === "<blockquote><p>quoted lines</p></blockquote>", "block quotes");
 
