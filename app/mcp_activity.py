@@ -118,7 +118,8 @@ def record(folder: str, entry: Dict[str, Any]) -> bool:
                     os.lseek(fd, end - 1, os.SEEK_SET)
                     if os.read(fd, 1) != b"\n":
                         data = b"\n" + data  # a writer killed mid-line: start afresh
-                os.write(fd, data)
+                # A line cut short is dropped, and the next writer starts afresh.
+                hs.write_all(fd, data)
             finally:
                 os.close(fd)
         return True

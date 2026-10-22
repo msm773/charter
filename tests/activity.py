@@ -22,7 +22,7 @@ from app import host_state as hs  # noqa: E402
 from app import mcp_activity as act  # noqa: E402
 from app import private_store as ps  # noqa: E402
 from tests.agent_context import context, snapshot  # noqa: E402
-from tests.harness import isolated_private_state  # noqa: E402
+from tests.harness import ScriptedWrites, isolated_private_state  # noqa: E402
 
 OK = "ok"
 
@@ -92,6 +92,19 @@ def case_storage() -> None:
         events = act.recent(folder)
         check(events[0]["tool"] == "get_context" and all(isinstance(e, dict) for e in events),
               "a line cut short is skipped, and the next event starts afresh")
+
+        progress = iter([6])
+        with ScriptedWrites(lambda path, data: next(progress, 0) if path == log else None):
+            dropped = act.record(folder, act.event(session="s", event="tool",
+                                                   tool="get_document", status="ok"))
+        with ScriptedWrites(lambda path, data: min(len(data), 4) if path == log else None):
+            kept = act.record(folder, act.event(session="s", event="tool",
+                                                tool="list_governing_documents", status="ok"))
+        events = act.recent(folder)
+        check(not dropped and kept and events[0]["tool"] == "list_governing_documents"
+              and "get_document" not in [e.get("tool") for e in events],
+              "a line the system stops writing part-way is dropped, never raised, and one "
+              "written in partial writes is recorded whole after it")
 
         with open(log, "ab") as fh:
             fh.write(b"x" * act.MAX_LOG_BYTES)

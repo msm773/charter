@@ -15,7 +15,11 @@ the transaction design approved for Phase 3:
   * a failure rolls back both the folder and private state; an interrupted
     write is rolled back from the private journal before the next write; only
     files the journal names are deleted; with the journal lost, leftovers stay
-    and the context is refused.
+    and the context is refused;
+  * a write the system cuts short is continued until every byte is written,
+    and one that stops making progress — writing a document, a backup, the
+    journal or a restored file — fails visibly and is rolled back or
+    recovered, never acknowledged with a file cut short.
 """
 from __future__ import annotations
 
@@ -35,12 +39,13 @@ import re  # noqa: E402
 from app import agent_context as ac  # noqa: E402
 from app import authority as au  # noqa: E402
 from app import changeset as chs  # noqa: E402
+from app import mcp  # noqa: E402
 from app import private_store as ps  # noqa: E402
 from app import provenance as prov  # noqa: E402
 from app import transaction as tx  # noqa: E402
 from app.docs import parse_front_matter  # noqa: E402
 from tests.agent_context import context, doc_text, read, snapshot, write  # noqa: E402
-from tests.harness import isolated_private_state, seeded  # noqa: E402
+from tests.harness import ScriptedWrites, isolated_private_state, seeded  # noqa: E402
 
 OK = "ok"
 PHRASE = au.CONFIRM_PHRASE
@@ -386,6 +391,131 @@ def case_rollback() -> None:
         check(snap[os.path.join("authoritative", "a.md")] != before[os.path.join("authoritative",
                                                                                   "a.md")],
               "except a file someone else changed meanwhile, which is left as they left it")
+        shutil.rmtree(folder)
+
+
+def _document_temp(path: str) -> bool:
+    """A transaction's temporary file for a governing document."""
+    name = os.path.basename(path)
+    return name.startswith(ac.TRANSACTION_PREFIX) and not name.endswith("r") \
+        and os.path.basename(os.path.dirname(path)) == ac.AUTHORITATIVE
+
+
+def _backup(path: str) -> bool:
+    return f"{os.sep}{tx.BACKUPS}{os.sep}" in path
+
+
+def _journal(path: str) -> bool:
+    return os.path.basename(path).startswith(f".{tx.JOURNAL_FILE}.")
+
+
+def _restore_temp(path: str) -> bool:
+    name = os.path.basename(path)
+    return name.startswith(ac.TRANSACTION_PREFIX) and name.endswith("r")
+
+
+def _stops_after(nbytes: int):
+    """A script that lets `nbytes` of each chosen file through, then makes no
+    further progress on it."""
+    def script(path: str, data: bytes):
+        try:
+            done = os.path.getsize(path)
+        except OSError:
+            done = 0
+        return min(len(data), max(0, nbytes - done))
+    return script
+
+
+def case_short_writes() -> None:
+    print("\nwrites the system cuts short")
+    with isolated_private_state():
+        reference, request, _cs = _setup_grant()
+        do(reference, "changeset", request, PHRASE)
+        expected = snapshot(reference)
+        shutil.rmtree(reference)
+    with isolated_private_state():
+        folder, request, cs = _setup_grant()
+        with ScriptedWrites(lambda path, data: min(len(data), 5)) as writes:
+            result = do(folder, "changeset", request, PHRASE)
+        short = [c for c in writes.calls if c[2] < c[1]]
+        check(result["applied"] and snapshot(folder) == expected and ac.examine(folder).valid
+              and any(_document_temp(c[0]) for c in short)
+              and any(_backup(c[0]) for c in short) and any(_journal(c[0]) for c in short),
+              "an action whose every write — documents, backups and journal — the system cuts "
+              "to five bytes at a time applies exactly as it does without")
+        shutil.rmtree(folder)
+
+    def journal_path(cs):
+        return cs.path(ps.STAGING, tx.JOURNAL_KIND, tx.JOURNAL_FILE)
+
+    def backups_path(cs):
+        return cs.path(ps.STAGING, tx.JOURNAL_KIND, tx.BACKUPS)
+
+    for nbytes in (0, 32):
+        with isolated_private_state():
+            folder, request, cs = _setup_grant()
+            before, private = snapshot(folder), private_docs(cs)
+            stop = _stops_after(nbytes)
+            with ScriptedWrites(lambda path, data: stop(path, data) if _document_temp(path)
+                                else None):
+                try:
+                    do(folder, "changeset", request, PHRASE)
+                    failure = None
+                except au.ApplyFailed as exc:
+                    failure = exc
+            check(failure is not None and failure.restored and "did not apply" in str(failure)
+                  and snapshot(folder) == before and private_docs(cs) == private
+                  and not os.path.exists(journal_path(cs)) and not tx.strays(folder)
+                  and chs.load(chs.Ctx(folder), request["draft_id"])["state"] == chs.ACTIVE,
+                  f"writing a governing document that stops after {nbytes} bytes fails visibly "
+                  "and is rolled back: the folder and private state exactly as they were, no "
+                  "journal and no temporary file left, the change set still a draft")
+            shutil.rmtree(folder)
+
+    for label, chosen in (("a backup", _backup), ("the journal", _journal)):
+        for nbytes in (0, 7):
+            with isolated_private_state():
+                folder, request, cs = _setup_grant()
+                before, private = snapshot(folder), private_docs(cs)
+                stop = _stops_after(nbytes)
+                with ScriptedWrites(lambda path, data: stop(path, data) if chosen(path)
+                                    else None):
+                    try:
+                        do(folder, "changeset", request, PHRASE)
+                        failure = None
+                    except OSError as exc:
+                        failure = exc
+                left = os.listdir(backups_path(cs)) if os.path.isdir(backups_path(cs)) else []
+                check(failure is not None and snapshot(folder) == before
+                      and private_docs(cs) == private and not os.path.exists(journal_path(cs))
+                      and not left and not tx.interrupted(cs),
+                      f"writing {label} that stops after {nbytes} bytes fails visibly before "
+                      "anything changes: no journal, no backup, nothing to recover")
+                check(do(folder, "changeset", request, PHRASE)["applied"],
+                      "  and the same action then applies")
+                shutil.rmtree(folder)
+
+    with isolated_private_state():
+        folder, request, cs = _setup_grant()
+        before, private = snapshot(folder), private_docs(cs)
+
+        def fault(name):
+            if name == "before-validate":
+                raise RuntimeError("disk full")
+        with ScriptedWrites(lambda path, data: 0 if _restore_temp(path) else None):
+            try:
+                do(folder, "changeset", request, PHRASE, fault=fault)
+                failure = None
+            except au.ApplyFailed as exc:
+                failure = exc
+        check(failure is not None and not failure.restored and tx.interrupted(cs)
+              and os.path.exists(journal_path(cs)) and mcp.interrupted(folder),
+              "restoring a file during rollback that stops making progress is reported as not "
+              "rolled back, and the journal is kept, so agents are refused")
+        done = tx.recover(cs)
+        check(done is not None and not done["unrestored"] and snapshot(folder) == before
+              and private_docs(cs) == private and not os.path.exists(journal_path(cs)),
+              "  recovery from the journal then restores the folder and private state exactly")
         shutil.rmtree(folder)
 
 
@@ -2153,6 +2283,7 @@ def run() -> None:
     case_preconditions_and_staleness()
     case_no_git()
     case_rollback()
+    case_short_writes()
     case_crash_recovery()
     case_crash_at_every_step()
     case_tooling_files_in_subfolders()

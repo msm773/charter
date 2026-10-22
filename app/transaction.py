@@ -13,7 +13,8 @@ internally consistent or rolls back its own writes. This module is how.
     before it is replaced or removed, so a change made meanwhile by a person
     or another program is never overwritten.
   * New content is written to a temporary file beside its target, under the
-    reserved name `.charter-txn-<id>-<n>`, flushed, and then renamed over the
+    reserved name `.charter-txn-<id>-<n>`, written in full (a write cut short
+    fails, as `host_state.write_all` does), flushed, and then renamed over the
     target, so each file is replaced whole. Before anything is written, every
     temporary, backup and journal path is checked against the platform's path
     limit; an action that could not write safely is refused up front.
@@ -171,10 +172,12 @@ def _read(path: str) -> Optional[bytes]:
 
 
 def _write_new(path: str, data: bytes) -> None:
-    """Create `path` (which must not exist) holding `data`, flushed."""
+    """Create `path` (which must not exist) holding all of `data`, flushed. A
+    write cut short raises, leaving a partial file only at `path`: a temporary
+    or backup name the journal or its backup folder accounts for."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o644)
     try:
-        os.write(fd, data)
+        hs.write_all(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -624,7 +627,12 @@ class Transaction:
         journal = {"version": JOURNAL_VERSION, "id": txid, "entries": entries,
                    "created_dirs": created, "pruned_dirs": pruned}
         self.fault("before-journal")
-        hs.write_json_atomic(os.path.join(jdir, JOURNAL_FILE), journal)
+        try:
+            hs.write_json_atomic(os.path.join(jdir, JOURNAL_FILE), journal)
+        except Exception:
+            # No journal, so nothing in either root has changed.
+            _clear_backups(jdir, txid)
+            raise
 
         try:
             self.fault("after-journal")

@@ -69,6 +69,57 @@ def govern(folder: str, start: dict) -> dict:
     return au.apply(folder, "changeset", request, plan.plan_id, au.CONFIRM_PHRASE)
 
 
+class ScriptedWrites:
+    """Low-level writes that the system cuts short, as a full disk, a quota or
+    a failing device may. While the context is active, every `os.write` asks
+    `script(path, data)` what the system does with it: None writes it all; an
+    int `n` writes only the first `n` bytes and returns `n` — 0 makes no
+    progress; anything else is returned as the count without writing, and an
+    exception is raised. `path` is the file the descriptor was opened on
+    (`os.open` is watched too), or "" for one opened before. Each call is
+    recorded in `calls` as (path, bytes asked, bytes written)."""
+
+    def __init__(self, script) -> None:
+        self.script = script
+        self.calls = []
+        self.paths = {}
+
+    def __enter__(self) -> "ScriptedWrites":
+        self._real = {name: getattr(os, name) for name in ("open", "close", "write")}
+        real_open, real_close, real_write = (self._real[n] for n in ("open", "close", "write"))
+
+        def opened(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            self.paths[fd] = os.fspath(path)
+            return fd
+
+        def closed(fd):
+            self.paths.pop(fd, None)
+            return real_close(fd)
+
+        def write(fd, data):
+            path = self.paths.get(fd, "")
+            data = bytes(data)
+            action = self.script(path, data)
+            if isinstance(action, BaseException):
+                self.calls.append((path, len(data), 0))
+                raise action
+            if action is None:
+                action = len(data)
+            if type(action) is int and 0 <= action <= len(data):
+                written = real_write(fd, data[:action]) if action else 0
+                self.calls.append((path, len(data), written))
+                return written
+            self.calls.append((path, len(data), 0))
+            return action
+        os.open, os.close, os.write = opened, closed, write
+        return self
+
+    def __exit__(self, *exc) -> None:
+        for name, real in self._real.items():
+            setattr(os, name, real)
+
+
 class HeldOpen:
     """A lock-free reader's handle on one file, opened as Charter's readers
     open files: on Windows, without delete sharing, so while it is open the

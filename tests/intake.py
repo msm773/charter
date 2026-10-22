@@ -13,7 +13,13 @@ Product Specification §3.2–§3.3, the Proposal Review Standard, UI Standards:
   * Replace and a decision on the same proposal never interleave, so a
     decided proposal never comes back; a Replace that fails or whose process
     dies at any step leaves the waiting proposal trusted, as it was or as
-    replaced; and every path takes the writer lock before the intake lock.
+    replaced; and every path takes the writer lock before the intake lock;
+  * one byte bound, MAX_RECORD, for a stored record, as UTF-8 bytes: a
+    proposal whose record could exceed it is refused on every route before
+    anything is written, and every proposal filed is read back, listed and
+    matched as a duplicate;
+  * a record or ledger write the system cuts short is never acknowledged as
+    filed, and leaves nothing that is taken for a proposal.
 
 The races run in separate processes, coordinated by events, never by waiting
 for time to pass.
@@ -43,10 +49,12 @@ from app import agent_proposals as apx  # noqa: E402
 from app import authority as au  # noqa: E402
 from app import console  # noqa: E402
 from app import private_store as ps  # noqa: E402
+from app import propose  # noqa: E402
 from app import transaction as tx  # noqa: E402
 from app.docs import parse_front_matter  # noqa: E402
 from tests.agent_context import context, doc_text, read, snapshot, write  # noqa: E402
-from tests.harness import isolated_private_state  # noqa: E402
+from tests.harness import ScriptedWrites, isolated_private_state  # noqa: E402
+from tests.mcp import Session  # noqa: E402
 
 OK = "ok"
 
@@ -792,6 +800,179 @@ def case_submission_parity() -> None:
         check(rows == [{"status": "malformed", "message": "This proposal is too large."}]
               and cli(oversized)["problems"][0]["code"] == "too_large",
               "more than the input limit is too large on both routes")
+        shutil.rmtree(folder)
+
+
+def _mcp_submit(session, arguments: dict) -> dict:
+    result = session.call("submit_proposal", arguments)
+    assert result.get("isError") is False, result
+    return result["structuredContent"]
+
+
+def _sized(name: str, body: str) -> dict:
+    return {"agent": "bound", "operation": "create", "reason": "Bound.",
+            "target_path": f"authority-candidates/{name}.md", "proposed_body": body}
+
+
+def _budget(name: str, unit: str) -> int:
+    """How many `unit`s the largest accepted body of `_sized(name, ...)` holds."""
+    size = apx._largest_record_size(_sized(name, ""))
+    return (apx.MAX_RECORD - size) // len(json.dumps(unit, ensure_ascii=False)[1:-1].encode())
+
+
+def case_record_bound() -> None:
+    print("\none byte bound for a stored proposal record, on every route")
+    check(apx.MAX_RECORD == 2 * 1024 * 1024, "a stored record holds at most 2 MiB")
+    with isolated_private_state():
+        folder, cs, _cand = setup()
+        session = _session(folder)
+        server = Session(folder, record=False)
+
+        def listed() -> tuple:
+            filed, unexpected = apx.records(cs)
+            return sorted(r["proposal_id"] for r in filed), unexpected
+
+        def record_size(pid: str) -> int:
+            return os.path.getsize(cs.path(ps.PROPOSALS, apx.PENDING, pid + ".json"))
+
+        largest = _budget("cli", "x")
+        data = json.dumps(_sized("cli", "x" * largest), separators=(",", ":")).encode("ascii")
+        out = apx.file(folder, apx.read_submission(data), submitted=data)
+        check(out["result"] == "pending" and listed() == ([out["proposal_id"]], [])
+              and record_size(out["proposal_id"]) <= apx.MAX_RECORD,
+              f"the largest proposal accepted ({len(data)} bytes as compact JSON) is filed, and "
+              f"its record of {record_size(out['proposal_id'])} bytes is read back and listed")
+        cli_id = out["proposal_id"]
+        before = state_files(cs)
+        check(propose.submit(["--context", folder], data)["result"] == "duplicate"
+              and _mcp_submit(server, _sized("cli", "x" * largest))["result"] == "duplicate"
+              and [r["status"] for r in console.import_check(
+                  session, {"items": [{"bytes": _b64(data)}]})["items"]] == ["awaiting"]
+              and state_files(cs) == before,
+              "  and an identical submission matches it as a duplicate on every route, filing "
+              "nothing")
+
+        over = json.dumps(_sized("cli2", "x" * (_budget("cli2", "x") + 1)),
+                          separators=(",", ":")).encode("ascii")
+        before = state_files(cs)
+        results = [propose.submit(["--context", folder], over) for _ in range(2)]
+        mcp_results = [_mcp_submit(server, json.loads(over)) for _ in range(2)]
+        rows = console.import_check(session, {"items": [{"bytes": _b64(over)}]})["items"]
+        filed = console.import_file(session, {"confirm": True, "items": [{"bytes": _b64(over)}]})
+        check(len(over) < apx.MAX_INPUT
+              and all(r["result"] == "refused" and [p["code"] for p in r["problems"]]
+                      == ["too_large"] and "retryable" not in r for r in results + mcp_results)
+              and [r["status"] for r in rows] == ["refused"]
+              and rows[0]["problems"][0]["code"] == "too_large"
+              and filed["result"] == "refused" and filed["items"][0]["status"] == "refused"
+              and state_files(cs) == before and listed() == ([cli_id], []),
+              "one byte more is refused as `too_large` by `charter propose`, `submit_proposal` "
+              "and Import, and again when submitted again: no record, no ledger change, no "
+              "unexpected record and no proposal id")
+        check(str(apx.MAX_RECORD) in results[0]["problems"][0]["message"]
+              and folder not in json.dumps(results + mcp_results),
+              "  its message names the bound, and nothing private")
+
+        # Import writes the longest record any route writes: exactly the bound.
+        imported = json.dumps(_sized("imp", "x" * _budget("imp", "x")), separators=(",", ":"))
+        out = console.import_file(session, {"confirm": True, "items": [{"text": imported}]})
+        pid = out["proposal_ids"][0] if out["result"] == "pending" else ""
+        check(pid and record_size(pid) == apx.MAX_RECORD and pid in listed()[0]
+              and not listed()[1],
+              "an imported proposal at the bound is filed with a record of exactly "
+              f"{apx.MAX_RECORD} bytes, read back and listed")
+        check(console.import_check(session, {"items": [{"text": imported}]})["items"][0]["status"]
+              == "awaiting", "  and matched as a duplicate")
+
+        # UTF-8 bytes, not characters: two bytes per character here.
+        accented = _budget("utf", "\u00e9")
+        before = state_files(cs)
+        out = _mcp_submit(server, _sized("utf", "\u00e9" * (accented + 1)))
+        check(out["result"] == "refused" and out["problems"][0]["code"] == "too_large"
+              and accented + 1 < largest and state_files(cs) == before,
+              f"a body of {accented + 1} accented characters, far fewer characters than the "
+              f"{largest} accepted above, is refused: the bound counts UTF-8 bytes")
+        out = _mcp_submit(server, _sized("utf", "\u00e9" * accented))
+        check(out["result"] == "pending" and out["proposal_id"] in listed()[0]
+              and _mcp_submit(server, _sized("utf", "\u00e9" * accented))["result"] == "duplicate",
+              f"  and {accented} of them, the most that fit, are filed, listed and matched")
+        mcp_id = out["proposal_id"]
+
+        # Replace rewrites the MCP record as imported, with a transport digest:
+        # still within the bound, since every route was checked against that.
+        item = json.dumps(_sized("utf", "\u00e9" * accented), ensure_ascii=False)
+        out = console.import_replace(session, {"confirm": True, "replace": mcp_id,
+                                               "item": {"text": item}})
+        check(out == {"result": "pending", "proposal_id": mcp_id}
+              and record_size(mcp_id) <= apx.MAX_RECORD and mcp_id in listed()[0]
+              and not listed()[1],
+              "replacing a waiting proposal at the bound keeps a record that is read back and "
+              "listed")
+
+        # The writer holds the bound itself, whatever the checker allowed: with
+        # the checker's own bound turned off, a record that fits as an MCP
+        # record is filed, and every write past the bound is still refused.
+        loose = _sized("loose", "y" * (_budget("loose", "y") + 10))
+        huge = json.dumps(_sized("huge", "z" * (_budget("huge", "z") + 10))).encode("ascii")
+        real = apx._largest_record_size
+        apx._largest_record_size = lambda proposal: 0
+        try:
+            waiting = _mcp_submit(server, loose)
+            before = state_files(cs)
+            out = apx.file(folder, json.loads(huge), submitted=huge)
+            batch = console.import_file(session, {"confirm": True, "items": [{"bytes": _b64(huge)}]})
+            replaced = console.import_replace(session, {
+                "confirm": True, "replace": waiting.get("proposal_id"),
+                "item": {"text": json.dumps(loose)}})
+        finally:
+            apx._largest_record_size = real
+        check(waiting["result"] == "pending" and record_size(waiting["proposal_id"])
+              <= apx.MAX_RECORD and waiting["proposal_id"] in listed()[0],
+              "with the checker's bound turned off, a record that still fits is filed and read "
+              "back")
+        check(all(r["result"] == "refused" and r["problems"][0]["code"] == "too_large"
+                  for r in (out, batch, replaced)) and state_files(cs) == before
+              and not listed()[1],
+              "  and the writer itself refuses every record past the bound — filed, imported, "
+              "or replacing a waiting one as imported — before the ledger or the record is "
+              "written")
+        shutil.rmtree(folder)
+
+
+def case_short_record_writes() -> None:
+    print("\nproposal records the system cuts short")
+    with isolated_private_state():
+        folder, cs, _cand = setup()
+        proposal = _sized("short", "# Short\n\n" + "Text caf\u00e9.\n" * 200)
+
+        def record_temp(path: str) -> bool:
+            return os.path.basename(path).startswith(".p-")
+
+        def ledger_temp(path: str) -> bool:
+            return os.path.basename(path).startswith(f".{apx.LEDGER}.")
+
+        def temporary_files() -> list:
+            return [n for _d, _s, names in os.walk(cs.path(ps.PROPOSALS)) for n in names
+                    if n.endswith(".tmp")]
+
+        for label, chosen in (("its record", record_temp), ("the intake ledger", ledger_temp)):
+            for stop_at in (0, 40):
+                with ScriptedWrites(lambda path, data: (
+                        min(len(data), max(0, stop_at - os.path.getsize(path)))
+                        if chosen(path) else None)):
+                    out = apx.file(folder, proposal)
+                check(out["result"] == "unavailable" and "proposal_id" not in out
+                      and apx.records(cs) == ([], []) and not temporary_files(),
+                      f"writing {label} that stops after {stop_at} bytes is `unavailable`, never "
+                      "`pending`: nothing filed, nothing unexpected, no temporary file left")
+        with ScriptedWrites(lambda path, data: min(len(data), 3)) as writes:
+            out = apx.file(folder, proposal)
+        filed, unexpected = apx.records(cs)
+        check(out["result"] == "pending" and [r["proposal_id"] for r in filed] == [out["proposal_id"]]
+              and not unexpected and any(record_temp(c[0]) and c[2] < c[1] for c in writes.calls),
+              "a record written in partial writes is filed whole, read back and listed")
+        check(apx.file(folder, proposal)["result"] == "duplicate",
+              "  and an identical submission is its duplicate")
         shutil.rmtree(folder)
 
 
@@ -1725,6 +1906,8 @@ def run() -> None:
     case_preview_then_decide()
     case_atomic()
     case_duplicates()
+    case_record_bound()
+    case_short_record_writes()
     case_submission_parity()
     case_console_import()
     case_older_copy_reads_new_records()

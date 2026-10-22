@@ -126,6 +126,11 @@ RECORD_VERSION = 1
 AGENT, IMPORTED = "agent", "imported"
 
 MAX_INPUT = 2 * 1024 * 1024
+# The most bytes one stored proposal record may hold, as the UTF-8 JSON intake
+# writes it (`_record_bytes`). Intake refuses a proposal whose record could
+# exceed it before writing or acknowledging anything, and every reader reads
+# at most this much, so whatever intake files can be read back and matched.
+MAX_RECORD = 2 * 1024 * 1024
 MAX_AGENT = 80
 MAX_REASON = 4000
 MAX_IMPACT = 8000
@@ -568,14 +573,51 @@ def check(raw: Any, target: Target) -> Tuple[Optional[Dict[str, Any]], List[Dict
         return None, problems
     proposal = {k: raw[k] for k in FIELDS if k in raw}
     proposal["agent"] = agent
+    # Whatever route files it, its record must fit what the readers read.
+    size = _largest_record_size(proposal)
+    if size > MAX_RECORD:
+        return None, [too_large_problem(size)]
     return proposal, []
 
 
 # --- filing -----------------------------------------------------------------------------
 
+class RecordTooLarge(ValueError):
+    """A proposal's stored record would exceed MAX_RECORD bytes."""
+
+    def __init__(self, size: int) -> None:
+        super().__init__(size)
+        self.size = size
+
+
+def too_large_problem(size: int) -> Dict[str, Any]:
+    return _problem("too_large", f"This proposal is too large to file: Charter keeps at most "
+                                 f"{MAX_RECORD} bytes for one proposal, and this one needs {size}. "
+                                 "Shorten it, then submit it.")
+
+
 def _record_bytes(record: Dict[str, Any]) -> bytes:
-    """Exactly what `host_state.write_json_atomic` writes."""
-    return (json.dumps(record, ensure_ascii=False, indent=1, sort_keys=True) + "\n").encode("utf-8")
+    """Exactly what `host_state.write_json_atomic` writes. Raises RecordTooLarge,
+    before anything is written, for a record the readers could not read back."""
+    data = (json.dumps(record, ensure_ascii=False, indent=1, sort_keys=True) + "\n").encode("utf-8")
+    if len(data) > MAX_RECORD:
+        raise RecordTooLarge(len(data))
+    return data
+
+
+# The longest record intake writes for a proposal: placeholders as long as
+# the identifier, time and digests it stores, and the longer source.
+_LONGEST_ID = "p-00000000-00000000"
+_LONGEST_TIME = "0000-00-00T00:00:00Z"
+
+
+def _largest_record_size(proposal: Dict[str, Any]) -> int:
+    """The size of the largest record any route could write for `proposal`."""
+    record = {"version": RECORD_VERSION, "proposal_id": _LONGEST_ID, "source": IMPORTED,
+              "received": _LONGEST_TIME, "proposal": proposal, "proposal_sha256": "0" * 64,
+              "submitted_sha256": "0" * 64}
+    return len((json.dumps(record, ensure_ascii=False, indent=1, sort_keys=True)
+                + "\n").encode("utf-8"))
 
 
 def _now() -> str:
@@ -678,7 +720,7 @@ def _settled(path: str, entry: Any) -> Any:
     if not isinstance(entry, dict) or "replacement" not in entry:
         return entry
     try:
-        digest = hashlib.sha256(_read_regular(path, MAX_INPUT + 1)).hexdigest()
+        digest = hashlib.sha256(_read_regular(path, MAX_RECORD + 1)).hexdigest()
     except (NotRegular, OSError):
         return entry
     vouched = _vouched(entry)
@@ -758,6 +800,8 @@ def file(folder: str, raw: Any, source: str = AGENT,
             _write_ledger(cs, ledger)
             hs.write_json_atomic(cs.path(ps.PROPOSALS, PENDING, proposal_id + ".json"), record)
         return pending_result(proposal_id)
+    except RecordTooLarge as exc:
+        return refused_result([too_large_problem(exc.size)])  # nothing written
     except Unavailable as exc:
         return unavailable_result(exc)
     except (ps.PrivateStateError, hs.HostStateError, OSError) as exc:
@@ -804,6 +848,8 @@ def replace(folder: str, raw: Any, proposal_id: Any, source: str = IMPORTED,
                 if waiting is None or waiting["proposal_id"] != proposal_id:
                     return refused_result([_problem("not_duplicate", NOT_WAITING)])
                 return _replace_record(cs, waiting, source, proposal, fingerprint, submitted, fault)
+    except RecordTooLarge as exc:
+        return refused_result([too_large_problem(exc.size)])  # nothing written
     except Unavailable as exc:
         return unavailable_result(exc)
     except tx.TransactionError as exc:
@@ -831,7 +877,7 @@ def _replace_record(cs: ps.ContextState, waiting: Dict[str, Any], source: str,
     proposal_id = waiting["proposal_id"]
     rel = f"{ps.PROPOSALS}/{PENDING}/{proposal_id}.json"
     try:
-        old = _read_regular(cs.path(*rel.split("/")), MAX_INPUT + 1)
+        old = _read_regular(cs.path(*rel.split("/")), MAX_RECORD + 1)
     except (NotRegular, OSError):
         raise tx.ConcurrentChange([rel])
     old_sha = hashlib.sha256(old).hexdigest()
@@ -964,6 +1010,8 @@ def file_batch(folder: str, items: List[Tuple[Any, Any]], source: str = IMPORTED
                         pass
                     raise
         return {"result": "pending", "proposal_ids": ids}
+    except RecordTooLarge as exc:
+        return refused_result([too_large_problem(exc.size)])  # nothing written
     except Unavailable as exc:
         return unavailable_result(exc)
     except tx.TransactionError as exc:
@@ -1034,9 +1082,11 @@ def _read_regular(path: str, limit: int) -> bytes:
 
 def _read_record(path: str) -> Tuple[Optional[bytes], Optional[Dict[str, Any]]]:
     try:
-        data = _read_regular(path, MAX_INPUT + 1)
+        data = _read_regular(path, MAX_RECORD + 1)
     except (NotRegular, OSError):
         return None, None
+    if len(data) > MAX_RECORD:
+        return data, None  # never one intake wrote
     try:
         record = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):

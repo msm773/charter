@@ -8,10 +8,14 @@ The helpers `private_store` builds Charter's private state on:
     with, and one opened to other accounts afterwards is reported, not repaired;
   * locks are exclusive across processes, bounded, independent per file, and
     released by the operating system when their holder dies;
-  * JSON records are replaced in one rename, and an unreadable one is refused.
+  * JSON records are replaced in one rename, and an unreadable one is refused;
+  * every low-level write writes every byte or raises: a short write is
+    continued, and one that makes no progress, or reports a count it cannot
+    have written, fails, so a record cut short is never taken for a whole one.
 """
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
@@ -23,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import host_state  # noqa: E402
 from app.host_state import HostStateError  # noqa: E402
+from tests.harness import ScriptedWrites  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OK = "ok"
@@ -180,6 +185,82 @@ def case_json() -> None:
         except HostStateError as exc:
             refused = "could not be read" in str(exc)
         check(refused, "an unreadable record is refused, in words")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_write_all() -> None:
+    print("\nwriting every byte")
+    base = tempfile.mkdtemp(prefix="charter-write-")
+    data = bytes(range(256)) * 40
+
+    def written(script) -> tuple:
+        """(what reached the file, the exception raised or None, the calls)."""
+        path = os.path.join(base, "out.bin")
+        if os.path.exists(path):
+            os.remove(path)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0))
+        with ScriptedWrites(lambda _p, d: script(d)) as writes:
+            try:
+                host_state.write_all(fd, data)
+                raised = None
+            except OSError as exc:
+                raised = exc
+            finally:
+                os.close(fd)
+        with open(path, "rb") as fh:
+            return fh.read(), raised, writes.calls
+
+    try:
+        sizes = iter([1, 7, 1000, 3])
+        got, raised, calls = written(lambda d: min(len(d), next(sizes, len(d))))
+        check(got == data and raised is None and [c[2] for c in calls] == [1, 7, 1000, 3,
+                                                                          len(data) - 1011],
+              "a sequence of partial writes continues from where each stopped until every byte "
+              "is written, in order")
+        check(written(lambda d: min(len(d), 1))[0] == data, "  even one byte at a time")
+        for label, action in (("no progress", 0), ("a negative count", -1),
+                              ("a count larger than asked", len(data) + 1),
+                              ("True as its count", True), ("text as its count", "10")):
+            got, raised, _calls = written(lambda d, a=action: a)
+            check(isinstance(raised, host_state.IncompleteWrite) and raised.errno == errno.EIO
+                  and got == b"", f"a write reporting {label} fails as an OSError, never success")
+        calls_seen = iter([100, 0])
+        got, raised, calls = written(lambda d: next(calls_seen))
+        check(isinstance(raised, host_state.IncompleteWrite) and got == data[:100]
+              and "100 of" in str(raised) and len(calls) == 2,
+              "a write that stops part-way fails, saying how far it got")
+        disk_full = OSError(errno.ENOSPC, "No space left on device")
+        got, raised, _calls = written(lambda d: disk_full)
+        check(raised is disk_full, "an error the system reports is raised exactly as it was")
+        null = os.open(os.devnull, os.O_WRONLY)
+        try:
+            with ScriptedWrites(lambda _p, d: 0) as writes:
+                host_state.write_all(null, b"")
+        finally:
+            os.close(null)
+        check(writes.calls == [], "nothing to write calls no write and succeeds")
+
+        path = os.path.join(base, "record.json")
+        host_state.write_json_atomic(path, {"v": 1})
+        with ScriptedWrites(lambda p, d: min(len(d), 5)):
+            host_state.write_json_atomic(path, {"v": 2, "text": "é" * 100})
+        check(host_state.read_json(path) == {"v": 2, "text": "é" * 100} and os.listdir(base)
+              == ["out.bin", "record.json"],
+              "a private JSON record written in partial writes is whole")
+        for label, script in (("makes no progress", lambda p, d: 0),
+                              ("stops part-way", lambda p, d: 0 if os.path.getsize(p) else 9),
+                              ("fails", lambda p, d: OSError(errno.ENOSPC, "full"))):
+            try:
+                with ScriptedWrites(script):
+                    host_state.write_json_atomic(path, {"v": 3})
+                raised = None
+            except OSError as exc:
+                raised = exc
+            check(raised is not None and host_state.read_json(path) == {"v": 2, "text": "é" * 100}
+                  and sorted(os.listdir(base)) == ["out.bin", "record.json"],
+                  f"a private JSON write that {label} raises, keeps the record it would have "
+                  "replaced, and leaves no temporary file")
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -361,6 +442,7 @@ def run() -> None:
     case_private_folders()
     case_locks()
     case_json()
+    case_write_all()
     case_shared_files()
     print(f"\n{OK} All private-location helper checks passed.")
 

@@ -515,6 +515,29 @@ def retry_shared(op: Any, *args: Any, revalidate: Any = None) -> Any:
     return None  # unreachable: the last attempt returns or raises
 
 
+class IncompleteWrite(OSError):
+    """A write to a file stopped making progress before every byte was written."""
+
+
+def write_all(fd: int, data: bytes) -> None:
+    """Write every byte of `data` to the file descriptor `fd`, or raise.
+
+    `os.write` may write fewer bytes than it was given; this continues from
+    where each write stopped until all of `data` is written. A write that
+    reports no progress, or a count it cannot have written, raises
+    IncompleteWrite, an OSError, so every caller's handling of a failed write
+    applies: a file cut short is never taken for a whole one. Any error the
+    system reports is raised exactly as it was. Every low-level file write in
+    Charter goes through here."""
+    view = memoryview(data).cast("B")
+    done, total = 0, len(view)
+    while done < total:
+        n = os.write(fd, view[done:])
+        if type(n) is not int or n <= 0 or n > total - done:
+            raise IncompleteWrite(errno.EIO, f"A write stopped after {done} of {total} bytes")
+        done += n
+
+
 def write_json_atomic(path: str, data: Any) -> None:
     """Replace `path` with `data` as JSON, flushed, in one rename. If that
     fails, its own temporary file — created for this call alone — is removed."""
@@ -525,7 +548,7 @@ def write_json_atomic(path: str, data: Any) -> None:
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
     try:
         try:
-            os.write(fd, raw)
+            write_all(fd, raw)
             os.fsync(fd)
         finally:
             os.close(fd)

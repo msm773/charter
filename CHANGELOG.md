@@ -656,6 +656,25 @@ Git.
   private state — Replace, a decision, Mark as seen — no longer refuses agents,
   `charter propose` or an import check for its duration; an interrupted write,
   and a write to the Agent Context itself, still do.
+- **A write the system cuts short is never taken for a whole one.** Every
+  low-level file write — a transaction's documents and private files, its
+  backups and journal, a restored file, private JSON records and MCP activity —
+  now continues until every byte is written, and one that stops making
+  progress fails as the write failure it is. An action used to report a
+  candidate applied, and remove its journal, with only part of the candidate
+  on disk. Now a document or restored file cut short rolls the action back, or
+  keeps the journal so it is recovered before the next write; a backup or
+  journal cut short fails the action before anything changes; a proposal
+  record or intake ledger cut short is `unavailable`, never `pending`; and an
+  activity line cut short is dropped, never failing a retrieval.
+- **Every proposal filed can be read back.** A stored proposal record holds at
+  most 2 MiB as UTF-8, the same bound its readers enforce. A proposal whose
+  record could exceed it — counted in bytes, not characters, for the longest
+  record any route writes — is `refused` with `too_large` by `charter
+  propose`, `submit_proposal`, Import and Replace, before anything is written.
+  A compact proposal just under the 2 MiB input limit used to be answered
+  `pending`, then shown as an unexpected record, and an identical submission
+  was filed again under a new proposal id.
 - **An untrusted record of an interrupted write names exactly what to
   delete.** Charter used to tell the person to delete any `.charter-txn-` or
   `.acm-txn-` file in the Agent Context. It now lists, by full path, each
