@@ -1,14 +1,14 @@
 {%- comment -%}
 The Charter Story as cards, from _data/articles.yml. A part's `image`, when
-given, fills its card's visual region; otherwise a placeholder panel shows
-the part number.
+given, is shown whole in its card's visual region; otherwise a placeholder
+panel shows the part number.
 {%- endcomment -%}
 <div class="story-cards">
   {%- for article in site.data.articles %}
   <article class="story-card{% if forloop.first %} story-card--featured{% endif %}">
     {%- if article.image %}
-    <div class="story-card-visual">
-      <img src="{{ article.image | relative_url }}" alt="" loading="lazy">
+    <div class="story-card-visual story-card-visual--image">
+      <img src="{{ article.image | relative_url }}" alt="{{ article.image_alt | escape }}" width="1200" height="600"{% unless forloop.first %} loading="lazy"{% endunless %}>
     </div>
     {%- else %}
     <div class="story-card-visual story-card-visual--placeholder" aria-hidden="true">

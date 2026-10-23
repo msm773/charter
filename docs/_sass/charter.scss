@@ -6,6 +6,7 @@ $charter-panel:      #f3f5f8;
 $charter-panel-line: rgba($brand-color, 0.08);
 $charter-border:     #e3e6ea;
 $charter-radius:     6px;
+$charter-art-ground: #fbf5ec; // the story illustrations' warm off-white
 
 
 
@@ -41,7 +42,8 @@ $charter-radius:     6px;
 }
 
 // The visual region: an image when the part's entry names one, otherwise a
-// quiet ruled panel carrying the part number.
+// quiet ruled panel carrying the part number. An image is shown whole, never
+// cropped; any space around it takes the illustrations' own ground colour.
 .story-card-visual {
   position: relative;
   height: 0;
@@ -55,8 +57,12 @@ $charter-radius:     6px;
     left: 0;
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    object-fit: contain;
   }
+}
+
+.story-card-visual--image {
+  background-color: $charter-art-ground;
 }
 
 .story-card-visual--placeholder {
@@ -142,7 +148,7 @@ $charter-radius:     6px;
     flex-direction: row;
 
     .story-card-visual {
-      flex: 0 0 45%;
+      flex: 0 0 55%;
       padding-top: 0;
       height: auto;
       min-height: 220px;
