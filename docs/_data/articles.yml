@@ -7,9 +7,11 @@
 #
 # `excerpt` is a passage quoted word for word from the part, shown on its card.
 # `image` is optional: a site path such as /assets/images/story/part-1.webp,
-# shown whole at the top of the card in place of the numbered panel, with
-# `image_alt` as its text alternative. Images are 2:1 (1200 x 600) on a warm
-# off-white background; the card fills any space around one with that colour.
+# shown whole at the top of the card in place of the numbered panel, and under
+# the part's subtitle in the article, with `image_alt` as its text
+# alternative. Images are 2:1 (1200 x 600) on a warm off-white background; the
+# card fills any space around one with that colour. `image_full` is the
+# full-resolution file the article's illustration opens when clicked.
 
 - part: 1
   title: "The Experience"
@@ -17,6 +19,7 @@
   excerpt: "AI doesn't just accelerate development. It also accelerates the rate at which your project accumulates decisions, assumptions, changes, and unfinished work."
   url: /the-experience/
   image: /assets/images/story/part-1.webp
+  image_full: /assets/images/story/part-1-full.webp
   image_alt: "AI agents, each carrying a piece of work, building a software application together"
 
 - part: 2
@@ -25,6 +28,7 @@
   excerpt: "Simply making information available doesn't tell an agent which decisions are authoritative."
   url: /the-problem/
   image: /assets/images/story/part-2.webp
+  image_full: /assets/images/story/part-2-full.webp
   image_alt: "A developer facing scattered documents and agent messages, with no central reference among them"
 
 - part: 3
@@ -33,6 +37,7 @@
   excerpt: "I'm simply separating the work of developing a proposal from the authority to approve a decision."
   url: /the-approach/
   image: /assets/images/story/part-3.webp
+  image_full: /assets/images/story/part-3-full.webp
   image_alt: "Proposals from research, development and design agents combined into one change and stamped approved"
 
 - part: 4
@@ -41,6 +46,7 @@
   excerpt: "Keep the decisions that govern a project in a durable, organized location, make that information available to AI agents, and provide a controlled way for the context to evolve."
   url: /the-implementation/
   image: /assets/images/story/part-4.webp
+  image_full: /assets/images/story/part-4-full.webp
   image_alt: "Charter as an organized repository of project context, connected to research, design, development and review agents"
 
 - part: 5
@@ -49,4 +55,5 @@
   excerpt: "The objective isn't to document everything. It's to preserve the decisions that matter and make them available when agents need them."
   url: /the-workflow/
   image: /assets/images/story/part-5.webp
+  image_full: /assets/images/story/part-5-full.webp
   image_alt: "Stepping stones from gathered project materials, through agent proposals and your decisions, to a finished application"

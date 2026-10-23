@@ -4,10 +4,17 @@ A captioned image in an article:
   {% include figure.html src="/assets/images/context-map.png" alt="…" caption="…" %}
 
 `src` is a site path; the /charter base path is added here. Add
-framed=true for a screenshot or diagram that needs an edge against the page.
+framed=true for a screenshot or diagram that needs an edge against the page,
+and full="/assets/…" to make the image open that full-resolution file.
 {%- endcomment -%}
 <figure{% if include.framed %} class="figure-framed"{% endif %}>
-  <img src="{{ include.src | relative_url }}" alt="{{ include.alt | escape }}" loading="lazy">
+  {%- if include.full %}
+  <a href="{{ include.full | relative_url }}" title="Open the full-size image">
+  {%- endif %}
+  <img src="{{ include.src | relative_url }}" alt="{{ include.alt | escape }}"{% if include.width %} width="{{ include.width }}" height="{{ include.height }}"{% endif %} loading="lazy">
+  {%- if include.full %}
+  </a>
+  {%- endif %}
   {%- if include.caption %}
   <figcaption>{{ include.caption | smartify }}</figcaption>
   {%- endif %}

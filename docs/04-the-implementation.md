@@ -16,6 +16,7 @@ The idea isn't particularly complicated. Keep the decisions that govern a projec
 You can accomplish parts of this with Markdown files, project instructions, and Git. In fact, Charter uses those same building blocks.
 
 What Charter adds is a consistent way to manage which information is authoritative, how agents access it, and how proposed changes become approved decisions.
+{: .pull-quote}
 
 ### A home for governing context
 
@@ -32,6 +33,8 @@ This is important because a project may contain hundreds of files, but an agent 
 The context also exists independently of any one agent session. When a conversation ends or a new agent joins the project, the governing documents are still there.
 
 And because the context is a project asset, it can be maintained and version-controlled like other important project materials.
+
+{% include figure.html src="/assets/images/charter-governing-context.webp" full="/assets/images/charter-governing-context.webp" width="1341" height="939" framed=true alt="Charter's Governing Context view, listing a project's governing documents with their scope and actions to read, revise or withdraw each one" caption="A view of Charter's Governing Context. The tool organizes the documents currently governing a project and makes related workflows—such as proposals and change sets—available in one place." %}
 
 ### One context, many agents
 

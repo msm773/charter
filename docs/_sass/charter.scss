@@ -206,7 +206,13 @@ $charter-art-ground: #fbf5ec; // the story illustrations' warm off-white
   }
 
   figure img {
+    height: auto;
     margin: 0 auto;
+  }
+
+  figure a {
+    display: block;
+    cursor: zoom-in;
   }
 
   // Screenshots and diagrams on white need an edge against the page.
@@ -235,6 +241,11 @@ $charter-art-ground: #fbf5ec; // the story illustrations' warm off-white
   background-color: $charter-art-ground;
   border-radius: $charter-radius;
   overflow: hidden;
+
+  a {
+    display: block;
+    cursor: zoom-in;
+  }
 
   img {
     width: auto;

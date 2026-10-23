@@ -16,6 +16,7 @@ My testing-harness experience was a pretty good reminder of that.
 So when I started working on Charter, I wanted it to be useful without requiring a lot of ongoing administration.
 
 The objective isn't to document everything. It's to preserve the decisions that matter and make them available when agents need them.
+{: .pull-quote}
 
 ### Start with what matters
 
@@ -108,6 +109,7 @@ It's free, and the source code is available on GitHub.
 If you're building software with AI agents, I'd encourage you to think about how you're preserving the decisions that govern your project, regardless of whether you use Charter.
 
 For me, one of the biggest benefits is that I'm no longer constantly reconstructing the past so an agent can do the next piece of work. I'm using established decisions to move forward.
+{: .pull-quote}
 
 Because the faster we can build software, the more important it becomes to keep track of what we're actually building.
 

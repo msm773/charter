@@ -9,7 +9,7 @@ permalink: /the-problem/
 
 ## The Missing Layer: Governing Context
 
-In the introduction, I described how working with multiple AI agents can create a growing coordination problem. But to be fair, this isn't strictly a multi-agent issue. You can encounter it using a single agent, too.
+In Part 1, I described how working with multiple AI agents can create a growing coordination problem. But to be fair, this isn't strictly a multi-agent issue. You can encounter it using a single agent, too.
 
 Every agent has a limited amount of working context. As conversations grow, older information may be summarized, omitted, or become unavailable in subsequent sessions.
 
@@ -37,7 +37,7 @@ Great, bug fixed!
 
 Except it wasn't a bug.
 
-That restriction was an intentional business rule; one you'd discussed and approved weeks earlier. And now you've got two agents, both doing what they thought was helpful, that together have undone an important product decision.
+That restriction was an intentional business rule, one you'd discussed and approved weeks earlier. And now you've got two agents, both doing what they thought was helpful, that together have undone an important product decision.
 
 Of course, a careful review might have caught this. But the larger problem is that neither agent had a reliable reference for the decision that governed the feature.
 

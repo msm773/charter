@@ -16,6 +16,7 @@ But there's an interesting question. Who gets to decide what belongs in that con
 When you're working with AI agents, it's tempting to let them maintain the documentation themselves. They're good at writing specifications, identifying inconsistencies, and organizing information. Why not let them update the project's governing context as they work?
 
 Well, because documenting a decision and making a decision are two different things.
+{: .pull-quote}
 
 ### Not everything should govern
 
@@ -38,6 +39,7 @@ The distinction seems obvious when you think about it. But when agents are produ
 ### The human approval boundary
 
 My approach is fairly simple: agents can contribute to governing context, but they don't get to decide what becomes authoritative.
+{: .pull-quote}
 
 An agent can research a problem, recommend a solution, draft a specification, or propose changing an existing decision.
 
