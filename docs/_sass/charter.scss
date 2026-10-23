@@ -224,6 +224,31 @@ $charter-art-ground: #fbf5ec; // the story illustrations' warm off-white
 
 
 /**
+ * Article illustration: the part's card image, under its title and subtitle
+ *
+ * At most 30% of the window's height, so the title, subtitle and opening
+ * prose stay in view; its width follows from the 2:1 ratio. The band beside a
+ * narrower image takes the illustrations' own ground colour, as on the cards.
+ */
+.post-content .article-illustration {
+  margin: $spacing-unit * 0.75 0 $spacing-unit * 1.25;
+  background-color: $charter-art-ground;
+  border-radius: $charter-radius;
+  overflow: hidden;
+
+  img {
+    width: auto;
+    max-width: 100%;
+    height: auto;
+    max-height: 30vh;
+    margin: 0 auto;
+    border-radius: 0;
+  }
+}
+
+
+
+/**
  * Previous / next (articles)
  */
 .series-nav {

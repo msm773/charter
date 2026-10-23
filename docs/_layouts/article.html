@@ -2,13 +2,15 @@
 layout: default
 ---
 {%- comment -%}
-A part's Markdown supplies its own title as its first heading, so this layout
-adds no title of its own. Previous and next follow the order of
-_data/articles.yml.
+A part's Markdown supplies its own title as its first heading, and its
+subtitle as its first h2, so this layout adds no title of its own. The part's
+illustration, its `image` in _data/articles.yml, goes after that subtitle.
+Previous and next follow the order of _data/articles.yml.
 {%- endcomment -%}
 {%- for article in site.data.articles -%}
   {%- if article.url == page.url -%}
     {%- assign index = forloop.index0 -%}
+    {%- assign current = article -%}
   {%- endif -%}
 {%- endfor -%}
 {%- if index -%}
@@ -19,7 +21,16 @@ _data/articles.yml.
 {%- endif -%}
 <article class="post">
   <div class="post-content">
+    {%- if current.image and content contains "</h2>" %}
+    {%- assign heading = content | split: "</h2>" | first | append: "</h2>" %}
+    {{ heading }}
+    <figure class="article-illustration">
+      <img src="{{ current.image | relative_url }}" alt="{{ current.image_alt | escape }}" width="1200" height="600">
+    </figure>
+    {{ content | remove_first: heading }}
+    {%- else %}
     {{ content }}
+    {%- endif %}
   </div>
 
   <footer class="series">
