@@ -11,7 +11,13 @@ AI agents can do remarkable work, but a new session doesn't automatically inheri
 
 Charter is a small, local, version-controlled home for the decisions that govern a software project. Agents can retrieve that governing context and propose changes to it; you review and approve what becomes authoritative. Charter can provide context and ask agents to use it, but it cannot guarantee an agent will follow it.
 
-## Articles {#articles}
+## The Charter Story
+
+*Managing Context in Multi-Agent Development*
+
+A five-part story of building software with AI agents, the problem of keeping them aligned, and how Charter approaches it.
+
+**[Start reading: Part 1 — The Experience →]({{ "/the-experience/" | relative_url }})**
 
 {% include article-list.html %}
 

@@ -2,17 +2,40 @@
 layout: default
 ---
 {%- comment -%}
-An article's Markdown supplies its own title as its first heading, so this
-layout adds no title of its own.
+A part's Markdown supplies its own title as its first heading, so this layout
+adds no title of its own. Previous and next follow the order of
+_data/articles.yml.
 {%- endcomment -%}
+{%- for article in site.data.articles -%}
+  {%- if article.url == page.url -%}
+    {%- assign index = forloop.index0 -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- if index -%}
+  {%- assign previous_index = index | minus: 1 -%}
+  {%- assign next_index = index | plus: 1 -%}
+  {%- if index > 0 -%}{%- assign previous = site.data.articles[previous_index] -%}{%- endif -%}
+  {%- assign next = site.data.articles[next_index] -%}
+{%- endif -%}
 <article class="post">
   <div class="post-content">
     {{ content }}
   </div>
 
   <footer class="series">
+    {%- if previous or next %}
+    <p class="series-nav">
+      {%- if previous %}
+      <a href="{{ previous.url | relative_url }}">← Part {{ previous.part }}: {{ previous.title | escape }}</a>
+      {%- endif %}
+      {%- if previous and next %} · {% endif %}
+      {%- if next %}
+      <a href="{{ next.url | relative_url }}">Part {{ next.part }}: {{ next.title | escape }} →</a>
+      {%- endif %}
+    </p>
+    {%- endif %}
     <hr>
-    <h2>The Charter series</h2>
+    <h2>The Charter Story</h2>
     {% include article-list.html %}
     <p>
       <a href="{{ "/" | relative_url }}">Charter home</a> ·

@@ -1,10 +1,31 @@
-# Published articles, in series order. The landing page and every article's
-# series list are built from this file.
+# The Charter Story, in reading order. The home page's contents, and every
+# part's contents and previous/next links, are built from this file.
 #
-# To publish an article: add its Markdown file to docs/ with front matter like
-# introduction.md's (layout: article, title, description, permalink), then add
-# its entry here. List only articles that are published.
+# Each part's Markdown file in docs/ has front matter like
+# 01-the-experience.md's (layout: article, title, description, permalink); its
+# entry here gives the same permalink as `url`.
 
-- title: "AI Can Build Fast. Keeping Agents Aligned Is the Hard Part."
-  url: /introduction/
-  summary: "Introduction to a series on context management for multi-agent development"
+- part: 1
+  title: "The Experience"
+  subtitle: "AI Can Build Fast. Keeping Agents Aligned Is the Hard Part."
+  url: /the-experience/
+
+- part: 2
+  title: "The Problem"
+  subtitle: "The Missing Layer: Governing Context"
+  url: /the-problem/
+
+- part: 3
+  title: "The Approach"
+  subtitle: "Agents Can Propose. People Decide."
+  url: /the-approach/
+
+- part: 4
+  title: "The Implementation"
+  subtitle: "How Charter Works"
+  url: /the-implementation/
+
+- part: 5
+  title: "The Workflow"
+  subtitle: "Putting Charter to Work"
+  url: /the-workflow/
