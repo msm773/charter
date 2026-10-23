@@ -1,0 +1,14 @@
+{%- comment -%}
+A captioned image in an article:
+
+  {% include figure.html src="/assets/images/context-map.png" alt="…" caption="…" %}
+
+`src` is a site path; the /charter base path is added here. Add
+framed=true for a screenshot or diagram that needs an edge against the page.
+{%- endcomment -%}
+<figure{% if include.framed %} class="figure-framed"{% endif %}>
+  <img src="{{ include.src | relative_url }}" alt="{{ include.alt | escape }}" loading="lazy">
+  {%- if include.caption %}
+  <figcaption>{{ include.caption | smartify }}</figcaption>
+  {%- endif %}
+</figure>

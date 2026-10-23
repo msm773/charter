@@ -24,15 +24,14 @@ _data/articles.yml.
 
   <footer class="series">
     {%- if previous or next %}
-    <p class="series-nav">
+    <nav class="series-nav" aria-label="The Charter Story">
       {%- if previous %}
-      <a href="{{ previous.url | relative_url }}">← Part {{ previous.part }}: {{ previous.title | escape }}</a>
+      <a class="series-previous" href="{{ previous.url | relative_url }}">← Part {{ previous.part }}: {{ previous.title | escape }}</a>
       {%- endif %}
-      {%- if previous and next %} · {% endif %}
       {%- if next %}
-      <a href="{{ next.url | relative_url }}">Part {{ next.part }}: {{ next.title | escape }} →</a>
+      <a class="series-next" href="{{ next.url | relative_url }}">Part {{ next.part }}: {{ next.title | escape }} →</a>
       {%- endif %}
-    </p>
+    </nav>
     {%- endif %}
     <hr>
     <h2>The Charter Story</h2>

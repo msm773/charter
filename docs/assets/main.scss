@@ -1,0 +1,6 @@
+---
+# Replaces minima's own main.scss: minima's styles, then Charter's additions.
+---
+
+@import "minima";
+@import "charter";

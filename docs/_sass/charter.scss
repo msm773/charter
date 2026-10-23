@@ -1,0 +1,233 @@
+// Charter's additions to minima: the story cards on the home page, and pull
+// quotes, figures and previous/next links in articles. Colours and spacing
+// come from minima's variables, so the site keeps one look.
+
+$charter-panel:      #f3f5f8;
+$charter-panel-line: rgba($brand-color, 0.08);
+$charter-border:     #e3e6ea;
+$charter-radius:     6px;
+
+
+
+/**
+ * Story cards (home page)
+ */
+.story-cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-gap: $spacing-unit * 0.75;
+  margin: $spacing-unit 0 $spacing-unit * 1.5;
+
+  @include media-query($on-palm) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.story-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background-color: #fff;
+  border: 1px solid $charter-border;
+  border-radius: $charter-radius;
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+
+  &:hover,
+  &:focus-within {
+    border-color: rgba($brand-color, 0.45);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  }
+}
+
+// The visual region: an image when the part's entry names one, otherwise a
+// quiet ruled panel carrying the part number.
+.story-card-visual {
+  position: relative;
+  height: 0;
+  padding-top: 50%; // 2:1
+  background-color: $charter-panel;
+  border-bottom: 1px solid $charter-border;
+
+  img {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+
+.story-card-visual--placeholder {
+  background-image:
+    linear-gradient($charter-panel-line 1px, transparent 1px),
+    linear-gradient(90deg, $charter-panel-line 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.story-card-numeral {
+  position: absolute;
+  left: $spacing-unit * 0.6;
+  bottom: $spacing-unit * 0.3;
+  font-size: 56px;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -2px;
+  color: rgba($brand-color, 0.55);
+}
+
+.story-card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: $spacing-unit * 0.6 $spacing-unit * 0.7 $spacing-unit * 0.7;
+
+  > p {
+    margin-bottom: $spacing-unit / 3;
+  }
+}
+
+.story-card-part {
+  font-size: $small-font-size;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $grey-color;
+}
+
+.story-card-title {
+  @include relative-font-size(1.375);
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  margin-bottom: $spacing-unit / 6;
+}
+
+.story-card-subtitle {
+  color: $grey-color-dark;
+  font-style: italic;
+}
+
+.story-card-excerpt {
+  color: $grey-color-dark;
+  font-size: $small-font-size;
+}
+
+// The card's one link. Its ::after covers the card, so the whole card is
+// clickable while screen readers meet a single link.
+.story-card-link {
+  margin-top: auto;
+  padding-top: $spacing-unit / 3;
+  font-weight: 600;
+
+  &::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+  }
+
+  &:hover {
+    text-decoration: none;
+  }
+}
+
+// Part 1 spans the grid, image beside the text, as the place to start.
+.story-card--featured {
+  grid-column: 1 / -1;
+
+  @media screen and (min-width: $on-palm + 1) {
+    flex-direction: row;
+
+    .story-card-visual {
+      flex: 0 0 45%;
+      padding-top: 0;
+      height: auto;
+      min-height: 220px;
+      border-bottom: 0;
+      border-right: 1px solid $charter-border;
+    }
+
+    .story-card-title {
+      @include relative-font-size(1.75);
+    }
+  }
+}
+
+
+
+/**
+ * Pull quotes (articles)
+ *
+ * Author one by putting {: .pull-quote} on the line directly after the
+ * paragraph, with no blank line between them.
+ */
+.post-content .pull-quote {
+  margin: $spacing-unit * 1.25 0;
+  padding: $spacing-unit / 2 0 $spacing-unit / 2 $spacing-unit * 0.75;
+  border-left: 3px solid $brand-color;
+  @include relative-font-size(1.3125);
+  line-height: 1.45;
+  letter-spacing: -0.2px;
+  color: $text-color;
+
+  strong {
+    font-weight: 600;
+  }
+
+  @include media-query($on-palm) {
+    @include relative-font-size(1.1875);
+    padding-left: $spacing-unit / 2;
+  }
+}
+
+
+
+/**
+ * Figures (articles): diagrams, screenshots and illustrations
+ */
+.post-content {
+  figure {
+    margin: $spacing-unit * 1.25 0;
+  }
+
+  img {
+    display: block;
+    margin: $spacing-unit 0;
+    border-radius: $charter-radius / 2;
+  }
+
+  figure img {
+    margin: 0 auto;
+  }
+
+  // Screenshots and diagrams on white need an edge against the page.
+  .figure-framed img {
+    border: 1px solid $charter-border;
+  }
+
+  figcaption {
+    margin-top: $spacing-unit / 3;
+    color: $grey-color;
+    text-align: center;
+  }
+}
+
+
+
+/**
+ * Previous / next (articles)
+ */
+.series-nav {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin: $spacing-unit 0;
+  font-weight: 600;
+
+  .series-next {
+    margin-left: auto;
+  }
+}

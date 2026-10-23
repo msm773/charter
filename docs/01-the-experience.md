@@ -29,6 +29,7 @@ And it works! The agents are designing, building, testing, and fixing software a
 But something else is happening.
 
 ***AI doesn't just accelerate development. It also accelerates the rate at which your project accumulates decisions, assumptions, changes, and unfinished work.***
+{: .pull-quote}
 
 And someone has to keep track of all that.
 
@@ -53,6 +54,7 @@ The funny thing is, Claude hadn't really done anything wrong. I'd given it an un
 I'd like to think I could simply write a better prompt next time. But we're still human, after all. Details get missed, especially as projects grow. Better prompts help. So does reviewing what agents are doing along the way. But…
 
 ***Once you've made a decision, you shouldn't have to remember to repeat it every time a new agent starts working.***
+{: .pull-quote}
 
 Spoiler alert. We won’t remember.
 

@@ -1,31 +1,41 @@
-# The Charter Story, in reading order. The home page's contents, and every
+# The Charter Story, in reading order. The home page's cards, and every
 # part's contents and previous/next links, are built from this file.
 #
 # Each part's Markdown file in docs/ has front matter like
 # 01-the-experience.md's (layout: article, title, description, permalink); its
 # entry here gives the same permalink as `url`.
+#
+# `excerpt` is a passage quoted word for word from the part, shown on its card.
+# `image` is optional: a site path such as /assets/images/story/part-1.png,
+# shown at the top of the card in place of the numbered panel. Cards crop
+# images to fill a 2:1 frame.
 
 - part: 1
   title: "The Experience"
   subtitle: "AI Can Build Fast. Keeping Agents Aligned Is the Hard Part."
+  excerpt: "AI doesn't just accelerate development. It also accelerates the rate at which your project accumulates decisions, assumptions, changes, and unfinished work."
   url: /the-experience/
 
 - part: 2
   title: "The Problem"
   subtitle: "The Missing Layer: Governing Context"
+  excerpt: "Simply making information available doesn't tell an agent which decisions are authoritative."
   url: /the-problem/
 
 - part: 3
   title: "The Approach"
   subtitle: "Agents Can Propose. People Decide."
+  excerpt: "I'm simply separating the work of developing a proposal from the authority to approve a decision."
   url: /the-approach/
 
 - part: 4
   title: "The Implementation"
   subtitle: "How Charter Works"
+  excerpt: "Keep the decisions that govern a project in a durable, organized location, make that information available to AI agents, and provide a controlled way for the context to evolve."
   url: /the-implementation/
 
 - part: 5
   title: "The Workflow"
   subtitle: "Putting Charter to Work"
+  excerpt: "The objective isn't to document everything. It's to preserve the decisions that matter and make them available when agents need them."
   url: /the-workflow/

@@ -17,9 +17,7 @@ Charter is a small, local, version-controlled home for the decisions that govern
 
 A five-part story of building software with AI agents, the problem of keeping them aligned, and how Charter approaches it.
 
-**[Start reading: Part 1 — The Experience →]({{ "/the-experience/" | relative_url }})**
-
-{% include article-list.html %}
+{% include story-cards.html %}
 
 ## Source code
 

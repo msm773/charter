@@ -1,0 +1,27 @@
+{%- comment -%}
+The Charter Story as cards, from _data/articles.yml. A part's `image`, when
+given, fills its card's visual region; otherwise a placeholder panel shows
+the part number.
+{%- endcomment -%}
+<div class="story-cards">
+  {%- for article in site.data.articles %}
+  <article class="story-card{% if forloop.first %} story-card--featured{% endif %}">
+    {%- if article.image %}
+    <div class="story-card-visual">
+      <img src="{{ article.image | relative_url }}" alt="" loading="lazy">
+    </div>
+    {%- else %}
+    <div class="story-card-visual story-card-visual--placeholder" aria-hidden="true">
+      <span class="story-card-numeral">0{{ article.part }}</span>
+    </div>
+    {%- endif %}
+    <div class="story-card-body">
+      <p class="story-card-part">Part {{ article.part }}</p>
+      <h3 class="story-card-title">{{ article.title | escape }}</h3>
+      <p class="story-card-subtitle">{{ article.subtitle | smartify }}</p>
+      <p class="story-card-excerpt">{{ article.excerpt | smartify }}</p>
+      <a class="story-card-link" href="{{ article.url | relative_url }}">Read Part {{ article.part }} →</a>
+    </div>
+  </article>
+  {%- endfor %}
+</div>

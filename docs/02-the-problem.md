@@ -68,6 +68,7 @@ Maybe the proposal is newer. Maybe the technical notes describe an approach that
 Simply making information available doesn't tell an agent which decisions are authoritative.
 
 ***And that's the distinction that matters: there's a difference between information an agent can use and decisions an agent is expected to work within.***
+{: .pull-quote}
 
 ### Governing context
 
@@ -96,6 +97,7 @@ For me, that was the missing piece.
 The challenge wasn't simply giving agents more context.
 
 ***It was making sure they could distinguish what had been discussed from what had actually been decided.***
+{: .pull-quote}
 
 And that raises the next question: what belongs in governing context, and who gets to change it?
 
