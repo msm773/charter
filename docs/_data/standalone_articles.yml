@@ -1,0 +1,12 @@
+# Standalone articles, newest first: writing outside The Charter Story. The
+# home page's Articles section is built from this file.
+#
+# Each article's Markdown file in docs/articles/ has front matter like
+# before-the-agent-writes-code.md's (layout: article, title, description,
+# permalink, author, date); its entry here gives the same permalink as `url`
+# and the same `date`.
+
+- title: "Before the Agent Writes Code: A Workflow for Building Products with AI Agents"
+  subtitle: "How a proposal-and-review workflow helped establish a shared understanding with AI agents—and eventually led to Charter."
+  url: /before-the-agent-writes-code/
+  date: 2026-10-27

@@ -2,11 +2,19 @@
 layout: default
 ---
 {%- comment -%}
-A part's Markdown supplies its own title as its first heading, and its
-subtitle as its first h2, so this layout adds no title of its own. The part's
-illustration, its `image` in _data/articles.yml, goes after that subtitle.
+An article's Markdown supplies its own title as its first heading, and its
+subtitle as its first h2, so this layout adds no title of its own. The byline,
+from the page's `author` and optional `date`, goes after that subtitle, then a
+part's illustration, its `image` in _data/articles.yml.
 Previous and next follow the order of _data/articles.yml.
 {%- endcomment -%}
+{%- capture byline -%}
+  {%- if page.author -%}
+  <p class="article-byline">By {{ page.author | escape }}
+    {%- if page.date %} · <time datetime="{{ page.date | date: "%Y-%m-%d" }}">{{ page.date | date: "%B %Y" }}</time>{% endif -%}
+  </p>
+  {%- endif -%}
+{%- endcapture -%}
 {%- for article in site.data.articles -%}
   {%- if article.url == page.url -%}
     {%- assign index = forloop.index0 -%}
@@ -21,16 +29,20 @@ Previous and next follow the order of _data/articles.yml.
 {%- endif -%}
 <article class="post">
   <div class="post-content">
-    {%- if current.image and content contains "</h2>" %}
+    {%- if content contains "</h2>" %}
     {%- assign heading = content | split: "</h2>" | first | append: "</h2>" %}
     {{ heading }}
+    {{ byline }}
+    {%- if current.image %}
     <figure class="article-illustration">
       <a href="{{ current.image_full | default: current.image | relative_url }}" title="Open the full-size illustration">
         <img src="{{ current.image | relative_url }}" alt="{{ current.image_alt | escape }}" width="1200" height="600">
       </a>
     </figure>
+    {%- endif %}
     {{ content | remove_first: heading }}
     {%- else %}
+    {{ byline }}
     {{ content }}
     {%- endif %}
   </div>

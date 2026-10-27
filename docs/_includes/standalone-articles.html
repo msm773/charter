@@ -1,0 +1,14 @@
+{%- comment -%}
+The standalone articles, from _data/standalone_articles.yml, as a plain list.
+{%- endcomment -%}
+<ul class="standalone-articles">
+  {%- for article in site.data.standalone_articles %}
+  <li>
+    <a class="standalone-article-title" href="{{ article.url | relative_url }}">{{ article.title | escape }}</a>
+    <p class="standalone-article-subtitle">{{ article.subtitle | smartify }}</p>
+    {%- if article.date %}
+    <p class="standalone-article-date"><time datetime="{{ article.date | date: "%Y-%m-%d" }}">{{ article.date | date: "%B %Y" }}</time></p>
+    {%- endif %}
+  </li>
+  {%- endfor %}
+</ul>

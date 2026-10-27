@@ -3,6 +3,8 @@ layout: article
 title: "Part 5 — The Workflow"
 description: "Putting Charter to Work"
 permalink: /the-workflow/
+author: Mike Meyers
+date: 2026-10-22
 ---
 
 # Part 5 — The Workflow

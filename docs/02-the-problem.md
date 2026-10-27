@@ -3,6 +3,8 @@ layout: article
 title: "Part 2 — The Problem"
 description: "The Missing Layer: Governing Context"
 permalink: /the-problem/
+author: Mike Meyers
+date: 2026-10-22
 ---
 
 # Part 2 — The Problem

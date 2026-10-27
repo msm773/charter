@@ -3,6 +3,8 @@ layout: article
 title: "Part 3 — The Approach"
 description: "Agents Can Propose. People Decide."
 permalink: /the-approach/
+author: Mike Meyers
+date: 2026-10-22
 ---
 
 # Part 3 — The Approach

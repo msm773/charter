@@ -1,6 +1,7 @@
-// Charter's additions to minima: the story cards on the home page, and pull
-// quotes, figures and previous/next links in articles. Colours and spacing
-// come from minima's variables, so the site keeps one look.
+// Charter's additions to minima: the story cards and standalone articles on
+// the home page, and bylines, pull quotes, figures and previous/next links in
+// articles. Colours and spacing come from minima's variables, so the site
+// keeps one look.
 
 $charter-panel:      #f3f5f8;
 $charter-panel-line: rgba($brand-color, 0.08);
@@ -160,6 +161,75 @@ $charter-art-ground: #fbf5ec; // the story illustrations' warm off-white
       @include relative-font-size(1.75);
     }
   }
+}
+
+
+
+/**
+ * Standalone articles (home page)
+ */
+.standalone-articles {
+  list-style: none;
+  margin: $spacing-unit / 2 0 $spacing-unit * 1.5;
+
+  li {
+    padding: $spacing-unit / 2 0;
+    border-top: 1px solid $charter-border;
+
+    &:last-child {
+      border-bottom: 1px solid $charter-border;
+    }
+  }
+
+  p {
+    margin-bottom: 0;
+  }
+}
+
+.standalone-article-title {
+  @include relative-font-size(1.125);
+  font-weight: 600;
+}
+
+.standalone-article-subtitle {
+  color: $grey-color-dark;
+  font-style: italic;
+}
+
+.standalone-article-date {
+  font-size: $small-font-size;
+  color: $grey-color;
+}
+
+
+
+/**
+ * Article header (articles): byline, and the opt-in subtitle and note
+ *
+ * Put {: .article-subtitle} on the line directly after an article's h2
+ * subtitle to set it as smaller, muted text under the title, and
+ * {: .article-note} after a short paragraph, such as a jump link, that
+ * belongs with the byline.
+ */
+.post-content .article-subtitle {
+  @include relative-font-size(1.25);
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0;
+  color: $grey-color-dark;
+  margin-bottom: $spacing-unit / 3;
+}
+
+.post-content .article-byline,
+.post-content .article-note {
+  font-size: $small-font-size;
+  color: $grey-color;
+  margin-bottom: $spacing-unit / 3;
+}
+
+.post-content .article-note a {
+  color: inherit;
+  text-decoration: underline;
 }
 
 

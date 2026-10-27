@@ -3,11 +3,17 @@ layout: article
 title: "Before the Agent Writes Code: A Workflow for Building Products with AI Agents"
 description: "How a proposal-and-review workflow helped establish a shared understanding with AI agents—and eventually led to Charter."
 permalink: /before-the-agent-writes-code/
+author: Mike Meyers
+date: 2026-10-27
 ---
 
 # Before the Agent Writes Code: A Workflow for Building Products with AI Agents
 
 ## How a proposal-and-review workflow helped establish a shared understanding with AI agents—and eventually led to Charter.
+{: .article-subtitle}
+
+*Short on time? [Jump to the six-step workflow](#the-workflow-we-settled-into).*
+{: .article-note}
 
 ![A developer conducts an orchestra of AI agents, including an enthusiastic washboard player.]({{ '/assets/images/articles/agent-orchestra.webp' | relative_url }})
 

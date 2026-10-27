@@ -3,6 +3,8 @@ layout: article
 title: "Part 4 — The Implementation"
 description: "How Charter Works"
 permalink: /the-implementation/
+author: Mike Meyers
+date: 2026-10-22
 ---
 
 # Part 4 — The Implementation

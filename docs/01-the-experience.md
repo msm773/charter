@@ -3,6 +3,8 @@ layout: article
 title: "Part 1 — The Experience"
 description: "AI Can Build Fast. Keeping Agents Aligned Is the Hard Part."
 permalink: /the-experience/
+author: Mike Meyers
+date: 2026-10-22
 redirect_from: /introduction/
 ---
 
